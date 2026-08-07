@@ -1,0 +1,22 @@
+# credentials and tokens — never commit
+oauth2.json
+*.token
+.env
+ 
+# raw API responses (may contain account/league identifiers)
+raw_*.json
+data/
+ 
+# local database
+*.db
+*.sqlite
+*.sqlite3
+ 
+# python
+.venv/
+__pycache__/
+*.pyc
+ 
+# macOS
+.DS_Store
+ 
