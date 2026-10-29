@@ -70,6 +70,17 @@ class League:
     # explosive-play bonuses: (count column, points per play)
     explosive: list[tuple[str, float]] = field(default_factory=list)
 
+    # --- kicker scoring ---
+    pat: float = 1.0
+    fg_yards_per_point: float = 0.0        # e.g. 10 => total made-FG yards / 10
+    fg_tiers: list[tuple[int, int, float]] = field(default_factory=list)
+    fg_miss: float = 0.0                   # penalty per miss; 0 = none
+
+    # --- team DST scoring ---
+    # Recorded for reference and for reasoning about streaming decisions.
+    # NOT yet computed — see score_dst() for why.
+    dst: dict = field(default_factory=dict)
+
     # roster
     starters: dict[str, int] = field(default_factory=dict)
     bench: int = 0
@@ -123,6 +134,8 @@ LEAGUES: dict[str, League] = {
             ("td40_rush", 1.0),
             ("td40_rec", 1.0),
         ],
+        pat=1.0, fg_miss=0.0,
+        fg_tiers=[(0, 19, 1), (20, 29, 2), (30, 39, 3), (40, 49, 4), (50, 99, 5)],
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=6, ir=2,
         playoff_weeks="4-team playoffs, Weeks 15-16",
@@ -142,6 +155,7 @@ LEAGUES: dict[str, League] = {
             ("rushing_yards", 100, 5.0),
             ("receiving_yards", 100, 5.0),
         ],
+        pat=1.0, fg_yards_per_point=10.0, fg_miss=0.0,
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=6, ir=0,
         playoff_weeks="6-team playoffs, Weeks 14-16",
@@ -164,6 +178,13 @@ LEAGUES: dict[str, League] = {
             ("rushing_yards", 100, 3.0),
             ("receiving_yards", 100, 3.0),
         ],
+        # CONFIRMED from Dustin's Yahoo settings screen, 2026-10-29.
+        pat=1.0, fg_yards_per_point=10.0, fg_miss=0.0,
+        dst={"sack": 1, "int": 2, "fum_rec": 2, "td": 6, "safety": 2,
+             "block_kick": 2, "return_td": 6, "fourth_down_stop": 0.5,
+             "xp_returned": 2,
+             "pts_allowed": [(0, 0, 10), (1, 6, 7), (7, 13, 5), (14, 20, 3),
+                             (21, 27, 1), (28, 34, -1), (35, 99, -4)]},
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=7, ir=1,
         acquisitions_per_season=50, acquisitions_per_week=4,
@@ -173,7 +194,14 @@ LEAGUES: dict[str, League] = {
                "rule pushes possession receivers toward full-PPR value. "
                "ACQUISITION CAP: 50/season, 4/week — waiver claims are a scarce "
                "resource here, unlike the other leagues. "
-               "UNVERIFIED: kicker FG rule and points-allowed tiers."),
+               "KICKER: 10 yards per point on TOTAL made-FG yardage, no miss "
+               "penalty and no flat credit for making a kick — a 25-yarder is "
+               "2.5, a 55-yarder 5.5. Tested against tiered scoring: the "
+               "reordering is modest (1-4 rank spots), because volume still "
+               "dominates under both schemes. Do not oversell this as an edge. "
+               "DST: sack is 1 (connector says 2) and the points-allowed ladder "
+               "is 5/3/1 at 7-13/14-20/21-27 (connector says 4/1/0), so the "
+               "connector systematically undervalues mid-range defensive games."),
     ),
 }
 
@@ -245,6 +273,59 @@ def score(df: pd.DataFrame, lg: League) -> pd.Series:
         p = p + _col(df, stat) * pts
 
     return p.astype(float)
+
+
+def score_kicker(df: pd.DataFrame, lg: League) -> pd.Series:
+    """Score kickers under a league's real FG rules.
+
+    Two schemes, and they behave very differently:
+
+      fg_yards_per_point — total MADE field-goal yardage divided by the rate.
+          Holmdel's and the keeper league both use 10 yards per point. A
+          25-yarder is 2.5 points; a 55-yarder is 5.5, with no flat credit for
+          simply making a kick. Measured against tiered scoring on 2026 data,
+          this reorders kickers by only 1-4 rank spots — volume dominates under
+          either scheme. Real, but a small effect; don't oversell it.
+
+      fg_tiers — flat points by distance band (Cameron Wood: 1/2/3/4/5).
+    """
+    if not lg.uses_k_dst:
+        return pd.Series(0.0, index=df.index)
+
+    p = _col(df, "pat_made") * lg.pat
+
+    if lg.fg_yards_per_point:
+        p = p + _col(df, "fg_made_distance") / lg.fg_yards_per_point
+    elif lg.fg_tiers:
+        for col, lo in [("fg_made_0_19", 0), ("fg_made_20_29", 20),
+                        ("fg_made_30_39", 30), ("fg_made_40_49", 40),
+                        ("fg_made_50_59", 50), ("fg_made_60_", 60)]:
+            pts = next((v for a, b, v in lg.fg_tiers if a <= lo <= b), 0)
+            p = p + _col(df, col) * pts
+
+    if lg.fg_miss:
+        p = p + _col(df, "fg_missed") * lg.fg_miss
+
+    return p.astype(float)
+
+
+def score_dst(df: pd.DataFrame, lg: League):
+    """NOT IMPLEMENTED — raises rather than returning zeros.
+
+    Team DST scoring needs two things the weekly PLAYER file does not contain:
+    points allowed (which lives in game/schedule data) and team-level
+    aggregation of individual defensive lines. Holmdel's also scores 4th-down
+    stops, which needs play-by-play.
+
+    The rules are recorded in League.dst so streaming decisions can reason
+    about them. Returning zeros here would be silently wrong — the exact
+    failure mode this module exists to prevent.
+    """
+    raise NotImplementedError(
+        f"DST scoring is not built. {lg.name}'s real rules are in its .dst "
+        f"dict. If you fall back to a connector DST projection, SAY SO — its "
+        f"sack value and points-allowed tiers are wrong for this league."
+    )
 
 
 def score_all(df: pd.DataFrame) -> pd.DataFrame:
