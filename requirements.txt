@@ -1,2 +1,4 @@
-yahoo_oauth
-requests
+pandas
+numpy
+pyarrow
+scipy
