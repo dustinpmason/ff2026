@@ -39,6 +39,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from ff_data import ensure_deps
+
+# scipy is used for the normal-fit estimate. A fresh sandbox does not have it,
+# and without this the failure lands on the first prop question rather than at
+# bootstrap, which is a much worse place to discover it.
+ensure_deps("scipy", quiet=True)
+
 RNG = np.random.default_rng(20261029)
 
 # Below this many games, treat any estimate as directional only.

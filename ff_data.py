@@ -23,13 +23,61 @@ nflverse updates in-season, typically within a day of games completing.
 
 from __future__ import annotations
 
+import importlib
 import os
+import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-import pandas as pd
+
+def ensure_deps(*packages: str, quiet: bool = False) -> None:
+    """Install any of `packages` that aren't importable.
+
+    A fresh sandbox ships pandas and numpy but NOT pyarrow or scipy. Without
+    this, the first parquet read dies on an ImportError that reads like a
+    missing-file error, and the first prop calculation dies several steps later.
+    Both cost a turn to diagnose. Checking is free when they're already present.
+    """
+    missing = []
+    for p in packages:
+        try:
+            importlib.import_module(p)
+        except ImportError:
+            missing.append(p)
+
+    if not missing:
+        return
+
+    if not quiet:
+        print(f"  installing missing dependencies: {', '.join(missing)}")
+
+    for flags in (["--break-system-packages"], []):
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", *flags, *missing],
+                check=True, capture_output=True, timeout=300,
+            )
+            break
+        except subprocess.CalledProcessError:
+            continue
+        except Exception as e:
+            print(f"  ! could not install {missing}: {e}", file=sys.stderr)
+            return
+
+    importlib.invalidate_caches()
+    for p in missing:
+        try:
+            importlib.import_module(p)
+        except ImportError:
+            print(f"  ! {p} still not importable after install", file=sys.stderr)
+
+
+# Must run before pandas is asked to touch a parquet file.
+ensure_deps("pyarrow", quiet=True)
+
+import pandas as pd  # noqa: E402
 
 BASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
@@ -151,10 +199,23 @@ def data_status(year: int = CURRENT_SEASON) -> str:
     Always surface this before giving advice — if the latest week on file is
     behind the real NFL week, every projection built on it is stale.
     """
-    try:
-        wk = pd.read_parquet(_dest("weekly", year), columns=["season", "week", "season_type"])
-    except Exception:
+    path = _dest("weekly", year)
+
+    # Distinguish the three failure modes. A bare except here previously
+    # reported a missing parquet ENGINE as a missing FILE, which sends you off
+    # to re-download 30MB that was already on disk.
+    if not path.exists():
         return f"No weekly data cached for {year}. Run refresh_all()."
+
+    try:
+        wk = pd.read_parquet(path, columns=["season", "week", "season_type"])
+    except ImportError as e:
+        return (f"Data for {year} IS cached at {path} but cannot be read: {e}. "
+                f"This is a missing parquet engine, NOT missing data — "
+                f"do not re-download. Run ensure_deps('pyarrow').")
+    except Exception as e:
+        return (f"Data for {year} is cached at {path} but failed to parse: "
+                f"{type(e).__name__}: {e}")
 
     reg = wk[wk.season_type == "REG"]
     if reg.empty:

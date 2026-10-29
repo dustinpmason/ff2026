@@ -10,8 +10,14 @@ inferred from memory.
 import warnings
 warnings.filterwarnings("ignore")
 
-from ff_data import refresh_all, load_weekly, data_status
-from ff_scoring import LEAGUES, describe, score_all
+from ff_data import refresh_all, load_weekly, data_status, ensure_deps
+
+# Front-load every dependency a later question might need, so a missing package
+# surfaces here instead of halfway through a lineup call.
+ensure_deps("pyarrow", "scipy")
+
+from ff_scoring import LEAGUES, describe  # noqa: E402
+import ff_props  # noqa: F401,E402  -- import proves the prop engine loads
 
 
 def main():
