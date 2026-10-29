@@ -115,8 +115,13 @@ LEAGUES: dict[str, League] = {
             ("passing_40", 1.0),     # 40+ yard completions
             ("rushing_40", 1.0),     # 40+ yard runs
             ("receiving_40", 1.0),   # 40+ yard receptions
-            # 40+ yard TDs add a further +1 each and STACK with the above.
-            # Not in the weekly box score — see add_explosive_tds().
+            # 40+ yard TDs pay a further +1 each and STACK with the above.
+            # These are NOT in the weekly box score — prepare() derives them
+            # from play-by-play. score() refuses to run without them rather
+            # than silently undercounting every big-play player.
+            ("td40_pass", 1.0),
+            ("td40_rush", 1.0),
+            ("td40_rec", 1.0),
         ],
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=6, ir=2,
@@ -190,6 +195,17 @@ def score(df: pd.DataFrame, lg: League) -> pd.Series:
     Returns a float Series aligned to df.index. Offensive skill scoring only —
     kicker and DST scoring are not modeled (they vary most and matter least).
     """
+    # A declared bonus whose column is absent would score as zero, which is
+    # silently wrong rather than loudly broken. Refuse instead.
+    required = [c for c, _ in lg.explosive] + [s for s, _, _ in lg.milestones]
+    absent = [c for c in required if c not in df.columns]
+    if absent:
+        raise KeyError(
+            f"{lg.name} scores bonuses on {absent}, which this frame does not "
+            f"have. Run prepare(weekly, pbp) before scoring this league — "
+            f"otherwise every big-play player comes in low and nothing warns you."
+        )
+
     if lg.fumble_scope == "all":
         fum = _col(df, "fumbles_lost_total")
     else:
@@ -245,31 +261,48 @@ def add_explosive_tds(weekly: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
     counts from play-by-play and merge them on.
 
     Adds columns: td40_pass, td40_rush, td40_rec.
+
+    JOIN WARNING
+    ------------
+    This joins on GSIS player_id, NOT on player_name. nflverse's `player_name`
+    is abbreviated to first-initial-plus-surname ("J.Allen", "J.Love") and is
+    NOT unique: an earlier version of this function joined on it and credited
+    Julian Love (safety) and Jeremiyah Love (RB) with Jordan Love's 40+ yard
+    passing touchdowns, and Jonathan Allen (DT) with Josh Allen's. Never join
+    nflverse tables on an abbreviated name.
     """
-    need = {"season", "week", "touchdown", "yards_gained", "play_type",
-            "passer_player_name", "rusher_player_name", "receiver_player_name"}
+    need = {"season", "week", "touchdown", "yards_gained",
+            "passer_player_id", "rusher_player_id", "receiver_player_id"}
     missing = need - set(pbp.columns)
     if missing:
         raise KeyError(f"play-by-play is missing {sorted(missing)}")
+    if "player_id" not in weekly.columns:
+        raise KeyError("weekly frame has no player_id — cannot join safely")
 
     big = pbp[(pbp.touchdown == 1) & (pbp.yards_gained >= 40)]
 
-    def tally(col: str, label: str) -> pd.DataFrame:
+    out = weekly.copy()
+    for col, label in [("passer_player_id", "td40_pass"),
+                       ("rusher_player_id", "td40_rush"),
+                       ("receiver_player_id", "td40_rec")]:
         t = (big[big[col].notna()]
              .groupby(["season", "week", col])
              .size().reset_index(name=label)
-             .rename(columns={col: "player_name"}))
-        return t
-
-    out = weekly.copy()
-    for col, label in [("passer_player_name", "td40_pass"),
-                       ("rusher_player_name", "td40_rush"),
-                       ("receiver_player_name", "td40_rec")]:
-        t = tally(col, label)
-        out = out.merge(t, on=["season", "week", "player_name"], how="left")
+             .rename(columns={col: "player_id"}))
+        out = out.merge(t, on=["season", "week", "player_id"], how="left")
         out[label] = out[label].fillna(0)
 
     return out
+
+
+def prepare(weekly: pd.DataFrame, pbp: pd.DataFrame) -> pd.DataFrame:
+    """Enrich a weekly frame with everything the leagues need beyond the box
+    score. Run this ONCE after loading, then score off the result.
+
+    Scoring a league with explosive-TD bonuses off a frame that hasn't been
+    through here raises rather than quietly undercounting — see score().
+    """
+    return add_explosive_tds(weekly, pbp)
 
 
 def describe(lg: League) -> str:
