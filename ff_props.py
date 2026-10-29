@@ -57,12 +57,29 @@ MIN_GAMES_CONFIDENT = 14
 # Data shaping
 # ---------------------------------------------------------------------------
 
+def opportunity_column(stat: str) -> str | None:
+    """The volume stat that DRIVES a production stat.
+
+    Production is opportunity times efficiency. Threshold estimates built on
+    production alone cannot see a role change — see usage_trend().
+    """
+    if stat.startswith("passing") or stat in ("completions",):
+        return "attempts"
+    if stat.startswith("rushing") or stat in ("carries",):
+        return "carries"
+    if stat.startswith("receiving") or stat in ("receptions",):
+        return "targets"
+    return None
+
+
 def player_series(weekly: pd.DataFrame,
                   player: str,
                   stat: str,
                   seasons: list[int] | None = None,
                   played_only: bool = True) -> pd.DataFrame:
     """Game log for one player and one stat, oldest first.
+
+    Carries the opportunity column alongside the stat so usage_trend() can run.
 
     played_only drops games the player didn't appear in. For yardage stats a
     zero is almost always an absence, not a performance, and leaving them in
@@ -75,19 +92,103 @@ def player_series(weekly: pd.DataFrame,
         df = df[df.season_type == "REG"]
     if seasons:
         df = df[df.season.isin(seasons)]
-    if played_only:
-        snap = ("attempts" if stat.startswith("passing")
-                else "carries" if stat.startswith("rushing")
-                else "targets" if stat.startswith("receiving") else None)
-        if snap and snap in df.columns:
-            df = df[pd.to_numeric(df[snap], errors="coerce").fillna(0) > 0]
-    cols = [c for c in ["season", "week", "opponent_team", stat] if c in df.columns]
-    return df[cols].sort_values(["season", "week"]).reset_index(drop=True)
+
+    opp = opportunity_column(stat)
+    if played_only and opp and opp in df.columns:
+        df = df[pd.to_numeric(df[opp], errors="coerce").fillna(0) > 0]
+
+    cols = []
+    for c in ["season", "week", "opponent_team", stat, opp]:
+        if c and c in df.columns and c not in cols:
+            cols.append(c)
+    out = df[cols].sort_values(["season", "week"]).reset_index(drop=True)
+    # Record which column is the STAT. Without this, a caller that omits the
+    # stat name has to guess from column order — and guessing broke the moment
+    # the opportunity column was appended, silently scoring targets as yards.
+    out.attrs["stat"] = stat
+    out.attrs["opportunity"] = opp
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Estimation
 # ---------------------------------------------------------------------------
+
+@dataclass
+class UsageTrend:
+    """Whether a player's OPPORTUNITY has changed inside the sample window."""
+    column: str
+    window: int
+    recent: float
+    baseline: float
+    ratio: float
+    verdict: str              # COLLAPSED | EXPANDED | STABLE | UNKNOWN
+    per_opportunity: float    # production per unit of opportunity, full sample
+    expected_now: float       # per_opportunity * recent usage
+
+    @property
+    def flagged(self) -> bool:
+        return self.verdict in ("COLLAPSED", "EXPANDED")
+
+    def describe(self) -> str:
+        if self.verdict == "UNKNOWN":
+            return "  usage      : not enough games to judge role change"
+        arrow = {"COLLAPSED": "DOWN", "EXPANDED": "UP", "STABLE": "stable"}[self.verdict]
+        s = (f"  usage      : {self.column} {self.baseline:.1f} -> {self.recent:.1f} "
+             f"over last {self.window} ({self.ratio:.0%}, {arrow})")
+        if self.flagged:
+            s += (f"\n  ! ROLE CHANGE. At current usage, expected output is "
+                  f"~{self.expected_now:.1f} — the sample describes a role this "
+                  f"player no longer has.")
+        return s
+
+
+# Role-change thresholds. Deliberately wide: a 20-30% swing in targets is
+# ordinary game-to-game noise, a 50% one is a different job.
+COLLAPSE_RATIO = 0.60
+EXPAND_RATIO = 1.60
+
+
+def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
+    """Detect a role change by comparing recent opportunity against the prior
+    baseline — NOT against the whole sample, which includes the recent games
+    and dilutes the very signal we're looking for.
+
+    This exists because threshold_prob() weights OUTCOMES. A player whose
+    targets collapsed but who broke one long play scores well on every
+    estimator, recency-weighted included, because recency weighting rewards the
+    fluke. Opportunity is the thing that actually carries forward.
+    """
+    opp = opportunity_column(stat)
+    nil = UsageTrend(opp or "?", 0, 0, 0, 1.0, "UNKNOWN", 0, 0)
+    if not opp or opp not in log.columns:
+        return nil
+
+    o = pd.to_numeric(log[opp], errors="coerce").fillna(0).values.astype(float)
+    y = pd.to_numeric(log[stat], errors="coerce").fillna(0).values.astype(float)
+    n = len(o)
+
+    # Window scales with sample: 2 games on a short sample, up to 4 on a long
+    # one. A fixed 3 was tested and missed a real collapse on a 6-game sample.
+    window = max(2, min(4, n // 3))
+    if n < window + 2:
+        return nil
+
+    recent = float(o[-window:].mean())
+    baseline = float(o[:-window].mean())
+    if baseline <= 0:
+        return nil
+
+    ratio = recent / baseline
+    verdict = ("COLLAPSED" if ratio < COLLAPSE_RATIO
+               else "EXPANDED" if ratio > EXPAND_RATIO
+               else "STABLE")
+
+    per_opp = float(y.sum() / o.sum()) if o.sum() > 0 else 0.0
+    return UsageTrend(column=opp, window=window, recent=recent, baseline=baseline,
+                      ratio=ratio, verdict=verdict, per_opportunity=per_opp,
+                      expected_now=per_opp * recent)
+
 
 @dataclass
 class Estimate:
@@ -103,6 +204,11 @@ class Estimate:
     mean: float
     sd: float
     hits: int
+    usage: UsageTrend | None = None
+
+    @property
+    def role_changed(self) -> bool:
+        return self.usage is not None and self.usage.flagged
 
     @property
     def ci_width(self) -> float:
@@ -127,7 +233,19 @@ def threshold_prob(log: pd.DataFrame,
     half_life — games. Controls the recency weighting. 6 means a game six weeks
     back counts half as much as the most recent one.
     """
-    stat = stat or log.columns[-1]
+    # Resolve the stat column. Prefer what player_series recorded; otherwise
+    # take the last column that is neither metadata nor an opportunity column.
+    # Never just take columns[-1] — that is the opportunity column now.
+    if stat is None:
+        stat = log.attrs.get("stat")
+    if stat is None:
+        meta = {"season", "week", "opponent_team"}
+        opps = {"attempts", "carries", "targets"}
+        cands = [c for c in log.columns if c not in meta and c not in opps]
+        stat = cands[-1] if cands else log.columns[-1]
+    if stat not in log.columns:
+        raise KeyError(f"stat {stat!r} not in log columns {list(log.columns)}")
+
     x = pd.to_numeric(log[stat], errors="coerce").dropna().values.astype(float)
     n = len(x)
     if n < 3:
@@ -158,7 +276,8 @@ def threshold_prob(log: pd.DataFrame,
 
     return Estimate(stat=stat, line=line, n=n, empirical=emp, parametric=para,
                     recency=rec, blended=blended, ci_low=float(lo),
-                    ci_high=float(hi), mean=mu, sd=sd, hits=hits)
+                    ci_high=float(hi), mean=mu, sd=sd, hits=hits,
+                    usage=usage_trend(log, stat))
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +364,20 @@ def prop_edge(est: Estimate,
     if not np.isnan(hold) and hold > 0.06:
         reasons.append(f"hold {hold*100:.1f}% is steep")
 
+    # A role change OVERRIDES the edge. This is the Waller case: the model read
+    # 80% against a market at 50% because his targets had halved. A big edge on
+    # a player whose role just changed is evidence the sample is stale, not
+    # evidence of value — and the bigger the edge, the stronger that evidence.
+    if est.role_changed:
+        u = est.usage
+        return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
+                    ev_per_dollar=ev, hold=hold, kelly=0.0, tier="PASS",
+                    reasoning=(f"ROLE CHANGE — {u.column} {u.baseline:.1f} -> "
+                               f"{u.recent:.1f} ({u.ratio:.0%}). The sample "
+                               f"describes a role this player no longer has, so "
+                               f"the model is unreliable here whatever the edge "
+                               f"looks like. Check the market's number instead."))
+
     if edge < 0.03 or est.ci_width > 0.50:
         tier = "PASS"
         reasons.insert(0, "edge inside the noise")
@@ -281,9 +414,13 @@ def report(est: Estimate, label: str = "") -> str:
         f"  recency-wtd : {est.recency*100:.0f}%",
         f"  USE         : {est.blended*100:.0f}%   (95% CI {band})",
     ]
+    if est.usage is not None:
+        lines.append(est.usage.describe())
     if est.ci_width > 0.40:
         lines.append(f"  ! interval spans {est.ci_width*100:.0f} points — "
                      f"treat as directional, not precise")
+    if est.role_changed:
+        lines.append("  ! DO NOT BET THIS off the model. Role change detected.")
     return "\n".join(lines)
 
 
