@@ -34,7 +34,7 @@ Usage
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -72,6 +72,260 @@ def opportunity_column(stat: str) -> str | None:
     return None
 
 
+def share_column(stat: str) -> str | None:
+    """The SHARE counterpart of an opportunity column."""
+    opp = opportunity_column(stat)
+    return {"targets": "_tgt_share", "carries": "_carry_share",
+            "attempts": "_att_share"}.get(opp) if opp else None
+
+
+def add_shares(weekly: pd.DataFrame) -> pd.DataFrame:
+    """Attach each player's SHARE of his team's weekly opportunity.
+
+    Raw counts conflate two different things: a shrinking role, and a team
+    running fewer plays. A back whose carries fall from 18 to 9 because his
+    team trailed all day has not lost his job — and treating that as a role
+    change produces false alarms on exactly the players worth betting.
+
+    Measured on 2026: three of seven count-based flags were team volume, not
+    role. Jeanty's carries fell to 51% of baseline while his SHARE only fell to
+    76%; Puka Nacua's targets fell to 57% while his share held at 83%.
+    """
+    df = weekly.copy()
+    if "team" not in df.columns or "week" not in df.columns:
+        return df
+    tot = (df.groupby(["team", "week"])
+             .agg(_team_carries=("carries", "sum"),
+                  _team_targets=("targets", "sum"),
+                  _team_attempts=("attempts", "sum"))
+             .reset_index())
+    df = df.merge(tot, on=["team", "week"], how="left")
+    for num, den, out in [("carries", "_team_carries", "_carry_share"),
+                          ("targets", "_team_targets", "_tgt_share"),
+                          ("attempts", "_team_attempts", "_att_share")]:
+        if num in df.columns:
+            d = pd.to_numeric(df[den], errors="coerce").replace(0, np.nan)
+            df[out] = pd.to_numeric(df[num], errors="coerce") / d
+
+    # Combined touches, for OVERALL role rather than one stat's role. A back on
+    # a trailing team loses carries and gains targets: his carry share falls
+    # while his job is untouched. Touch share sees through that composition
+    # shift; carry share alone does not.
+    if "carries" in df.columns and "targets" in df.columns:
+        df["_touches"] = (pd.to_numeric(df["carries"], errors="coerce").fillna(0)
+                          + pd.to_numeric(df["targets"], errors="coerce").fillna(0))
+        tt = (df.groupby(["team", "week"])["_touches"].sum()
+                .rename("_team_touches").reset_index())
+        df = df.merge(tt, on=["team", "week"], how="left")
+        df["_touch_share"] = df["_touches"] / df["_team_touches"].replace(0, np.nan)
+    return df
+
+
+def role_trend(weekly: pd.DataFrame, player: str, window: int | None = None) -> UsageTrend:
+    """OVERALL role trend, for questions about a player's total value rather
+    than one stat — lineup decisions, the guillotine simulation, keeper calls.
+
+    Uses combined touch share (carries + targets) for skill players, which is
+    immune to the composition shift that breaks per-stat checks. Use
+    usage_trend() instead for a specific prop: a receiving prop should care
+    that a back's targets vanished even when his rushing job is untouched.
+    """
+    full = add_shares(weekly[weekly.season_type == "REG"]
+                      if "season_type" in weekly.columns else weekly)
+    d = full[full.player_display_name == player].sort_values(["season", "week"])
+    if d.empty:
+        return UsageTrend("_touch_share", 0, 0, 0, 1.0, "UNKNOWN", 0, 0)
+
+    pos = d["position"].iloc[-1] if "position" in d.columns else "WR"
+    col = "_att_share" if pos == "QB" else "_touch_share"
+    raw = "attempts" if pos == "QB" else "_touches"
+    d = d[pd.to_numeric(d[raw], errors="coerce").fillna(0) > 0]
+
+    n = len(d)
+    w = window or max(2, min(4, n // 3))
+    if n < w + 2:
+        return UsageTrend(col, 0, 0, 0, 1.0, "UNKNOWN", 0, 0)
+
+    sv = pd.to_numeric(d[col], errors="coerce").fillna(0).values
+    cv = pd.to_numeric(d[raw], errors="coerce").fillna(0).values
+    s_rec, s_base = float(sv[-w:].mean()), float(sv[:-w].mean())
+    c_rec, c_base = float(cv[-w:].mean()), float(cv[:-w].mean())
+    s_ratio = s_rec / s_base if s_base > 0 else 1.0
+    c_ratio = c_rec / c_base if c_base > 0 else 1.0
+
+    if s_ratio < SHARE_COLLAPSE:
+        verdict = "COLLAPSED"
+    elif s_ratio > SHARE_EXPAND:
+        verdict = "EXPANDED"
+    elif c_ratio < COLLAPSE_RATIO:
+        verdict = "GAME_SCRIPT"
+    else:
+        verdict = "STABLE"
+
+    return UsageTrend(column=col.lstrip("_"), window=w, recent=c_rec, baseline=c_base,
+                      ratio=c_ratio, verdict=verdict, per_opportunity=0.0,
+                      expected_now=0.0, share_baseline=s_base, share_recent=s_rec,
+                      share_ratio=s_ratio, team_volume_ratio=1.0, has_share=True)
+
+
+@dataclass
+class Decline:
+    """WHEN a player's role changed, and what the data can say about why."""
+    player: str
+    onset_week: int | None
+    before: float          # mean share before onset
+    after: float           # mean share from onset on
+    drop: float            # after / before
+    missed_weeks: list[int] = field(default_factory=list)
+    missed_before_onset: bool = False
+    verdict: str = "UNKNOWN"
+    search_hint: str = ""
+
+    def describe(self) -> str:
+        if self.onset_week is None:
+            return f"{self.player}: no clear decline onset in the sample"
+        L = [f"{self.player}: role changed at WEEK {self.onset_week} — "
+             f"share {self.before:.1%} -> {self.after:.1%} ({self.drop:.0%})"]
+        if self.missed_weeks:
+            L.append(f"  missed weeks (not byes): {self.missed_weeks}")
+        L.append(f"  {self.verdict}")
+        if self.search_hint:
+            L.append(f"  -> {self.search_hint}")
+        return "\n".join(L)
+
+
+def bye_weeks(weekly: pd.DataFrame) -> dict[str, int]:
+    """Each team's bye, derived from the data: the week in which no player on
+    that team recorded a game. Avoids needing a schedule feed to tell a bye
+    apart from an absence."""
+    df = weekly[weekly.season_type == "REG"] if "season_type" in weekly.columns else weekly
+    out: dict[str, int] = {}
+    allw = set(range(1, int(df.week.max()) + 1))
+    for team, g in df.groupby("team"):
+        miss = sorted(allw - set(g.week.unique()))
+        if len(miss) == 1:
+            out[team] = miss[0]
+    return out
+
+
+def decline_onset(weekly: pd.DataFrame, player: str) -> Decline:
+    """Locate WHEN a player's role changed, and say what the data can and
+    cannot establish about the cause.
+
+    WHY THIS IS NOT AN INJURY DETECTOR
+    ----------------------------------
+    PropLine's injury history begins 2026-10-18 and returns nothing at all for
+    a decline that started earlier — verified empirically on Jeanty, whose
+    carries began falling in Week 5 and whose injury-history query comes back
+    with zero rows. ESPN's `status_since` is no better: it marks when the
+    CURRENT designation began, refreshed weekly, not when the injury happened.
+
+    So the data can establish WHEN. It cannot establish WHY. What it CAN do is
+    turn an open-ended question into a targeted one: this returns the onset
+    week so a news search has a date to aim at, and flags whether the player
+    missed games just before — the one injury signal that IS in the data.
+    """
+    full = add_shares(weekly[weekly.season_type == "REG"]
+                      if "season_type" in weekly.columns else weekly)
+    d = full[full.player_display_name == player].sort_values("week")
+    if len(d) < 4:
+        return Decline(player, None, 0, 0, 1.0, verdict="too few games")
+
+    pos = d["position"].iloc[-1] if "position" in d.columns else "WR"
+    col = "_att_share" if pos == "QB" else "_touch_share"
+    sv = pd.to_numeric(d[col], errors="coerce").fillna(0).values
+    weeks = d.week.astype(int).tolist()
+
+    # Change point: the split maximizing the fall in mean share.
+    best_k, best_gap = None, 0.0
+    for k in range(2, len(sv) - 1):
+        gap = sv[:k].mean() - sv[k:].mean()
+        if gap > best_gap:
+            best_k, best_gap = k, gap
+    if best_k is None or best_gap <= 0:
+        return Decline(player, None, 0, 0, 1.0, verdict="no decline detected")
+
+    before, after = float(sv[:best_k].mean()), float(sv[best_k:].mean())
+    onset = weeks[best_k]
+
+    team = d["team"].iloc[-1]
+    bye = bye_weeks(full).get(team)
+    played = set(weeks)
+    missed = [w for w in range(1, max(weeks) + 1)
+              if w not in played and w != bye]
+    # Missed games ANYWHERE from just before the onset onward implicate an
+    # injury — not only games missed strictly before it. Barkley's decline was
+    # detected at Week 4 and he then missed Weeks 5 and 6; a strict
+    # before-onset window skipped the obvious explanation.
+    missed_before = any(w >= onset - 2 for w in missed)
+
+    # Is this a STEP (a single week where things changed) or a GRADUAL slide?
+    # They mean different things: a step points at a discrete event — a
+    # benching, an injury, a personnel change. A steady slide points at
+    # something progressive, and pinning it to one week is false precision.
+    gradual = False
+    if len(sv) >= 5:
+        r = np.corrcoef(np.arange(len(sv)), sv)[0, 1]
+        step_size = abs(sv[best_k] - sv[best_k - 1])
+        gradual = r < -0.6 and step_size < (before - after)
+
+    drop = after / before if before > 0 else 1.0
+    if gradual:
+        verdict = ("GRADUAL slide, not a single-week step — usage has eroded "
+                   "steadily rather than changing at one point. That pattern "
+                   "fits a progressive injury or a slow role erosion, not a "
+                   "benching. Do not treat the onset week as a real event")
+        hint = (f"look at {player}'s full-season trend and any recurring injury "
+                f"designation rather than one week's news")
+    elif drop >= SHARE_COLLAPSE:
+        verdict = "decline is mild — not a role change by the share test"
+        hint = ""
+    elif missed_before:
+        verdict = (f"MISSED WEEKS {missed} around the drop — an injury is the "
+                   f"leading explanation")
+        hint = (f"confirm with news for {player} around Week {onset}; if he is "
+                f"healthy now, the sample understates him")
+    else:
+        verdict = ("played through it — no missed games before the drop, so "
+                   "this is EITHER a demotion OR playing hurt. The data cannot "
+                   "tell these apart")
+        hint = (f"search news for '{player} injury' and '{player} snap share' "
+                f"around Week {onset}, and check who absorbed the work")
+    return Decline(player, onset, before, after, drop, missed, missed_before,
+                   verdict, hint)
+
+
+def attach_injury(trend: UsageTrend, player: str,
+                  injuries: list[dict] | None) -> tuple[UsageTrend, str]:
+    """Annotate a usage flag with the player's CURRENT injury status.
+
+    This module cannot fetch injuries — the sandbox has no network access to
+    PropLine, and the MCP tools belong to the session, not to Python. The
+    caller must pass the list from `propline_get_injuries(sport_key=...)`.
+
+    An injury does NOT cancel a usage flag. It explains it, and the
+    implication differs sharply:
+      - flagged AND still Out/Doubtful  -> the drop persists; do not expect
+        the old baseline back this week.
+      - flagged AND now cleared/absent from the report -> the drop may be
+        behind him and the sample understates him. This is the case where a
+        market that has not caught up is genuinely exploitable.
+      - flagged and never injured -> a real depth-chart change.
+    """
+    if not injuries:
+        return trend, "no injury data supplied — pull propline_get_injuries and pass it in"
+    rec = next((r for r in injuries
+                if str(r.get("player_name", "")).lower() == player.lower()), None)
+    if rec is None:
+        return trend, ("not on the current injury report — a usage change here is "
+                       "more likely a real role change than an injury effect")
+    status = rec.get("status", "?")
+    note = f"{status} ({rec.get('injury_type', '?')}), since {rec.get('status_since', '?')}"
+    if str(rec.get("status_code", "")).lower() in ("out", "doubtful", "injured_list"):
+        return trend, f"{note} — usage drop likely persists while he is unavailable"
+    return trend, f"{note} — may be limiting snaps; the drop could reverse on full health"
+
+
 def player_series(weekly: pd.DataFrame,
                   player: str,
                   stat: str,
@@ -94,11 +348,24 @@ def player_series(weekly: pd.DataFrame,
         df = df[df.season.isin(seasons)]
 
     opp = opportunity_column(stat)
+    shr = share_column(stat)
+
+    # Shares need team totals, so compute them before filtering to one player.
+    if shr and shr not in df.columns:
+        full = add_shares(weekly[weekly.season_type == "REG"]
+                          if "season_type" in weekly.columns else weekly)
+        keep = ["player_display_name", "season", "week", shr,
+                "_team_carries", "_team_targets", "_team_attempts"]
+        df = df.merge(full[[c for c in keep if c in full.columns]],
+                      on=["player_display_name", "season", "week"], how="left")
+
     if played_only and opp and opp in df.columns:
         df = df[pd.to_numeric(df[opp], errors="coerce").fillna(0) > 0]
 
+    team_col = {"targets": "_team_targets", "carries": "_team_carries",
+                "attempts": "_team_attempts"}.get(opp)
     cols = []
-    for c in ["season", "week", "opponent_team", stat, opp]:
+    for c in ["season", "week", "opponent_team", stat, opp, shr, team_col]:
         if c and c in df.columns and c not in cols:
             cols.append(c)
     out = df[cols].sort_values(["season", "week"]).reset_index(drop=True)
@@ -122,21 +389,43 @@ class UsageTrend:
     recent: float
     baseline: float
     ratio: float
-    verdict: str              # COLLAPSED | EXPANDED | STABLE | UNKNOWN
+    verdict: str              # COLLAPSED | EXPANDED | GAME_SCRIPT | STABLE | UNKNOWN
     per_opportunity: float    # production per unit of opportunity, full sample
     expected_now: float       # per_opportunity * recent usage
+    share_baseline: float = 0.0
+    share_recent: float = 0.0
+    share_ratio: float = 1.0
+    team_volume_ratio: float = 1.0
+    has_share: bool = False
 
     @property
     def flagged(self) -> bool:
+        """Only a genuine ROLE change blocks a bet. GAME_SCRIPT is a softer
+        signal — the player's share of his offense is intact and team volume
+        reverts more readily than a depth-chart position does."""
         return self.verdict in ("COLLAPSED", "EXPANDED")
+
+    @property
+    def soft_flagged(self) -> bool:
+        return self.verdict == "GAME_SCRIPT"
 
     def describe(self) -> str:
         if self.verdict == "UNKNOWN":
             return "  usage      : not enough games to judge role change"
-        arrow = {"COLLAPSED": "DOWN", "EXPANDED": "UP", "STABLE": "stable"}[self.verdict]
+        arrow = {"COLLAPSED": "DOWN", "EXPANDED": "UP",
+                 "GAME_SCRIPT": "DOWN", "STABLE": "stable"}[self.verdict]
         s = (f"  usage      : {self.column} {self.baseline:.1f} -> {self.recent:.1f} "
              f"over last {self.window} ({self.ratio:.0%}, {arrow})")
-        if self.flagged:
+        if self.has_share:
+            s += (f"\n  share      : {self.share_baseline:.1%} -> {self.share_recent:.1%} "
+                  f"({self.share_ratio:.0%} of baseline); team volume at "
+                  f"{self.team_volume_ratio:.0%}")
+        if self.verdict == "GAME_SCRIPT":
+            s += ("\n  ~ GAME SCRIPT, not a role change. The raw count fell but his "
+                  "SHARE of the offense held up — the team ran fewer plays. Team "
+                  "volume reverts more readily than a depth-chart spot, so treat "
+                  "this as added uncertainty rather than a changed role.")
+        elif self.flagged:
             s += (f"\n  ! ROLE CHANGE. At current usage, expected output is "
                   f"~{self.expected_now:.1f} — the sample describes a role this "
                   f"player no longer has.")
@@ -147,6 +436,14 @@ class UsageTrend:
 # ordinary game-to-game noise, a 50% one is a different job.
 COLLAPSE_RATIO = 0.60
 EXPAND_RATIO = 1.60
+
+# Share is a cleaner signal than raw count — it already divides out team
+# volume — so it earns tighter thresholds. These are judgment calls, validated
+# against 2026 cases: they must keep Waller (share 51%), Barkley (35%) and
+# McLaurin (43%) as role changes; reclassify Jeanty (76%), Nacua (83%) and
+# Harvey (72%) as game script; and keep Corum (155%) as a real expansion.
+SHARE_COLLAPSE = 0.65
+SHARE_EXPAND = 1.45
 
 
 def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
@@ -180,14 +477,49 @@ def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
         return nil
 
     ratio = recent / baseline
-    verdict = ("COLLAPSED" if ratio < COLLAPSE_RATIO
-               else "EXPANDED" if ratio > EXPAND_RATIO
-               else "STABLE")
+
+    # Share-based check. A count drop that leaves SHARE intact is the team
+    # running fewer plays, not the player losing his role.
+    shr = share_column(stat)
+    has_share = bool(shr) and shr in log.columns and log[shr].notna().any()
+    s_base = s_rec = s_ratio = tv_ratio = 0.0
+    if has_share:
+        sv = pd.to_numeric(log[shr], errors="coerce").fillna(0).values.astype(float)
+        s_rec, s_base = float(sv[-window:].mean()), float(sv[:-window].mean())
+        s_ratio = s_rec / s_base if s_base > 0 else 1.0
+        tcol = {"targets": "_team_targets", "carries": "_team_carries",
+                "attempts": "_team_attempts"}.get(opp)
+        if tcol and tcol in log.columns:
+            tvv = pd.to_numeric(log[tcol], errors="coerce").fillna(0).values.astype(float)
+            tb = float(tvv[:-window].mean())
+            tv_ratio = float(tvv[-window:].mean()) / tb if tb > 0 else 1.0
+
+    # SHARE is the primary signal when available; the count only decides
+    # whether a game-script note is warranted. Using the count as primary and
+    # share as a veto misclassified Corum, whose carry share rose 29% -> 45%
+    # (a real promotion) but sat just under the count threshold.
+    if has_share and s_base > 0:
+        if s_ratio < SHARE_COLLAPSE:
+            verdict = "COLLAPSED"
+        elif s_ratio > SHARE_EXPAND:
+            verdict = "EXPANDED"
+        elif ratio < COLLAPSE_RATIO:
+            verdict = "GAME_SCRIPT"      # count fell, share held
+        else:
+            verdict = "STABLE"
+    else:
+        verdict = ("COLLAPSED" if ratio < COLLAPSE_RATIO
+                   else "EXPANDED" if ratio > EXPAND_RATIO
+                   else "STABLE")
 
     per_opp = float(y.sum() / o.sum()) if o.sum() > 0 else 0.0
     return UsageTrend(column=opp, window=window, recent=recent, baseline=baseline,
                       ratio=ratio, verdict=verdict, per_opportunity=per_opp,
-                      expected_now=per_opp * recent)
+                      expected_now=per_opp * recent,
+                      share_baseline=s_base, share_recent=s_rec,
+                      share_ratio=s_ratio if has_share else 1.0,
+                      team_volume_ratio=tv_ratio if has_share else 1.0,
+                      has_share=has_share)
 
 
 @dataclass
@@ -378,6 +710,14 @@ def prop_edge(est: Estimate,
                                f"the model is unreliable here whatever the edge "
                                f"looks like. Check the market's number instead."))
 
+    # A game-script flag is softer than a role change: the player's share of
+    # his offense held up, and team volume reverts more readily than a
+    # depth-chart spot. Add uncertainty, do not auto-PASS.
+    if est.usage is not None and est.usage.soft_flagged:
+        u = est.usage
+        reasons.append(f"team volume at {u.team_volume_ratio:.0%}, share held "
+                       f"at {u.share_ratio:.0%} — game script, not role loss")
+
     if edge < 0.03 or est.ci_width > 0.50:
         tier = "PASS"
         reasons.insert(0, "edge inside the noise")
@@ -387,6 +727,11 @@ def prop_edge(est: Estimate,
         tier = "MODERATE"
     else:
         tier = "COIN-FLIP"
+
+    # Soft flag costs one tier — real uncertainty, but not disqualifying.
+    if est.usage is not None and est.usage.soft_flagged:
+        tier = {"STRONG": "MODERATE", "MODERATE": "COIN-FLIP",
+                "COIN-FLIP": "PASS"}.get(tier, tier)
 
     return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
                 ev_per_dollar=ev, hold=hold, kelly=kelly, tier=tier,
