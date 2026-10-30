@@ -48,6 +48,7 @@ a correction is a new record with `corrects` pointing at the original id.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
@@ -147,6 +148,10 @@ def upload_name() -> str:
             f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl")
 
 
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def upload_payload() -> tuple[str, str] | None:
     """(filename, text) to push to Drive, or None if nothing new was logged.
 
@@ -161,7 +166,62 @@ def upload_payload() -> tuple[str, str] | None:
     """
     if not SESSION.exists() or not SESSION.read_text().strip():
         return None
-    return upload_name(), SESSION.read_text()
+    text = SESSION.read_text()
+    print(f"  checksum {_sha(text)} over {len(text)} chars — after uploading, "
+          f"download the file and run verify_uploaded() on what comes back.")
+    return upload_name(), text
+
+
+def verify_uploaded(downloaded: str) -> bool:
+    """Does what landed in Drive match what was meant to go there?
+
+    Call after create_file: download the file back and pass its text. Returns
+    True on an exact match, and prints what differs otherwise.
+
+    This exists because the upload path is not byte-safe and cannot be made
+    so. The content has to travel through a tool call as text, so it is
+    retyped, and a 50-bet payload is thousands of characters of JSON. One
+    observed case: the local file holds an em dash as the six-character escape
+    `\u2014` (json.dumps is ASCII-only by design) and what reached Drive was
+    the raw three-byte character — JSON-equivalent by luck, but proof the
+    bytes are not preserved. The fix is not to transcribe more carefully; it
+    is to make corruption DETECTABLE. A mismatch means re-upload, not shrug.
+    """
+    want = SESSION.read_text() if SESSION.exists() else None
+    if want is None:
+        # Already renamed by mark_uploaded — compare against that file.
+        cands = sorted(LOG_DIR.glob(f"{DRIVE_PREFIX}*.jsonl"))
+        if not cands:
+            print("  nothing local to verify against")
+            return False
+        want = cands[-1].read_text()
+    if downloaded == want:
+        print(f"  verified: {_sha(want)} — byte-identical, {len(want)} chars")
+        return True
+
+    print(f"  MISMATCH. local {_sha(want)} ({len(want)} chars) vs "
+          f"downloaded {_sha(downloaded)} ({len(downloaded)} chars)")
+    lw, ld = want.splitlines(), downloaded.splitlines()
+    if len(lw) != len(ld):
+        print(f"  line count differs: {len(lw)} local vs {len(ld)} downloaded")
+    for i, (a, b) in enumerate(zip(lw, ld), 1):
+        if a != b:
+            j = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]),
+                     min(len(a), len(b)))
+            print(f"  first difference on line {i} at char {j}:")
+            print(f"    local      ...{a[max(0,j-25):j+25]!r}")
+            print(f"    downloaded ...{b[max(0,j-25):j+25]!r}")
+            break
+    # Both sides may still parse to the same records — that is luck, not
+    # safety, and it is worth knowing which case this is.
+    try:
+        same = ([json.loads(x) for x in lw if x.strip()]
+                == [json.loads(x) for x in ld if x.strip()])
+        print(f"  parsed records identical: {same}"
+              + ("  (equivalent by luck — re-upload anyway)" if same else ""))
+    except json.JSONDecodeError as e:
+        print(f"  downloaded copy does not parse: {e}")
+    return False
 
 
 def mark_uploaded(name: str) -> None:

@@ -829,7 +829,30 @@ def prop_edge(est: Estimate,
     fair_p = fair_over if side == "OVER" else 1 - fair_over
     edge = abs(edge_over)
 
-    odds = over_odds if side == "OVER" else (under_odds if under_odds is not None else over_odds)
+    # The UNDER must be priced at the UNDER's price. Falling back to
+    # `over_odds` here produced a number for a bet nobody can place, and it
+    # flattered: on a +275/-350 market, pricing the UNDER at +275 reported
+    # EV +217%/$ and Kelly 0.79 where the real figures were +8.7% and 0.31 —
+    # inflated ~25x, with a stake recommendation attached.
+    #
+    # This is reachable from the documented workflow, which is what makes it
+    # dangerous: screen_quotes() flags a one-sided market and says to price it
+    # against an external fair line, and doing exactly that landed here. A
+    # one-sided market means only ONE side is purchasable, so if the model
+    # prefers the side nobody is quoting, the answer is that there is no bet —
+    # not a number computed against the wrong price.
+    if side == "UNDER" and under_odds is None:
+        raise ValueError(
+            f"the model prefers the UNDER ({1 - fair_over:.1%} fair, model "
+            f"{1 - est.blended:.1%}) but no under_odds was supplied, so the "
+            f"UNDER has no price to compute against. This is usually a "
+            f"one-sided market (anytime-TD at DraftKings/FanDuel is YES-only) "
+            f"where the UNDER is not purchasable at all — there is no bet "
+            f"here. Evaluate only the side the book actually quotes, or pass "
+            f"under_odds if you have it. Refusing rather than pricing the "
+            f"UNDER at the OVER's price, which overstated EV ~25x.")
+
+    odds = over_odds if side == "OVER" else under_odds
     dec = american_to_decimal(odds)
     ev = model_p * (dec - 1) - (1 - model_p)
     kelly = max(0.0, (model_p * (dec - 1) - (1 - model_p)) / (dec - 1))

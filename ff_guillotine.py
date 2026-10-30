@@ -94,6 +94,11 @@ MIN_GAMES = 3
 # Measured over 43,228 same-game player pairs, 2025-26, each player z-scored
 # against his own season baseline. Only these three are distinguishable from
 # zero; everything else (including same-team WR pairs) came in at ~0.00.
+# Extra spread applied to a player projected from a PRIOR season, on top of
+# any caller-supplied inflation. Last season's level is the only evidence
+# available, so the mean is kept and the uncertainty widened instead.
+STALE_VARIANCE_INFLATION = 1.35
+
 SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 
@@ -146,6 +151,21 @@ def players_on_bye(week: int,
     """
     if isinstance(byes, dict):
         off = {t for t, w in byes.items() if w == week}
+        if not off and byes:
+            # The silent-empty case this function exists to prevent. A derived
+            # byes map only knows weeks already played, so asking it about an
+            # upcoming week returns nothing and reads as "nobody is on bye".
+            known = sorted(set(byes.values()))
+            raise ValueError(
+                f"no team has a bye in Week {week} according to this byes map, "
+                f"which covers Weeks {known}. If Week {week} is UPCOMING, a "
+                f"derived map cannot know its byes — team_byes() reads only "
+                f"completed games. Get them from the connector instead: "
+                f"get_schedule_and_strength(team_codes=[...]) -> "
+                f"schedules[].bye_week, or pass the team codes directly as a "
+                f"set: players_on_bye({week}, meta, {{'PIT', 'TEN'}}). "
+                f"Returning an empty set here would have read as 'nobody is "
+                f"on bye' and projected every bye player at his average.")
     else:
         off = set(byes)
     return {p for p, (team, _) in meta.items() if team in off}
@@ -270,8 +290,13 @@ def _canon(pool: dict[str, np.ndarray]) -> dict[str, str]:
 
 
 def unresolved(rosters: list[dict], pool: dict[str, np.ndarray]) -> dict[str, list[str]]:
-    """Every roster name that cannot be matched, by team. These must be
-    SURFACED, never silently defaulted."""
+    """Every roster name with no data ANYWHERE in the pool, by team. These
+    must be SURFACED, never silently defaulted.
+
+    A name here means the pool has nothing for this player in any season
+    loaded. For a player who has prior-season data but none this season, see
+    `stale_names()` — that is a different problem with a different answer.
+    """
     out: dict[str, list[str]] = {}
     for t in rosters:
         miss = [p for pos in t.get("roster", {}) for p in t["roster"][pos]
@@ -281,20 +306,89 @@ def unresolved(rosters: list[dict], pool: dict[str, np.ndarray]) -> dict[str, li
     return out
 
 
-def build_pool(weekly: pd.DataFrame, lg: League) -> dict[str, np.ndarray]:
-    """Score every player's game log under the league's real rules and return
-    {player_name: array of weekly scores}. That array IS the distribution —
-    bootstrapping from it preserves the real shape, including bust games, which
-    a fitted normal would smooth away. Bust games are the whole subject here.
+def stale_names(rosters: list[dict], pool: Pool) -> dict[str, list[str]]:
+    """Roster names projected from a PRIOR season, by team.
+
+    These resolve and are simulated, but their distribution describes a role
+    they may no longer have — a player returning from a full season out is
+    the likeliest case. Report them so the number can be discounted by hand.
     """
-    df = weekly[weekly.season_type == "REG"].copy() if "season_type" in weekly.columns \
-        else weekly.copy()
-    df["_pts"] = score(df, lg)
-    pool: dict[str, np.ndarray] = {}
-    for name, g in df.groupby("player_display_name"):
-        v = g["_pts"].values.astype(float)
-        if len(v):
+    stale = getattr(pool, "stale", set())
+    if not stale:
+        return {}
+    out: dict[str, list[str]] = {}
+    for t in rosters:
+        hits = []
+        for pos in t.get("roster", {}):
+            for p in t["roster"][pos]:
+                r = resolve(p, pool)
+                if r is not None and r in stale:
+                    hits.append(p)
+        if hits:
+            out[t.get("team_name", t.get("team_id", "?"))] = hits
+    return out
+
+
+class Pool(dict):
+    """{player_name: array of weekly scores}, plus which entries are stale.
+
+    A plain dict everywhere it is used; `.stale` names the players whose
+    distribution came from a PRIOR season because they have no games in the
+    current one.
+    """
+    stale: set[str]
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.stale = set()
+
+
+def build_pool(weekly: pd.DataFrame, lg: League,
+               season: int | None = None) -> Pool:
+    """Score every player's game log under the league's real rules.
+
+    The returned array IS the distribution — bootstrapping from it preserves
+    the real shape, including bust games, which a fitted normal would smooth
+    away. Bust games are the whole subject here.
+
+    PRIOR-SEASON FALLBACK. Pass a multi-season frame and `season` to get it.
+    A player with no games this season but games last season is NOT an
+    unknown name — he is a player returning from a full-season absence (IR,
+    suspension, a year out of the league), and he is exactly the player a
+    lineup decision turns on. Zach Charbonnet had 0 rows in 2026 and 17 in
+    2025 and was being reported alongside De'Zhaun Stribling, who has 0 rows
+    in both: two completely different situations with completely different
+    answers.
+
+    Leaving him out is not the safe default. In a survival simulation,
+    understating an OPPONENT makes that opponent likelier to post the low
+    score, which makes your own elimination risk look SMALLER than it is.
+    Falling back to prior-season form, with the variance inflation `run()`
+    applies to stale names, errs in the conservative direction instead.
+    """
+    def _scored(df: pd.DataFrame) -> dict[str, np.ndarray]:
+        df = df[df.season_type == "REG"].copy() if "season_type" in df.columns \
+            else df.copy()
+        if df.empty:
+            return {}
+        df["_pts"] = score(df, lg)
+        out = {}
+        for name, g in df.groupby("player_display_name"):
+            v = g["_pts"].values.astype(float)
+            if len(v):
+                out[name] = v
+        return out
+
+    if season is None or "season" not in weekly.columns:
+        pool = Pool(_scored(weekly))
+        return pool
+
+    pool = Pool(_scored(weekly[weekly.season == season]))
+    prior = _scored(weekly[weekly.season < season])
+    for name, v in prior.items():
+        if name not in pool:
             pool[name] = v
+            pool.stale.add(name)
     return pool
 
 
@@ -314,9 +408,16 @@ def _draw(pool: dict[str, np.ndarray], name: str, n: int,
         return np.clip(RNG.normal(v.mean(), max(v.std(ddof=0), 4.0) * 1.5, n), 0, None)
 
     out = RNG.choice(v, n, replace=True)
-    if variance_inflation != 1.0:
+    # A prior-season distribution describes a role the player may no longer
+    # hold, so widen it on top of any caller-supplied inflation. The mean is
+    # kept: last season's level is the only evidence there is, and shifting it
+    # by guess would be worse than widening it.
+    infl = variance_inflation
+    if k in getattr(pool, "stale", ()):
+        infl *= STALE_VARIANCE_INFLATION
+    if infl != 1.0:
         m = out.mean()
-        out = m + (out - m) * variance_inflation
+        out = m + (out - m) * infl
     return np.clip(out, 0, None)
 
 
@@ -425,10 +526,12 @@ class Result:
     opp_min_mean: float
     opp_scores_mean: dict[str, float]
     variance_inflation: float
+    week: int | None = None
     flagged: list[str] = field(default_factory=list)
     unresolved_names: dict[str, list[str]] = field(default_factory=dict)
     excluded: list[str] = field(default_factory=list)
     short_rosters: list[str] = field(default_factory=list)
+    stale_projections: dict[str, list[str]] = field(default_factory=dict)
 
     def _idx_max_ev(self) -> int:
         return int(np.argmax(self.means))
@@ -439,7 +542,16 @@ class Result:
     def report(self, top: int = 5) -> str:
         i_ev, i_sr = self._idx_max_ev(), self._idx_min_risk()
         L = []
-        L.append(f"GUILLOTINE SURVIVAL — {self.my_team}")
+        wk = f" — WEEK {self.week}" if self.week is not None else ""
+        L.append(f"GUILLOTINE SURVIVAL — {self.my_team}{wk}")
+        if self.week is None:
+            # The connector's current_week and the week being simulated are
+            # routinely different: the guillotine's first cut is next week, so
+            # the byes that matter are next week's. Leaving the week unstated
+            # made it impossible to tell, from the output alone, which week's
+            # byes were applied.
+            L.append("  ! week not stated — pass week= so the byes applied "
+                     "can be checked against the week being simulated")
         L.append(f"  {self.n_sims:,} simulations, {len(self.lineups):,} legal lineups")
         L.append(f"  opponents' weekly minimum averages {self.opp_min_mean:.1f} pts")
         if self.variance_inflation != 1.0:
@@ -496,6 +608,14 @@ class Result:
             L.append("")
             L.append(f"  excluded as unavailable (bye / out / IR): "
                      f"{', '.join(self.excluded)}")
+        if self.stale_projections:
+            L.append("  ~ PROJECTED FROM LAST SEASON — no games this year, so "
+                     "these describe a role they may no longer have")
+            L.append(f"    (spread widened "
+                     f"{STALE_VARIANCE_INFLATION:.2f}x; level is last "
+                     f"season's, which is the only evidence there is)")
+            for tm, ns in self.stale_projections.items():
+                L.append(f"    {tm}: {', '.join(ns)}")
         if self.unresolved_names:
             L.append("")
             L.append("  ! UNRESOLVED PLAYER NAMES — no stats found, EXCLUDED from")
@@ -518,7 +638,8 @@ def run(teams: list[dict],
         flagged: list[str] | None = None,
         meta: dict[str, tuple[str, str]] | None = None,
         correlate: bool = True,
-        unavailable: set[str] | list[str] | None = None) -> Result:
+        unavailable: set[str] | list[str] | None = None,
+        week: int | None = None) -> Result:
     """Simulate one week and return P(eliminated) for every legal lineup.
 
     `teams` is the list from get_roster(all_teams=True): each entry needs
@@ -529,6 +650,7 @@ def run(teams: list[dict],
     rather than simulation noise.
     """
     unres = unresolved(teams, pool)
+    stale = stale_names(teams, pool)
 
     # Remove unavailable players (bye, Out, IR) from every roster BEFORE
     # lineups are built. Zeroing them is not enough: a zeroed player can still
@@ -598,6 +720,7 @@ def run(teams: list[dict],
     return Result(my_team=me["team_name"], n_sims=n_sims, lineups=lineups,
                   p_last=p_last, means=means, sds=sds,
                   opp_min_mean=float(opp_min.mean()), opp_scores_mean=opp_mean,
-                  variance_inflation=variance_inflation, flagged=flagged or [],
+                  variance_inflation=variance_inflation, week=week,
+                  flagged=flagged or [],
                   unresolved_names=unres, excluded=sorted(out_set),
-                  short_rosters=short)
+                  short_rosters=short, stale_projections=stale)

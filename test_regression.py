@@ -17,7 +17,19 @@ from ff_props import (player_series, threshold_prob, prop_edge, usage_trend,
                       screen_quotes, LONGSHOT_P)
 
 fails = []
+ran = []
 def chk(name, ok, detail=""):
+    """Record one check.
+
+    The suite reports its own count at the end. Do NOT count checks by
+    grepping the source: `def chk(` matches, and a try/except pair puts two
+    chk() lines on a path where only one of them runs — counting lines gave
+    109 for 107 actual checks. Worse, an earlier `grep -c PASS` matched the
+    "ALL PASS" summary line and reported 61 for 60, which sent a test session
+    hunting for a check that never existed. The number the suite prints is
+    the only one to quote.
+    """
+    ran.append(name)
     print(f"  {'PASS' if ok else 'FAIL'}  {name}{'  — ' + detail if detail else ''}")
     if not ok: fails.append(name)
 
@@ -373,6 +385,97 @@ chk("the three completeness guards agree",
 chk("guard is shared, not duplicated",
     ff_data.MIN_TEAMS_COMPLETE_WEEK == 20)
 
+print("\n16. UNDER must be priced at the UNDER's price (F1)")
+# Omitting under_odds used to fall back to over_odds, pricing a bet nobody
+# can place: on +275/-350 it reported EV +217%/$ and Kelly 0.79 where the
+# real figures were +8.7% and 0.31. Flattering, and reachable from the
+# documented workflow — screen_quotes flags a one-sided market and says to
+# pass fair_over, which lands exactly here.
+_u = threshold_prob(player_series(wk[wk.season_type=="REG"],
+                                  "Travis Kelce", "receiving_tds"), 0.5)
+_fair_under = 0.45          # above the model, so UNDER is preferred
+chk("model prefers UNDER in this fixture",
+    prop_edge(_u, 275, -350, fair_over=_fair_under).side == "UNDER")
+try:
+    prop_edge(_u, 275, fair_over=_fair_under)
+    chk("refuses to price UNDER without an under price", False,
+        "silently used over_odds")
+except ValueError as _ex:
+    chk("refuses to price UNDER without an under price",
+        "one-sided" in str(_ex))
+_a = prop_edge(_u, 275, -350, fair_over=_fair_under)
+_b = prop_edge(_u, 275, -257, fair_over=_fair_under)
+chk("EV tracks the under price, as it must",
+    _a.ev_per_dollar != _b.ev_per_dollar,
+    f"-350 -> {_a.ev_per_dollar:+.4f}, -257 -> {_b.ev_per_dollar:+.4f}")
+chk("EV is no longer absurd", abs(_a.ev_per_dollar) < 1.0,
+    f"{_a.ev_per_dollar:+.4f}")
+chk("OVER side unaffected by omitting under_odds",
+    prop_edge(_u, 275, fair_over=0.20).side == "OVER")
+
+print("\n17. prior-season fallback (F6)")
+_wk2 = ff_data.load_weekly([2025, 2026])
+_p26 = ff_guillotine.build_pool(_wk2[_wk2.season == 2026], LEAGUES["guillotine"])
+_pfb = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
+chk("2026-only pool has no stale entries", len(_p26.stale) == 0)
+chk("fallback pool adds prior-season players", len(_pfb) > len(_p26),
+    f"{len(_p26)} -> {len(_pfb)}, {len(_pfb.stale)} stale")
+chk("returning player resolves only with the fallback",
+    ff_guillotine.resolve("Zach Charbonnet", _p26) is None
+    and ff_guillotine.resolve("Zach Charbonnet", _pfb) is not None)
+chk("returning player is marked stale",
+    ff_guillotine.resolve("Zach Charbonnet", _pfb) in _pfb.stale)
+chk("truly-absent player stays unresolved in both",
+    ff_guillotine.resolve("De'Zhaun Stribling", _p26) is None
+    and ff_guillotine.resolve("De'Zhaun Stribling", _pfb) is None)
+_fakeroster = [{"team_id": "9", "team_name": "T",
+                "roster": {"RB": ["Zach Charbonnet"],
+                           "BN": ["De'Zhaun Stribling"]}}]
+chk("stale and unresolved are reported separately",
+    ff_guillotine.stale_names(_fakeroster, _pfb) == {"T": ["Zach Charbonnet"]}
+    and ff_guillotine.unresolved(_fakeroster, _pfb)
+        == {"T": ["De'Zhaun Stribling"]})
+_raw = _pfb["Zach Charbonnet"]
+_drawn = ff_guillotine._draw(_pfb, "Zach Charbonnet", 40000)
+chk("stale draw widens the spread but keeps the level",
+    _drawn.std() > _raw.std(ddof=0) * 1.2
+    and abs(_drawn.mean() - _raw.mean()) < 1.0,
+    f"sd {_raw.std(ddof=0):.1f} -> {_drawn.std():.1f}, "
+    f"mean {_raw.mean():.1f} -> {_drawn.mean():.1f}")
+
+print("\n18. bye/week safety (F5)")
+_meta2 = ff_guillotine.build_meta(_wk2[_wk2.season == 2026])
+chk("team-code form works",
+    len(ff_guillotine.players_on_bye(9, _meta2, {"PIT", "TEN"})) > 50)
+try:
+    ff_guillotine.players_on_bye(
+        9, _meta2, ff_guillotine.team_byes(_wk2[_wk2.season == 2026]))
+    chk("derived map + future week raises instead of returning empty", False,
+        "returned an empty set, which reads as 'nobody is on bye'")
+except ValueError as _ex:
+    chk("derived map + future week raises instead of returning empty",
+        "UPCOMING" in str(_ex))
+chk("derived map + a played week still works",
+    len(ff_guillotine.players_on_bye(
+        5, _meta2, ff_guillotine.team_byes(_wk2[_wk2.season == 2026]))) > 50)
+
+print("\n19. Drive upload is verifiable (F7)")
+_tmp2 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp2)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.log_bet(385, 10, [Leg("A", "player_rush_yds", 50.5, "OVER", -110,
+                                "fd")], "fd", note="em dash \u2014 here")
+_n2, _t2 = ff_betlog.upload_payload()
+chk("exact round trip verifies", ff_betlog.verify_uploaded(_t2))
+# The observed corruption: json.dumps writes \u2014, transcription unescaped it.
+chk("unescaped-unicode corruption is caught",
+    not ff_betlog.verify_uploaded(_t2.replace("\\u2014", "\u2014")))
+chk("a dropped line is caught",
+    not ff_betlog.verify_uploaded("\n".join(_t2.splitlines()[:-1]) + "\n"))
+shutil.rmtree(_tmp2, ignore_errors=True)
+
 print("\n" + ("="*60))
-print(f"{'ALL PASS' if not fails else str(len(fails)) + ' FAILURES: ' + ', '.join(fails)}")
+print(f"{len(ran)} checks run, {len(ran) - len(fails)} passed, "
+      f"{len(fails)} failed")
+print(f"{'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)}")
 raise SystemExit(1 if fails else 0)
