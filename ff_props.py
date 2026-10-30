@@ -656,19 +656,33 @@ class Edge:
     kelly: float
     tier: str
     reasoning: str
+    fair_source: str = "unspecified"
 
 
 def prop_edge(est: Estimate,
               over_odds: float,
-              under_odds: float | None = None) -> Edge:
+              under_odds: float | None = None,
+              fair_over: float | None = None,
+              fair_source: str | None = None) -> Edge:
     """Compare the model against a market price and tier the result.
 
     Tiers follow the convention from Dustin's other copilots — strong /
     moderate / coin-flip / pass — rather than quoting a false-precision number.
     """
-    if under_odds is None:
-        # No two-way price available: fall back to the raw vigged number and
-        # say so. The edge will read better than it is.
+    # PREFERRED: a fair probability from a SHARP source, passed in.
+    # propline_get_event_ev returns exactly this, anchored per line on
+    # Pinnacle / Bovada / Kalshi — pass its value and its `fair_source`.
+    #
+    # Without it, this de-vigs the price you were quoted, which means using a
+    # book as its own reference. That is circular: a recreational book's no-vig
+    # line is not the truth, it is that book's opinion plus its shading. Only
+    # pass over_odds/under_odds alone when they come from a sharp book.
+    if fair_over is not None:
+        hold = (devig(over_odds, under_odds)[2]
+                if under_odds is not None else float("nan"))
+    elif under_odds is None:
+        # No two-way price and no external fair line: fall back to the raw
+        # vigged number. The edge will read better than it is.
         fair_over = american_to_prob(over_odds)
         hold = float("nan")
     else:
@@ -708,7 +722,9 @@ def prop_edge(est: Estimate,
                                f"{u.recent:.1f} ({u.ratio:.0%}). The sample "
                                f"describes a role this player no longer has, so "
                                f"the model is unreliable here whatever the edge "
-                               f"looks like. Check the market's number instead."))
+                               f"looks like. Check the market's number instead."),
+                    fair_source=fair_source or ("de-vigged from the quoted "
+                                                "price — NOT a sharp reference"))
 
     # A game-script flag is softer than a role change: the player's share of
     # his offense held up, and team volume reverts more readily than a
@@ -735,7 +751,9 @@ def prop_edge(est: Estimate,
 
     return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
                 ev_per_dollar=ev, hold=hold, kelly=kelly, tier=tier,
-                reasoning="; ".join(reasons) if reasons else "clean read")
+                reasoning="; ".join(reasons) if reasons else "clean read",
+                fair_source=fair_source or ("de-vigged from the quoted price "
+                                            "— NOT a sharp reference"))
 
 
 # Flat stake sizing, mirroring the convention from the other copilots.
@@ -774,7 +792,8 @@ def edge_report(e: Edge, label: str = "") -> str:
     lines = [
         f"{label}",
         f"  side        : {e.side}",
-        f"  model       : {e.model_p*100:.0f}%   market (de-vigged): {e.fair_p*100:.0f}%",
+        f"  model       : {e.model_p*100:.0f}%   market (fair): {e.fair_p*100:.0f}%",
+        f"  fair from   : {e.fair_source}",
         f"  edge        : {e.edge*100:+.1f} pts    EV {e.ev_per_dollar*100:+.1f}%/$",
     ]
     if not np.isnan(e.hold):
