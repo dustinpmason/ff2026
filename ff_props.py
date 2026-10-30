@@ -40,7 +40,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from ff_data import ensure_deps
+from ff_data import ensure_deps, MIN_TEAMS_COMPLETE_WEEK
 
 # scipy is used for the normal-fit estimate. A fresh sandbox does not have it,
 # and without this the failure lands on the first prop question rather than at
@@ -221,7 +221,7 @@ def bye_weeks(weekly: pd.DataFrame) -> dict[str, int]:
     # has not played yet look like it is on bye — this produced "21 teams on
     # bye in Week 8" when only the TNF game had been recorded.
     per_week = df.groupby("week").team.nunique()
-    complete = set(per_week[per_week >= 20].index)
+    complete = set(per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK].index)
     if not complete:
         return {}
     df = df[df.week.isin(complete)]
@@ -462,10 +462,24 @@ class UsageTrend:
 # ordinary game-to-game noise, a 50% one is a different job.
 COLLAPSE_RATIO = 0.60
 
-# A side priced below this implied probability is a longshot, where the
-# favourite-longshot bias is large enough that proportional de-vigging is the
-# wrong model. ~0.25 is about +300 — the zone anytime-TD and first-scorer
-# markets live in, and the zone boost parlays are built from.
+# RETIRED as a switch, kept as a label. There used to be a threshold here:
+# below 0.25 implied, de-vig with Shin; above it, multiplicative. Measured
+# across the full price range, that was wrong twice over.
+#
+# First, Shin is a strict GENERALIZATION of multiplicative — the two are
+# identical at even money (-110/-110 -> 50.00% both ways) and diverge smoothly
+# from there. There is no region where multiplicative is the better model, so
+# there is nothing for a threshold to protect.
+#
+# Second, the cliff discarded most of the correction where it mattered. The
+# shin-minus-multiplicative gap is already -1.02 pts at +245 and -1.04 at
+# +270, against -1.19 at +400 — nearly full size. Both of those sat on the
+# multiplicative side of a 0.25 gate, and short-priced TD legs are exactly
+# what fills a 3-leg boost at +300. Worse, the gate was discontinuous: 24.9%
+# implied and 25.1% implied got answers 1.3 pts apart.
+#
+# Shin is now the default for every market. `LONGSHOT_P` only labels a price
+# as a longshot in reporting.
 LONGSHOT_P = 0.25
 EXPAND_RATIO = 1.60
 
@@ -682,9 +696,12 @@ def devig(over_odds: float, under_odds: float,
           OVERSTATES a longshot's fair probability. On an anytime-TD leg
           priced +450 that error runs several points in the direction that
           makes a bad bet look good — and TD legs are boost-parlay staples.
-      "auto"          — shin when either side is a longshot, else
-          multiplicative. This is the default because picking by hand is a
-          step that gets skipped.
+      "auto"          — accepted for compatibility; resolves to shin.
+
+    Shin is the DEFAULT for every market, not just longshots. It is identical
+    to multiplicative at even money and strictly better-founded away from it,
+    so there is no price at which multiplicative is preferable. Pass
+    "multiplicative" explicitly only to compare the two.
 
     Shin assumes a fraction z of volume comes from insiders and solves for the
     true probabilities that would produce the observed prices. It needs both
@@ -696,7 +713,7 @@ def devig(over_odds: float, under_odds: float,
     hold = total - 1.0
 
     if method == "auto":
-        method = "shin" if min(po, pu) < LONGSHOT_P else "multiplicative"
+        method = "shin"
     if method == "multiplicative":
         return po / total, pu / total, hold
     if method != "shin":
@@ -750,9 +767,23 @@ def prop_edge(est: Estimate,
               devig_method: str = "auto") -> Edge:
     """Compare the model against a market price and tier the result.
 
+    Raises ValueError on a missing `over_odds`. That used to fall through to
+    `american_to_prob` and die with "'>' not supported between instances of
+    'NoneType' and 'int'" — an error that says nothing about what went wrong,
+    thrown three frames from the cause. Run quotes through `screen_quotes()`
+    first and this never comes up.
+
     Tiers follow the convention from Dustin's other copilots — strong /
     moderate / coin-flip / pass — rather than quoting a false-precision number.
     """
+    if over_odds is None:
+        raise ValueError(
+            "over_odds is None — there is no price to compare against. This "
+            "is usually a one-sided or empty market (Bovada's anytime-TD "
+            "lists one outcome per player with no 'No' side). Run the quotes "
+            "through screen_quotes() first: it drops price-less quotes and "
+            "flags one-sided books that need an external fair line.")
+
     # PREFERRED: a fair probability from a SHARP source, passed in.
     # propline_get_event_ev returns exactly this, anchored per line on
     # Pinnacle / Bovada / Kalshi — pass its value and its `fair_source`.
@@ -767,9 +798,19 @@ def prop_edge(est: Estimate,
                 f"fair_over must be strictly between 0 and 1, got {fair_over}. "
                 f"A fair probability of exactly 0 or 1 implies a certainty and "
                 f"produces an infinite edge.")
-        hold = (devig(over_odds, under_odds, devig_method)[2]
+        # Hold is the raw booksum minus 1 and does not depend on the de-vig
+        # model, so the method passed here is irrelevant to the result. It is
+        # pinned rather than forwarded because on this path devig_method is a
+        # free-text LABEL describing the upstream choice ("shin
+        # (get_event_ev)"), which devig() would rightly reject.
+        hold = (devig(over_odds, under_odds, "multiplicative")[2]
                 if under_odds is not None else float("nan"))
-        used_devig = "n/a (external fair line)"
+        # On this path the de-vig happened UPSTREAM, in whatever produced
+        # `fair_over` — get_event_ev(devig="shin"), say. prop_edge did not
+        # choose it and must not claim to have. Pass the upstream choice as
+        # devig_method so the report says something true.
+        used_devig = (devig_method if devig_method not in ("auto", "")
+                      else "upstream (set by whatever produced fair_over)")
     elif under_odds is None:
         # No two-way price and no external fair line: fall back to the raw
         # vigged number. The edge will read better than it is.
@@ -777,11 +818,7 @@ def prop_edge(est: Estimate,
         hold = float("nan")
         used_devig = "none (one-sided price, still vigged)"
     else:
-        m = devig_method
-        if m == "auto":
-            m = ("shin" if min(american_to_prob(over_odds),
-                               american_to_prob(under_odds)) < LONGSHOT_P
-                 else "multiplicative")
+        m = "shin" if devig_method == "auto" else devig_method
         fair_over, _, hold = devig(over_odds, under_odds, m)
         used_devig = m
 
@@ -881,8 +918,124 @@ def prop_edge(est: Estimate,
                                             "— NOT a sharp reference"))
 
 
-# Flat stake sizing, mirroring the convention from the other copilots.
+# Flat stake sizing, mirroring the convention from the other copilots. Applies
+# to STANDALONE props only — a boost slip is a fixed $10 by rule, so stake
+# sizing is not a decision there. See boost_verdict() below.
 STAKES = {"STRONG": 13, "MODERATE": 10, "COIN-FLIP": 5, "PASS": 0}
+
+
+# ---------------------------------------------------------------------------
+# P1 — what the model is FOR, in a boost slip
+#
+# The tiers above read like bet selection with stake sizing, and the number
+# they are built on is called "edge". In the boost use case both framings are
+# wrong, in a way that mis-signals every week:
+#
+#   1. The model is NOT a sharp reference. "Edge" means a gap against a price
+#      believed to be fair. This model's gap is against a de-vigged book line
+#      or a Kalshi anchor, computed from a handful of games with confidence
+#      intervals routinely 40-70 points wide. Calling that an edge invites
+#      betting ON it. Measured: the model is 0-for-2 when it disagreed with a
+#      sharp line (Waller, Lloyd) — and both were role changes, which is the
+#      one thing it genuinely sees.
+#
+#   2. The boost objective is not edge, it is CASHING. A boost needs >= 3 legs
+#      at >= +300 for a fixed $10. The legs are largely chosen by what the
+#      boost covers and what the books offer. The model's job is to VETO the
+#      legs that are quietly broken — the player whose role collapsed, the
+#      market three books just suspended — not to rank the rest.
+#
+# So in a boost context the output is an inclusion verdict, not a bet rating,
+# and the gap is reported as a gap, never as an edge.
+# ---------------------------------------------------------------------------
+
+BOOST_VERDICTS = {
+    "VETO":    "Do not include. Something is wrong with this leg.",
+    "CAUTION": "Include only if you need the leg count. Known weakness.",
+    "CLEAR":   "Nothing against it. Not an endorsement — just no veto.",
+}
+
+
+def boost_verdict(est: Estimate, edge: Edge | None = None,
+                  screen: QuoteScreen | None = None) -> tuple[str, list[str]]:
+    """Should this leg go on a boost slip? Returns (verdict, reasons).
+
+    This is a VETO function. A CLEAR verdict means nothing was found against
+    the leg, which is not the same as a recommendation — with intervals this
+    wide the model cannot endorse a leg, only reject one.
+
+    Vetoes, in order of how much they are trusted:
+      - a multi-book suspension (probable scratch) — the strongest signal here
+      - a role change running against the side being bet
+      - no usable price, or a sample too thin to say anything
+    """
+    reasons: list[str] = []
+    verdict = "CLEAR"
+
+    def veto(why: str):
+        nonlocal verdict
+        verdict = "VETO"
+        reasons.append(why)
+
+    def caution(why: str):
+        nonlocal verdict
+        if verdict != "VETO":
+            verdict = "CAUTION"
+        reasons.append(why)
+
+    if screen is not None:
+        if screen.scratch_risk:
+            veto(f"PROBABLE SCRATCH — suspended at "
+                 f"{len(screen.suspended_books)} books "
+                 f"({', '.join(screen.suspended_books)}). The books know "
+                 f"something the wire has not printed.")
+        if not screen.usable:
+            veto("no usable price at any book")
+        if screen.one_sided:
+            caution(f"one-sided market at {', '.join(screen.one_sided)} — "
+                    f"cannot be de-vigged, needs an external fair line")
+
+    if est.role_changed:
+        u = est.usage
+        side = edge.side if edge is not None else "this side"
+        veto(f"ROLE CHANGE — {u.column} {u.baseline:.1f} -> {u.recent:.1f} "
+             f"(share {u.share_ratio:.0%}). The sample describes a role this "
+             f"player no longer has, and it runs against {side}.")
+    elif est.usage is not None and est.usage.soft_flagged:
+        u = est.usage
+        caution(f"team volume at {u.team_volume_ratio:.0%} but share held at "
+                f"{u.share_ratio:.0%} — game script, not role loss")
+
+    if est.sample_verdict == "THIN":
+        caution(f"only {est.n} games")
+    if est.ci_width > 0.50:
+        caution(f"interval spans {est.ci_width*100:.0f} points — the model "
+                f"has no real opinion here")
+
+    return verdict, reasons
+
+
+def boost_leg_report(est: Estimate, edge: Edge, label: str = "",
+                     screen: QuoteScreen | None = None) -> str:
+    """Report a leg for a boost slip: inclusion verdict, no stake, no "edge"."""
+    verdict, reasons = boost_verdict(est, edge, screen)
+    gap = (edge.model_p - edge.fair_p) * 100.0   # in points, not a fraction
+    L = [label or f"{est.stat} {edge.side} {est.line:g}"]
+    L.append(f"  VERDICT     : {verdict} — {BOOST_VERDICTS[verdict]}")
+    L.append(f"  market fair : {edge.fair_p:.1%}  ({edge.fair_source})")
+    # Deliberately "gap", not "edge": see the comment block above.
+    L.append(f"  model says  : {edge.model_p:.1%}  "
+             f"(gap {gap:+.1f} pts — NOT an edge; this model is not a sharp "
+             f"reference)")
+    L.append(f"  sample      : {est.n} games, interval "
+             f"{est.ci_low*100:.0f}-{est.ci_high*100:.0f}%")
+    L.append(f"  de-vig      : {edge.devig_method}")
+    if reasons:
+        for r in reasons:
+            L.append(f"  - {r}")
+    else:
+        L.append("  - nothing found against this leg")
+    return "\n".join(L)
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1107,37 @@ LIVE_MAX_AGE_S = 120       # pass as max_age on in-play pulls
 PREGAME_MAX_AGE_S = 900    # pregame prices move slower; 15 min is tolerable
 
 
+PRICE_KEYS_OVER = ("over", "over_odds", "price_over", "odds_over",
+                   "over_price", "yes", "yes_odds", "price", "odds",
+                   "american", "american_odds")
+PRICE_KEYS_UNDER = ("under", "under_odds", "price_under", "odds_under",
+                    "under_price", "no", "no_odds")
+
+
+def _prices(q: dict) -> tuple[float | None, float | None]:
+    """Pull (over, under) American prices out of a book quote.
+
+    PropLine's field naming varies by market and book, so this checks the
+    known spellings rather than assuming one. Returns None for a side that
+    carries no price — which is the normal case on one-sided markets like
+    anytime-TD at books that list one outcome per player.
+    """
+    def pick(keys):
+        for k in keys:
+            v = q.get(k)
+            if isinstance(v, dict):          # {"odds": -110, ...}
+                v = v.get("odds", v.get("price", v.get("american")))
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                try:
+                    return float(v.replace("+", ""))
+                except ValueError:
+                    continue
+        return None
+    return pick(PRICE_KEYS_OVER), pick(PRICE_KEYS_UNDER)
+
+
 @dataclass
 class QuoteScreen:
     """What survived the screen, and why the rest did not."""
@@ -961,6 +1145,7 @@ class QuoteScreen:
     dropped: list[tuple[str, str]] = field(default_factory=list)   # (book, reason)
     scratch_risk: bool = False
     suspended_books: list[str] = field(default_factory=list)
+    one_sided: list[str] = field(default_factory=list)
 
     def describe(self) -> str:
         L = [f"{len(self.usable)} usable quote(s)"]
@@ -970,6 +1155,11 @@ class QuoteScreen:
                      f"{', '.join(self.suspended_books)}")
             L.append("     Do not bet this leg. Check the injury report — the "
                      "books know something the wire has not printed yet.")
+        if self.one_sided:
+            L.append(f"  one-sided (cannot be de-vigged): "
+                     f"{', '.join(self.one_sided)}")
+            L.append("     Price these only against an external fair line — "
+                     "pass fair_over from get_event_ev.")
         for book, why in self.dropped:
             L.append(f"  dropped {book}: {why}")
         return "\n".join(L)
@@ -1029,6 +1219,21 @@ def screen_quotes(quotes: list[dict],
             out.dropped.append((book, f"stale: {age/60:.1f} min old "
                                       f"(limit {max_age_s/60:.1f} min)"))
             continue
+
+        # A quote with no price is the deadest quote there is, and letting one
+        # through defeated the entire point of this screen. Bovada's anytime-TD
+        # market is one-sided — 31 outcomes, one per player, no "No" side — so
+        # it arrived with over=None, under=None, passed as usable, and then
+        # killed prop_edge with a TypeError inside american_to_prob.
+        over, under = _prices(q)
+        if over is None and under is None:
+            out.dropped.append((book, "no price in the quote — nothing to "
+                                      "price off"))
+            continue
+        if under is None:
+            # Usable, but say so: a one-sided market cannot be de-vigged, so
+            # anything priced off it needs an external fair line.
+            out.one_sided.append(book)
 
         out.usable.append(q)
 

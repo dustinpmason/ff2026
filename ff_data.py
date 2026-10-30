@@ -193,6 +193,13 @@ def refresh_all(years: list[int] | None = None, force: bool = True) -> None:
     print(data_status())
 
 
+# A week counts as complete when at least this many teams recorded a game.
+# A full slate is 28-32 teams (32 minus byes); a Thursday-only partial week is
+# 2. Shared by data_status(), bye_weeks() and team_byes() so the three cannot
+# disagree about which weeks are real.
+MIN_TEAMS_COMPLETE_WEEK = 20
+
+
 def data_status(year: int = CURRENT_SEASON) -> str:
     """How current is the data? Report the latest completed week on file.
 
@@ -208,7 +215,8 @@ def data_status(year: int = CURRENT_SEASON) -> str:
         return f"No weekly data cached for {year}. Run refresh_all()."
 
     try:
-        wk = pd.read_parquet(path, columns=["season", "week", "season_type"])
+        wk = pd.read_parquet(path,
+                             columns=["season", "week", "season_type", "team"])
     except ImportError as e:
         return (f"Data for {year} IS cached at {path} but cannot be read: {e}. "
                 f"This is a missing parquet engine, NOT missing data — "
@@ -221,11 +229,36 @@ def data_status(year: int = CURRENT_SEASON) -> str:
     if reg.empty:
         return f"{year}: no regular-season rows yet."
 
-    last = int(reg.week.max())
+    # A week is COMPLETE only when most of the league has played it. Taking
+    # week.max() called a week complete the moment Thursday night's box score
+    # landed: Week 8 held 73 rows from 2 teams and the header claimed the
+    # season was complete through Week 8, mislabeling every number built on
+    # data that actually ran through Week 7.
+    #
+    # `bye_weeks()` and `team_byes()` already guard on this. The header line
+    # did not, which is the worst place to miss it — it is the one claim that
+    # travels with every other number.
+    per_week = reg.groupby("week").team.nunique()
+    complete = per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK]
+    partial = per_week[per_week < MIN_TEAMS_COMPLETE_WEEK]
+
     pulled = time.strftime("%Y-%m-%d %H:%M",
                            time.localtime(_dest("weekly", year).stat().st_mtime))
-    return (f"DATA AS OF: {year} regular season complete through Week {last}. "
-            f"Files pulled {pulled}. Weeks after {last} are not in this data.")
+    if complete.empty:
+        return (f"DATA AS OF: {year} has NO complete regular-season week yet "
+                f"({len(reg):,} rows across {reg.team.nunique()} teams). "
+                f"Files pulled {pulled}.")
+
+    last = int(complete.index.max())
+    out = [f"DATA AS OF: {year} regular season complete through Week {last}."]
+    extra = partial[partial.index > last]
+    if not extra.empty:
+        bits = ", ".join(f"Week {int(w)} ({int(n)} teams)"
+                         for w, n in extra.items())
+        out.append(f"IN PROGRESS, do not treat as complete: {bits}.")
+    out.append(f"Files pulled {pulled}. Weeks after {last} are not complete "
+               f"in this data.")
+    return " ".join(out)
 
 
 if __name__ == "__main__":

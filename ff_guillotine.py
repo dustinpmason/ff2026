@@ -77,6 +77,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from ff_data import MIN_TEAMS_COMPLETE_WEEK
 from ff_scoring import League, score
 
 RNG = np.random.default_rng(20261029)
@@ -107,7 +108,7 @@ def team_byes(weekly: pd.DataFrame) -> dict[str, int]:
     # has not played yet look like it is on bye — this produced "21 teams on
     # bye in Week 8" when only the TNF game had been recorded.
     per_week = df.groupby("week").team.nunique()
-    complete = set(per_week[per_week >= 20].index)
+    complete = set(per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK].index)
     if not complete:
         return {}
     df = df[df.week.isin(complete)]

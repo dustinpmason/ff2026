@@ -63,13 +63,61 @@ for bad in (0.0, 1.0, 1.5, -0.1):
 
 print("\n7. props — usage trend verdicts")
 sh = add_shares(wk[wk.season_type=="REG"])
-seen = set()
-for p in ["Jaxon Smith-Njigba","Rhamondre Stevenson","Tony Pollard","Rashee Rice","Travis Kelce"]:
-    try:
-        t = role_trend(sh, p)
-        seen.add(t.verdict); print(f"       {p:24s} {t.verdict}")
-    except Exception as ex: print(f"       {p:24s} ERR {ex}")
-chk("verdicts produced", len(seen) >= 1, "/".join(sorted(seen)))
+# The previous check here was close to unfalsifiable: it passed if ANY one of
+# five players returned ANY verdict, UNKNOWN included. One run had Rashee Rice
+# come back UNKNOWN and it still passed — it would not have caught a
+# usage-trend regression, which is the only thing it exists to catch.
+#
+# Replaced with synthetic players whose answers are known by construction.
+def _synth(name, pos, team, shares, team_tot=100):
+    rows = []
+    for i, sh_ in enumerate(shares, start=1):
+        rows.append({"player_display_name": name, "position": pos, "team": team,
+                     "season": 2026, "week": i, "season_type": "REG",
+                     "carries": sh_ * team_tot, "targets": 0.0,
+                     "attempts": sh_ * team_tot if pos == "QB" else 0.0})
+    return rows
+
+# Each synthetic team gets a filler player so team totals stay fixed and the
+# subject's SHARE is exactly what we wrote.
+def _frame(specs):
+    rows = []
+    for name, pos, team, shares in specs:
+        rows += _synth(name, pos, team, shares)
+        rows += _synth(f"filler {team}", "RB", team, [1 - x for x in shares])
+    return add_shares(pd.DataFrame(rows))
+
+cases = [
+    ("holds steady",  [0.40]*10,                               "STABLE"),
+    ("share halves",  [0.40]*6 + [0.16]*4,                     "COLLAPSED"),
+    ("share doubles", [0.20]*6 + [0.40]*4,                     "EXPANDED"),
+]
+for label, shares, want in cases:
+    f = _frame([("Subject", "RB", "AAA", shares)])
+    got = role_trend(f, "Subject").verdict
+    chk(f"role_trend: {label} -> {want}", got == want, f"got {got}")
+
+# GAME_SCRIPT: share holds but raw volume falls, i.e. the team ran fewer plays.
+rows = _synth("GS", "RB", "BBB", [0.40]*6, team_tot=100) + \
+       _synth("GS", "RB", "BBB", [0.40]*4, team_tot=40)
+for i, r in enumerate(rows, start=1):
+    r["week"] = i
+rows += [{**r, "player_display_name": "filler BBB"} for r in
+         _synth("x", "RB", "BBB", [0.60]*6, team_tot=100) +
+         _synth("x", "RB", "BBB", [0.60]*4, team_tot=40)]
+for i, r in enumerate([r for r in rows if r["player_display_name"] == "filler BBB"], start=1):
+    r["week"] = i
+gs = role_trend(add_shares(pd.DataFrame(rows)), "GS")
+chk("role_trend: volume falls, share holds -> GAME_SCRIPT",
+    gs.verdict == "GAME_SCRIPT", f"got {gs.verdict} (share ratio "
+    f"{gs.share_ratio:.2f}, count ratio {gs.ratio:.2f})")
+
+# Too little history must say UNKNOWN, not guess.
+chk("role_trend: short sample -> UNKNOWN",
+    role_trend(_frame([("Rookie", "RB", "CCC", [0.3, 0.3])]), "Rookie").verdict
+    == "UNKNOWN")
+chk("role_trend: unknown player -> UNKNOWN",
+    role_trend(sh, "Zzz Notaplayer").verdict == "UNKNOWN")
 
 print("\n8. bye detection (partial-week guard)")
 b = ff_props.bye_weeks(wk)
@@ -104,25 +152,88 @@ chk("shin == mult on a balanced market",
 m450, s450 = devig(450, -600, "multiplicative")[0], devig(450, -600, "shin")[0]
 chk("shin pulls longshots DOWN", s450 < m450, f"{m450:.2%} -> {s450:.2%}")
 chk("shin fair probs sum to 1", abs(sum(devig(450, -600, "shin")[:2]) - 1.0) < 1e-9)
-chk("auto picks shin on a longshot",
-    abs(devig(450, -600, "auto")[0] - s450) < 1e-12)
-chk("auto picks multiplicative near even",
-    abs(devig(-110, -110, "auto")[0] - 0.5) < 1e-9)
+chk("shin is the default for every market",
+    abs(devig(450, -600)[0] - s450) < 1e-12 and
+    abs(devig(-110, -110)[0] - 0.5) < 1e-9)
+chk("'auto' resolves to shin", abs(devig(450, -600, "auto")[0] - s450) < 1e-12)
+# The retired threshold discarded most of the correction where it mattered:
+# short-priced TD legs are what fill a 3-leg boost at +300.
+for _o, _u in [(245, -310), (270, -340)]:
+    _d = devig(_o, _u, "multiplicative")[0] - devig(_o, _u, "shin")[0]
+    chk(f"shin still corrects at {_o:+} (was above the old 0.25 gate)",
+        _d > 0.009, f"{_d:+.2%}")
+# The property that matters is CONTINUITY — the retired threshold made
+# 24.9% and 25.1% implied differ by 1.3 pts, which is the bug. The correction
+# is NOT monotone in price and should not be: it peaks near +300 and must
+# vanish as p -> 0, because a near-impossible outcome has almost no margin to
+# redistribute. An earlier version of this check asserted monotonicity and
+# failed against correct behaviour.
+# Sampled on a FINE, UNIFORM grid in implied probability. Hand-picked
+# American odds are unevenly spaced — the gap from -400 to -250 is 8 points
+# of implied probability — so a large step there measures coarse sampling,
+# not a discontinuity in the function. An earlier version of this check used
+# such a grid and reported a 0.576% "cliff" that was pure sampling artifact.
+def _odds_for(prob, margin=0.045):
+    q = min(0.98, prob * (1 + margin / 2))
+    return 100 * (1 - q) / q if q < 0.5 else -100 * q / (1 - q)
+
+# 5% to 92%. The lower bound is set by this fixture, not by Shin: below ~5%
+# the opposite side exceeds the 0.98 clamp in _odds_for and the CLAMP starts
+# distorting the market, producing 0.23% steps that are an artifact of the
+# test, not of the function. Inside the unclamped range every step is
+# <= 0.011% per half-point, which is as smooth as it gets.
+_ps = [0.05 + 0.005 * i for i in range(175)]
+_grid = []
+for _pp in _ps:
+    _o, _u = _odds_for(_pp), _odds_for(1 - _pp)
+    _grid.append(devig(_o, _u, "shin")[0] - devig(_o, _u, "multiplicative")[0])
+_step = max(abs(a - b) for a, b in zip(_grid, _grid[1:]))
+chk("no cliff: correction varies smoothly with price", _step < 0.001,
+    f"largest step over a 0.5pt move in implied probability {_step:.4%}")
+_even = min(range(len(_ps)), key=lambda i: abs(_ps[i] - 0.5))
+chk("correction is ~zero at even money", abs(_grid[_even]) < 2e-3,
+    f"{_grid[_even]:+.3%} at {_ps[_even]:.1%} implied")
+chk("longshots corrected down, favourites up",
+    _grid[0] < 0 and _grid[-1] > 0,
+    f"{_ps[0]:.0%} -> {_grid[0]:+.2%}, {_ps[-1]:.0%} -> {_grid[-1]:+.2%}")
+# The tail property needs prices beyond the fixture's clamped range, so it
+# uses explicit odds: the correction must SHRINK toward an impossible
+# outcome, because a 2% shot carries almost no margin to redistribute.
+_peak = devig(300, -400, "shin")[0] - devig(300, -400, "multiplicative")[0]
+_tail = devig(2500, -4000, "shin")[0] - devig(2500, -4000, "multiplicative")[0]
+chk("correction vanishes toward the extreme, as Shin requires",
+    abs(_tail) < abs(_peak),
+    f"+300 {_peak:+.2%} vs +2500 {_tail:+.2%}")
 try: devig(-110, -110, "nonsense"); chk("unknown method raises", False)
 except ValueError: chk("unknown method raises", True)
 chk("Edge records which de-vig ran",
     prop_edge(e, 450, -600).devig_method == "shin")
+# On the fair_over path the de-vig happened upstream; prop_edge must not
+# claim to have chosen it, and must report the caller's label when given one.
+chk("external fair line: reports upstream, not a lie",
+    prop_edge(e, 450, -600, fair_over=0.17).devig_method.startswith("upstream"))
+chk("external fair line: echoes the caller's label",
+    prop_edge(e, 450, -600, fair_over=0.17,
+              devig_method="shin (get_event_ev)").devig_method
+    == "shin (get_event_ev)")
+chk("hold is de-vig independent",
+    abs(prop_edge(e, 450, -600).hold
+        - prop_edge(e, 450, -600, fair_over=0.17).hold) < 1e-12)
 
 print("\n12. live-quote screen (P2)")
 import datetime as _dt
 _now = _dt.datetime.now(_dt.timezone.utc).timestamp()
 _iso = lambda s: _dt.datetime.fromtimestamp(_now - s, _dt.timezone.utc).isoformat()
-qs = [{"book": "FanDuel", "last_update": _iso(30)},
-      {"book": "DraftKings", "suspended_at": _iso(60)},
-      {"book": "BetMGM", "suspended_at": _iso(45)},
-      {"book": "Caesars", "suspended_at": _iso(50)},
-      {"book": "Pinnacle", "pregame_only": True, "last_update": _iso(20)},
-      {"book": "ESPNBet", "last_update": _iso(1800)}]
+# Every quote carries a price: the screen now drops price-less quotes, so a
+# fixture without prices would pass the suspension checks for the wrong
+# reason and hide a regression in them.
+_pr = {"over": -115, "under": -105}
+qs = [{"book": "FanDuel", **_pr, "last_update": _iso(30)},
+      {"book": "DraftKings", **_pr, "suspended_at": _iso(60)},
+      {"book": "BetMGM", **_pr, "suspended_at": _iso(45)},
+      {"book": "Caesars", **_pr, "suspended_at": _iso(50)},
+      {"book": "Pinnacle", **_pr, "pregame_only": True, "last_update": _iso(20)},
+      {"book": "ESPNBet", **_pr, "last_update": _iso(1800)}]
 pre = screen_quotes(qs, game_started=False)
 live = screen_quotes(qs, game_started=True)
 chk("suspended books dropped", all(q["book"] != "DraftKings" for q in pre.usable))
@@ -133,6 +244,28 @@ chk("pregame_only dropped in-play", all(q["book"] != "Pinnacle" for q in live.us
 chk("one usable in-play quote", len(live.usable) == 1, f"{[q['book'] for q in live.usable]}")
 chk("no scratch flag under threshold",
     not screen_quotes(qs[:2], game_started=False).scratch_risk)
+# A quote with no price is the deadest quote there is. One slipped through as
+# usable and then killed prop_edge with a TypeError from inside
+# american_to_prob — the exact failure this screen exists to prevent.
+_pq = [{"book": "Bovada", "over": None, "under": None, "last_update": _iso(5)},
+       {"book": "Nothing", "last_update": _iso(5)},
+       {"book": "OneSided", "price": 270, "last_update": _iso(5)},
+       {"book": "TwoSided", "over": -115, "under": -105, "last_update": _iso(5)}]
+_ps = screen_quotes(_pq)
+chk("price-less quotes dropped",
+    {q["book"] for q in _ps.usable} == {"OneSided", "TwoSided"},
+    f"{[q['book'] for q in _ps.usable]}")
+chk("one-sided book flagged, not silently used",
+    _ps.one_sided == ["OneSided"])
+chk("two-sided book not flagged one-sided",
+    "TwoSided" not in _ps.one_sided)
+try: prop_edge(e, None, None); chk("prop_edge rejects a None price", False)
+except ValueError as _ex:
+    chk("prop_edge rejects a None price with a clear error",
+        "screen_quotes" in str(_ex))
+except TypeError:
+    chk("prop_edge rejects a None price with a clear error", False,
+        "still raises TypeError from american_to_prob")
 
 print("\n13. bet log (E2+P6)")
 import shutil, tempfile
@@ -193,6 +326,52 @@ chk("history survives the rename",
     len([r for r in ff_betlog._bets() if r["kind"] == "bet"]) == 1)
 chk("nothing pending after upload", ff_betlog.upload_payload() is None)
 shutil.rmtree(_tmp, ignore_errors=True)
+
+print("\n14. boost verdict framing (P1)")
+from ff_props import boost_verdict, boost_leg_report, BOOST_VERDICTS
+_cleanq = [{"book": "FanDuel", "over": -115, "under": -105,
+            "last_update": _iso(20)}]
+_e2 = threshold_prob(player_series(wk[wk.season_type=="REG"],
+                                   "Jaxon Smith-Njigba", "receiving_yards"), 79.5)
+_ed2 = prop_edge(_e2, -115, -105)
+_v, _r = boost_verdict(_e2, _ed2, screen_quotes(_cleanq))
+chk("returns a known verdict", _v in BOOST_VERDICTS, _v)
+_susp = [{"book": b, "over": -115, "under": -105, "suspended_at": _iso(60)}
+         for b in ("FanDuel", "DraftKings", "BetMGM")]
+_v3, _r3 = boost_verdict(_e2, _ed2, screen_quotes(_susp))
+chk("multi-book suspension VETOes the leg", _v3 == "VETO")
+chk("the scratch reason is named first", "PROBABLE SCRATCH" in _r3[0])
+_rep = boost_leg_report(_e2, _ed2, "test leg", screen_quotes(_cleanq))
+# P1 is precisely about not calling this number an edge.
+chk("report says 'gap', never 'edge'",
+    "gap" in _rep and "edge" not in _rep.lower().replace("not an edge", ""))
+chk("report disclaims the model as a sharp reference",
+    "not a sharp reference" in _rep)
+chk("report carries no stake sizing", "$" not in _rep)
+chk("gap is in points, not a fraction",
+    f"{(_ed2.model_p - _ed2.fair_p) * 100:+.1f} pts" in _rep,
+    f"gap is {(_ed2.model_p - _ed2.fair_p)*100:+.1f} pts")
+
+print("\n15. DATA AS OF completeness guard")
+_st = ff_data.data_status(2026)
+_pw = wk[wk.season_type == "REG"].groupby("week").team.nunique()
+_complete = _pw[_pw >= ff_data.MIN_TEAMS_COMPLETE_WEEK]
+_partial = _pw[_pw < ff_data.MIN_TEAMS_COMPLETE_WEEK]
+chk("reports the last COMPLETE week, not week.max()",
+    f"through Week {int(_complete.index.max())}" in _st,
+    f"complete through {int(_complete.index.max())}, "
+    f"max week in data is {int(_pw.index.max())}")
+if not _partial.empty:
+    chk("names the in-progress week instead of hiding it",
+        "IN PROGRESS" in _st and
+        all(f"Week {int(w)}" in _st for w in _partial.index if w > _complete.index.max()),
+        f"partial: {dict(_partial)}")
+else:
+    chk("no partial week this run — nothing to flag", True)
+chk("the three completeness guards agree",
+    ff_props.bye_weeks(wk) == ff_guillotine.team_byes(wk))
+chk("guard is shared, not duplicated",
+    ff_data.MIN_TEAMS_COMPLETE_WEEK == 20)
 
 print("\n" + ("="*60))
 print(f"{'ALL PASS' if not fails else str(len(fails)) + ' FAILURES: ' + ', '.join(fails)}")
