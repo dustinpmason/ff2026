@@ -35,6 +35,7 @@ Usage
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 import pandas as pd
@@ -79,6 +80,12 @@ def share_column(stat: str) -> str | None:
             "attempts": "_att_share"}.get(opp) if opp else None
 
 
+DERIVED_SHARE_COLS = (
+    "_team_carries", "_team_targets", "_team_attempts", "_team_touches",
+    "_carry_share", "_tgt_share", "_att_share", "_touches", "_touch_share",
+)
+
+
 def add_shares(weekly: pd.DataFrame) -> pd.DataFrame:
     """Attach each player's SHARE of his team's weekly opportunity.
 
@@ -94,6 +101,15 @@ def add_shares(weekly: pd.DataFrame) -> pd.DataFrame:
     df = weekly.copy()
     if "team" not in df.columns or "week" not in df.columns:
         return df
+
+    # Idempotent: drop any columns a previous call added before recomputing.
+    # Without this, a second call merges _team_carries into a frame that
+    # already has it, pandas suffixes both to _x/_y, and the very next line
+    # raises KeyError('_team_carries'). role_trend() and usage_trend() both
+    # call add_shares() internally, so a caller who pre-computed shares — the
+    # natural thing to do when looping over players — hit this every time.
+    df = df.drop(columns=[c for c in DERIVED_SHARE_COLS if c in df.columns])
+
     tot = (df.groupby(["team", "week"])
              .agg(_team_carries=("carries", "sum"),
                   _team_targets=("targets", "sum"),
@@ -199,8 +215,18 @@ def bye_weeks(weekly: pd.DataFrame) -> dict[str, int]:
     that team recorded a game. Avoids needing a schedule feed to tell a bye
     apart from an absence."""
     df = weekly[weekly.season_type == "REG"] if "season_type" in weekly.columns else weekly
+
+    # Only COMPLETE weeks can reveal a bye. A partially-played week (the data
+    # refreshed mid-week, so only Thursday's game is in) makes every team that
+    # has not played yet look like it is on bye — this produced "21 teams on
+    # bye in Week 8" when only the TNF game had been recorded.
+    per_week = df.groupby("week").team.nunique()
+    complete = set(per_week[per_week >= 20].index)
+    if not complete:
+        return {}
+    df = df[df.week.isin(complete)]
+    allw = set(complete)
     out: dict[str, int] = {}
-    allw = set(range(1, int(df.week.max()) + 1))
     for team, g in df.groupby("team"):
         miss = sorted(allw - set(g.week.unique()))
         if len(miss) == 1:
@@ -435,6 +461,12 @@ class UsageTrend:
 # Role-change thresholds. Deliberately wide: a 20-30% swing in targets is
 # ordinary game-to-game noise, a 50% one is a different job.
 COLLAPSE_RATIO = 0.60
+
+# A side priced below this implied probability is a longshot, where the
+# favourite-longshot bias is large enough that proportional de-vigging is the
+# wrong model. ~0.25 is about +300 — the zone anytime-TD and first-scorer
+# markets live in, and the zone boost parlays are built from.
+LONGSHOT_P = 0.25
 EXPAND_RATIO = 1.60
 
 # Share is a cleaner signal than raw count — it already divides out team
@@ -634,15 +666,65 @@ def american_to_decimal(odds: float) -> float:
     return 1 + (odds / 100.0 if odds > 0 else 100.0 / -odds)
 
 
-def devig(over_odds: float, under_odds: float) -> tuple[float, float, float]:
-    """Remove the book's margin from a two-way market by proportional scaling.
+def devig(over_odds: float, under_odds: float,
+          method: str = "auto") -> tuple[float, float, float]:
+    """Remove the book's margin from a two-way market.
 
     Returns (fair P(over), fair P(under), hold). Hold is the book's take —
     anything much above ~5% on a player prop is an expensive market to beat.
+
+    `method`:
+      "multiplicative" — scale both sides proportionally. Correct when the
+          margin is spread evenly, which it roughly is on a 50/50 line.
+      "shin"          — Shin's model, which loads the overround onto the
+          longshot. Books price longshots with a fatter margin (the
+          favourite-longshot bias), so proportional scaling SYSTEMATICALLY
+          OVERSTATES a longshot's fair probability. On an anytime-TD leg
+          priced +450 that error runs several points in the direction that
+          makes a bad bet look good — and TD legs are boost-parlay staples.
+      "auto"          — shin when either side is a longshot, else
+          multiplicative. This is the default because picking by hand is a
+          step that gets skipped.
+
+    Shin assumes a fraction z of volume comes from insiders and solves for the
+    true probabilities that would produce the observed prices. It needs both
+    sides: a one-sided quote carries no information about how the margin is
+    distributed.
     """
     po, pu = american_to_prob(over_odds), american_to_prob(under_odds)
     total = po + pu
-    return po / total, pu / total, total - 1.0
+    hold = total - 1.0
+
+    if method == "auto":
+        method = "shin" if min(po, pu) < LONGSHOT_P else "multiplicative"
+    if method == "multiplicative":
+        return po / total, pu / total, hold
+    if method != "shin":
+        raise ValueError(f"unknown devig method {method!r}; "
+                         f"expected 'multiplicative', 'shin' or 'auto'")
+
+    # Shin: p_i = (sqrt(z^2 + 4(1-z) r_i^2 / B) - z) / (2(1-z)), with z chosen
+    # so the fair probabilities sum to 1. Solved numerically — a closed form
+    # exists for two outcomes but is easy to get subtly wrong, and this is
+    # microseconds either way.
+    r = (po, pu)
+
+    def fair(z: float) -> tuple[float, float]:
+        if z <= 1e-12:
+            return po / total, pu / total
+        return tuple((math.sqrt(z * z + 4.0 * (1.0 - z) * ri * ri / total) - z)
+                     / (2.0 * (1.0 - z)) for ri in r)
+
+    lo, hi = 0.0, min(0.9, max(0.0, hold * 4.0) + 0.5)
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if sum(fair(mid)) > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    fo, fu = fair((lo + hi) / 2.0)
+    s = fo + fu
+    return fo / s, fu / s, hold
 
 
 @dataclass
@@ -657,13 +739,15 @@ class Edge:
     tier: str
     reasoning: str
     fair_source: str = "unspecified"
+    devig_method: str = "unspecified"
 
 
 def prop_edge(est: Estimate,
               over_odds: float,
               under_odds: float | None = None,
               fair_over: float | None = None,
-              fair_source: str | None = None) -> Edge:
+              fair_source: str | None = None,
+              devig_method: str = "auto") -> Edge:
     """Compare the model against a market price and tier the result.
 
     Tiers follow the convention from Dustin's other copilots — strong /
@@ -678,15 +762,28 @@ def prop_edge(est: Estimate,
     # line is not the truth, it is that book's opinion plus its shading. Only
     # pass over_odds/under_odds alone when they come from a sharp book.
     if fair_over is not None:
-        hold = (devig(over_odds, under_odds)[2]
+        if not 0.0 < fair_over < 1.0:
+            raise ValueError(
+                f"fair_over must be strictly between 0 and 1, got {fair_over}. "
+                f"A fair probability of exactly 0 or 1 implies a certainty and "
+                f"produces an infinite edge.")
+        hold = (devig(over_odds, under_odds, devig_method)[2]
                 if under_odds is not None else float("nan"))
+        used_devig = "n/a (external fair line)"
     elif under_odds is None:
         # No two-way price and no external fair line: fall back to the raw
         # vigged number. The edge will read better than it is.
         fair_over = american_to_prob(over_odds)
         hold = float("nan")
+        used_devig = "none (one-sided price, still vigged)"
     else:
-        fair_over, _, hold = devig(over_odds, under_odds)
+        m = devig_method
+        if m == "auto":
+            m = ("shin" if min(american_to_prob(over_odds),
+                               american_to_prob(under_odds)) < LONGSHOT_P
+                 else "multiplicative")
+        fair_over, _, hold = devig(over_odds, under_odds, m)
+        used_devig = m
 
     p = est.blended
     edge_over = p - fair_over
@@ -716,15 +813,37 @@ def prop_edge(est: Estimate,
     # evidence of value — and the bigger the edge, the stronger that evidence.
     if est.role_changed:
         u = est.usage
-        return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
-                    ev_per_dollar=ev, hold=hold, kelly=0.0, tier="PASS",
-                    reasoning=(f"ROLE CHANGE — {u.column} {u.baseline:.1f} -> "
-                               f"{u.recent:.1f} ({u.ratio:.0%}). The sample "
-                               f"describes a role this player no longer has, so "
-                               f"the model is unreliable here whatever the edge "
-                               f"looks like. Check the market's number instead."),
-                    fair_source=fair_source or ("de-vigged from the quoted "
-                                                "price — NOT a sharp reference"))
+        # A role change is DIRECTIONAL evidence, not a blanket disqualifier.
+        # The model is built on the old role, so:
+        #   COLLAPSED + UNDER  -> the model OVERSTATES his output, which means
+        #                         the true under probability is HIGHER than it
+        #                         says. The flag supports the bet.
+        #   COLLAPSED + OVER   -> the model is inflated on the side you'd bet.
+        #                         Refuse.
+        #   EXPANDED  + OVER   -> supported, same logic reversed.
+        #   EXPANDED  + UNDER  -> refuse.
+        # Blanket-blocking both sides was wrong and would have refused a
+        # genuinely attractive under on a player whose targets had halved.
+        supported = ((u.verdict == "COLLAPSED" and side == "UNDER")
+                     or (u.verdict == "EXPANDED" and side == "OVER"))
+        if not supported:
+            return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
+                        ev_per_dollar=ev, hold=hold, kelly=0.0, tier="PASS",
+                        reasoning=(f"ROLE CHANGE AGAINST YOU — {u.column} "
+                                   f"{u.baseline:.1f} -> {u.recent:.1f} "
+                                   f"({u.ratio:.0%}, share {u.share_ratio:.0%}). "
+                                   f"The sample describes a role this player no "
+                                   f"longer has, and the staleness runs in the "
+                                   f"direction of the {side}. Refuse whatever "
+                                   f"the edge looks like."),
+                        fair_source=fair_source or ("de-vigged from the quoted "
+                                                    "price — NOT a sharp reference"),
+                        devig_method=used_devig)
+        reasons.append(f"role change SUPPORTS this side — {u.column} "
+                       f"{u.baseline:.1f} -> {u.recent:.1f} (share "
+                       f"{u.share_ratio:.0%}); the model understates the {side}, "
+                       f"so the true edge is likely larger than shown, but the "
+                       f"magnitude is unreliable")
 
     # A game-script flag is softer than a role change: the player's share of
     # his offense held up, and team volume reverts more readily than a
@@ -744,6 +863,11 @@ def prop_edge(est: Estimate,
     else:
         tier = "COIN-FLIP"
 
+    # A supportive role change still costs a tier: the DIRECTION is informative
+    # but the MAGNITUDE is not, so do not let it license a big stake.
+    if est.role_changed:
+        tier = {"STRONG": "MODERATE", "MODERATE": "COIN-FLIP"}.get(tier, tier)
+
     # Soft flag costs one tier — real uncertainty, but not disqualifying.
     if est.usage is not None and est.usage.soft_flagged:
         tier = {"STRONG": "MODERATE", "MODERATE": "COIN-FLIP",
@@ -752,6 +876,7 @@ def prop_edge(est: Estimate,
     return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
                 ev_per_dollar=ev, hold=hold, kelly=kelly, tier=tier,
                 reasoning="; ".join(reasons) if reasons else "clean read",
+                devig_method=used_devig,
                 fair_source=fair_source or ("de-vigged from the quoted price "
                                             "— NOT a sharp reference"))
 
@@ -798,6 +923,114 @@ def edge_report(e: Edge, label: str = "") -> str:
     ]
     if not np.isnan(e.hold):
         lines.append(f"  book hold   : {e.hold*100:.1f}%")
+    lines.append(f"  de-vig      : {e.devig_method}")
     lines.append(f"  VERDICT     : {e.tier}  ->  ${stake}")
     lines.append(f"  why         : {e.reasoning}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Live-quote hygiene (P2)
+#
+# PropLine returns three fields that carry real information and were being
+# discarded. Each one, left unread, produces a specific Sunday error:
+#
+#   suspended_at   The book pulled that market pregame. Unbettable — and when
+#                  SEVERAL books suspend the same player at once, that is a
+#                  probable scratch. This is injury news arriving before the
+#                  news does, which is the single most valuable signal in the
+#                  feed and we were throwing it away.
+#   pregame_only   Once a game kicks off, a book with no in-play feed keeps
+#                  returning its last pregame quote forever. Nothing is
+#                  stale-flagged, because the book is simply never polled
+#                  again. Presenting that as a live price is just wrong.
+#   max_age        Request parameter that drops quotes a book has not
+#                  refreshed within N seconds. Unset, a 20-minute-old price
+#                  reads as current.
+# ---------------------------------------------------------------------------
+
+SCRATCH_BOOKS = 3          # suspensions across this many books = probable scratch
+LIVE_MAX_AGE_S = 120       # pass as max_age on in-play pulls
+PREGAME_MAX_AGE_S = 900    # pregame prices move slower; 15 min is tolerable
+
+
+@dataclass
+class QuoteScreen:
+    """What survived the screen, and why the rest did not."""
+    usable: list[dict] = field(default_factory=list)
+    dropped: list[tuple[str, str]] = field(default_factory=list)   # (book, reason)
+    scratch_risk: bool = False
+    suspended_books: list[str] = field(default_factory=list)
+
+    def describe(self) -> str:
+        L = [f"{len(self.usable)} usable quote(s)"]
+        if self.scratch_risk:
+            L.append(f"  ** PROBABLE SCRATCH ** suspended at "
+                     f"{len(self.suspended_books)} books: "
+                     f"{', '.join(self.suspended_books)}")
+            L.append("     Do not bet this leg. Check the injury report — the "
+                     "books know something the wire has not printed yet.")
+        for book, why in self.dropped:
+            L.append(f"  dropped {book}: {why}")
+        return "\n".join(L)
+
+
+def screen_quotes(quotes: list[dict],
+                  game_started: bool = False,
+                  max_age_s: float | None = None,
+                  now: float | None = None) -> QuoteScreen:
+    """Drop quotes that are not safe to price off, and surface scratch risk.
+
+    `quotes` are the per-book entries from propline_get_odds — each a dict
+    that may carry `book`/`sportsbook`, `suspended_at`, `pregame_only`,
+    `last_update`/`updated_at`/`timestamp`, and the prices.
+
+    Call this BEFORE prop_edge. An edge computed against a suspended or
+    stale quote is a number about a price nobody will take.
+    """
+    import datetime as _dt
+
+    def _ts(v) -> float | None:
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        try:
+            return _dt.datetime.fromisoformat(
+                str(v).replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return None
+
+    now = now if now is not None else _dt.datetime.now(_dt.timezone.utc).timestamp()
+    if max_age_s is None:
+        max_age_s = LIVE_MAX_AGE_S if game_started else PREGAME_MAX_AGE_S
+
+    out = QuoteScreen()
+    for q in quotes:
+        book = str(q.get("book") or q.get("sportsbook") or q.get("name") or "?")
+
+        if q.get("suspended_at"):
+            out.suspended_books.append(book)
+            out.dropped.append((book, "market suspended by the book"))
+            continue
+
+        if game_started and q.get("pregame_only"):
+            out.dropped.append((book, "pregame_only book, game is live — this "
+                                      "is its last pregame quote, not a price"))
+            continue
+
+        age = None
+        for k in ("last_update", "updated_at", "timestamp", "last_updated"):
+            t = _ts(q.get(k))
+            if t is not None:
+                age = now - t
+                break
+        if age is not None and age > max_age_s:
+            out.dropped.append((book, f"stale: {age/60:.1f} min old "
+                                      f"(limit {max_age_s/60:.1f} min)"))
+            continue
+
+        out.usable.append(q)
+
+    out.scratch_risk = len(out.suspended_books) >= SCRATCH_BOOKS
+    return out
