@@ -429,6 +429,58 @@ def _mean_of(pool: dict[str, np.ndarray], name: str) -> float:
     return float(v.mean()) if v is not None and len(v) else float("nan")
 
 
+REPL_PREFIX = "__replacement_"
+
+
+def replacement_name(pos: str) -> str:
+    return f"{REPL_PREFIX}{pos}__"
+
+
+def add_replacement_level(pool: Pool, meta: dict[str, tuple[str, str]],
+                          n_teams: int = 12) -> Pool:
+    """Add a replacement-level distribution per position to the pool.
+
+    WHY. When byes or injuries leave an opponent short at a position, fielding
+    an incomplete lineup scores that slot as nothing. That understates the
+    opponent, which in a survival simulation makes them likelier to post the
+    low score — so YOUR elimination risk reads lower than it is. The bias runs
+    in the flattering direction, which is the one worth removing.
+
+    A real manager facing an empty slot makes a waiver add. The waiver wire is
+    not in this data, but its LEVEL is knowable: it is roughly the best player
+    at that position nobody has rostered. With `n_teams` teams and the slot
+    counts in SLOTS, the startable population at a position is about
+    n_teams x slots, so replacement is the tier just past that boundary.
+
+    The distribution is the concatenated weekly scores of that tier, not a
+    mean, so a replacement add keeps a realistic spread — including the bust
+    games that matter here.
+    """
+    pos_players: dict[str, list[tuple[float, np.ndarray]]] = {}
+    for name, v in pool.items():
+        if name.startswith(REPL_PREFIX) or len(v) < MIN_GAMES:
+            continue
+        info = meta.get(name)
+        if not info:
+            continue
+        pos = info[1]
+        if pos in ("QB", "RB", "WR", "TE"):
+            pos_players.setdefault(pos, []).append((float(np.mean(v)), v))
+
+    # FLEX is filled from RB/WR/TE, so those positions carry more startable
+    # bodies than their base slot count implies.
+    flex_share = {"RB": 0.4, "WR": 0.4, "TE": 0.2}
+    for pos, rows in pos_players.items():
+        rows.sort(key=lambda r: -r[0])
+        base = SLOTS.get(pos, 1)
+        startable = int(round(n_teams * (base + SLOTS["FLEX"] * flex_share.get(pos, 0.0))))
+        tier = rows[startable:startable + n_teams]
+        if not tier:
+            tier = rows[-n_teams:] or rows
+        pool[replacement_name(pos)] = np.concatenate([v for _, v in tier])
+    return pool
+
+
 def best_lineup(roster: dict[str, list[str]], pool: dict[str, np.ndarray],
                 strict: bool = True) -> list[str]:
     """The highest expected-points lineup. This is what a normal league wants,
@@ -462,7 +514,27 @@ def best_lineup(roster: dict[str, list[str]], pool: dict[str, np.ndarray],
             "weak and the user look safe. Pass strict=False only if that is "
             "genuinely intended.")
 
-    return used + flex_pool[:SLOTS["FLEX"]]
+    out = used + flex_pool[:SLOTS["FLEX"]]
+
+    # Fill what is missing at REPLACEMENT level rather than leaving it empty.
+    # An empty slot scores nothing and understates the team; a waiver add is
+    # what a real manager would do, and its level is knowable even though the
+    # wire itself is not in this data. Only possible when the pool carries
+    # replacement distributions (add_replacement_level); without them the
+    # short lineup is fielded as-is, as before.
+    if not strict:
+        for pos, count in (("QB", SLOTS["QB"]), ("RB", SLOTS["RB"]),
+                           ("WR", SLOTS["WR"]), ("TE", SLOTS["TE"])):
+            have = len([p for p in roster.get(pos, []) if p in out])
+            rn = replacement_name(pos)
+            if have < count and rn in pool:
+                out += [rn] * (count - have)
+        flex_filled = len(flex_pool[:SLOTS["FLEX"]])
+        rn = replacement_name("RB")
+        if flex_filled < SLOTS["FLEX"] and rn in pool:
+            out += [rn] * (SLOTS["FLEX"] - flex_filled)
+
+    return out
 
 
 def enumerate_lineups(roster: dict[str, list[str]],
@@ -639,7 +711,8 @@ def run(teams: list[dict],
         meta: dict[str, tuple[str, str]] | None = None,
         correlate: bool = True,
         unavailable: set[str] | list[str] | None = None,
-        week: int | None = None) -> Result:
+        week: int | None = None,
+        fill_replacement: bool = True) -> Result:
     """Simulate one week and return P(eliminated) for every legal lineup.
 
     `teams` is the list from get_roster(all_teams=True): each entry needs
@@ -651,6 +724,14 @@ def run(teams: list[dict],
     """
     unres = unresolved(teams, pool)
     stale = stale_names(teams, pool)
+
+    # Replacement level, sized to THIS league. A 12-team default would set the
+    # waiver boundary in the wrong place for an 18-team guillotine, where the
+    # wire is far thinner. Added automatically so a short roster is filled at
+    # a realistic level rather than scoring the slot as nothing.
+    if fill_replacement and meta is not None \
+            and replacement_name("RB") not in pool and isinstance(pool, Pool):
+        add_replacement_level(pool, meta, n_teams=len(teams))
 
     # Remove unavailable players (bye, Out, IR) from every roster BEFORE
     # lineups are built. Zeroing them is not enough: a zeroed player can still

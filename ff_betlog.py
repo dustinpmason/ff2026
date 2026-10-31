@@ -48,6 +48,7 @@ a correction is a new record with `corrects` pointing at the original id.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -222,6 +223,58 @@ def verify_uploaded(downloaded: str) -> bool:
     except json.JSONDecodeError as e:
         print(f"  downloaded copy does not parse: {e}")
     return False
+
+
+def upload_payload_b64() -> tuple[str, str, str] | None:
+    """(filename, base64 of the exact bytes, checksum) — PREFER THIS.
+
+    Upload with `base64Content`, not `textContent`:
+
+        create_file(title=<name>, base64Content=<b64>,
+                    contentMimeType="application/json",
+                    disableConversionToGoogleType=True,
+                    parentId=DRIVE_FOLDER_ID)
+
+    Why base64 rather than the text: the text path is not byte-safe and the
+    corruption fired on the very first real payload. `json.dumps` is
+    ASCII-only by design, so an em dash in a note is stored as the six
+    characters `\u2014`; what reached Drive was the raw three-byte character.
+    727 chars local, 722 in Drive, different checksums, and the records
+    happened to parse identically — equivalent by luck, which is the worst
+    kind of pass.
+
+    Base64 removes the failure mode rather than detecting it. The payload
+    becomes pure `[A-Za-z0-9+/=]` with no escape sequences, so there is
+    nothing for an un-escaping step to mangle, and any corruption that does
+    occur breaks the decode or the checksum loudly instead of surviving as
+    valid-looking JSON.
+
+    Still verify afterwards: download, decode, and pass the text to
+    verify_uploaded().
+    """
+    got = upload_payload()
+    if got is None:
+        return None
+    name, text = got
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return name, b64, _sha(text)
+
+
+def decode_downloaded(b64_or_text: str) -> str:
+    """Normalise whatever came back from Drive into the original text.
+
+    download_file_content returns base64; a file uploaded as base64Content
+    round-trips as base64 of the same bytes. Accepts either form so
+    verify_uploaded() can be handed the result directly.
+    """
+    t = b64_or_text.strip()
+    try:
+        decoded = base64.b64decode(t, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return b64_or_text
+    # A JSONL payload starts with '{'. If decoding produced that, the input
+    # really was base64; otherwise it was already the text.
+    return decoded if decoded.lstrip().startswith("{") else b64_or_text
 
 
 def mark_uploaded(name: str) -> None:

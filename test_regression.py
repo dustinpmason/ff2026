@@ -474,6 +474,62 @@ chk("a dropped line is caught",
     not ff_betlog.verify_uploaded("\n".join(_t2.splitlines()[:-1]) + "\n"))
 shutil.rmtree(_tmp2, ignore_errors=True)
 
+print("\n20. replacement-level fill for short rosters (F4/B17)")
+_rl = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
+ff_guillotine.add_replacement_level(_rl, _meta2, n_teams=10)
+for _pos in ("QB", "RB", "WR", "TE"):
+    _rn = ff_guillotine.replacement_name(_pos)
+    chk(f"replacement level exists for {_pos}", _rn in _rl)
+_rbv = _rl[ff_guillotine.replacement_name("RB")]
+chk("replacement is a distribution, not a point estimate",
+    len(_rbv) > 20 and _rbv.std(ddof=0) > 1,
+    f"{len(_rbv)} player-weeks, sd {_rbv.std(ddof=0):.2f}")
+# Replacement must sit BELOW the startable tier, or it is not replacement.
+_starters = [float(np.mean(v)) for n, v in _rl.items()
+             if not n.startswith(ff_guillotine.REPL_PREFIX)
+             and _meta2.get(n, ("", ""))[1] == "RB" and len(v) >= 3]
+_starters.sort(reverse=True)
+chk("replacement RB sits below the startable tier",
+    float(_rbv.mean()) < _starters[9],
+    f"repl {_rbv.mean():.1f} vs RB10 {_starters[9]:.1f}")
+# A short roster must now be filled rather than scoring the slot as nothing.
+_short = {"QB": ["Patrick Mahomes"], "RB": ["Bijan Robinson"],
+          "WR": ["Jaxon Smith-Njigba", "DeVonta Smith"], "TE": ["Travis Kelce"]}
+_L = ff_guillotine.best_lineup(_short, _rl, strict=False)
+chk("short lineup is padded to full size",
+    len(_L) == sum(SLOTS_TOTAL := [v for v in ff_guillotine.SLOTS.values()]),
+    f"{len(_L)} of {sum(ff_guillotine.SLOTS.values())} slots")
+chk("padding uses replacement entries",
+    any(p.startswith(ff_guillotine.REPL_PREFIX) for p in _L))
+try:
+    ff_guillotine.best_lineup(_short, _rl, strict=True)
+    chk("strict=True still refuses a short roster", False)
+except ValueError:
+    chk("strict=True still refuses a short roster", True)
+
+print("\n21. Drive upload via base64 (F1 prevention)")
+_tmp3 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp3)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.log_bet(385, 10, [Leg("A", "player_rush_yds", 50.5, "OVER", -110,
+                                "fd")], "fd",
+                  note="em dash \u2014 caf\u00e9 na\u00efve \u65e5\u672c\u8a9e")
+_nm, _b64, _ck = ff_betlog.upload_payload_b64()
+chk("base64 payload is pure ASCII with no escapes",
+    _b64.isascii() and all(c.isalnum() or c in "+/=" for c in _b64))
+chk("base64 round trip is byte-identical",
+    ff_betlog.verify_uploaded(ff_betlog.decode_downloaded(_b64)))
+chk("checksum matches the text payload", _ck == ff_betlog._sha(
+    ff_betlog.decode_downloaded(_b64)))
+chk("decode_downloaded passes plain text through",
+    ff_betlog.decode_downloaded('{"a": 1}') == '{"a": 1}')
+# The exact corruption observed live: \u2014 escape arriving as a raw em dash.
+# It cannot occur in base64, but a corrupted base64 must still be caught.
+chk("corrupted base64 is caught, not silently accepted",
+    not ff_betlog.verify_uploaded(
+        ff_betlog.decode_downloaded(_b64[:40] + "X" + _b64[41:])))
+shutil.rmtree(_tmp3, ignore_errors=True)
+
 print("\n" + ("="*60))
 print(f"{len(ran)} checks run, {len(ran) - len(fails)} passed, "
       f"{len(fails)} failed")
