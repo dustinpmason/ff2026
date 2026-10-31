@@ -7,7 +7,7 @@ crashed on a second call; the bye check because a partial week made 21 teams
 look like they were off.
 """
 import warnings; warnings.filterwarnings("ignore")
-import json, pathlib
+import atexit, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog
 from ff_data import load_weekly, load_pbp
@@ -18,6 +18,51 @@ from ff_props import (player_series, threshold_prob, prop_edge, usage_trend,
 
 fails = []
 ran = []
+_section = ["(startup)"]
+
+
+def section(title: str) -> None:
+    """Announce a section and remember it, so a crash can name where it died."""
+    _section[0] = title
+    print(f"\n{title}")
+
+
+def _summary() -> None:
+    """ALWAYS print the count, even when the suite dies mid-run.
+
+    The suite used to abort on an uncaught exception and never reach its
+    summary, so the one number sessions are told to quote simply did not
+    exist — and the honest response was "no count this run", which is useless
+    for deciding whether anything regressed. Registered with atexit so it
+    runs on a crash, a sys.exit, or normal completion.
+    """
+    if getattr(_summary, "done", False):
+        return
+    _summary.done = True
+    print("\n" + ("=" * 60))
+    print(f"{len(ran)} checks run, {len(ran) - len(fails)} passed, "
+          f"{len(fails)} failed")
+    if _crashed:
+        print(f"CRASHED in section {_section[0]!r} — sections after it did "
+              f"NOT run, so the count above is partial and anything later is "
+              f"UNVERIFIED.")
+    print(f"{'ALL PASS' if not fails and not _crashed else 'FAILURES: ' + ', '.join(fails) if fails else 'NO CHECK FAILED, but the suite crashed'}")
+
+
+_crashed = False
+
+
+def _on_crash(exc_type, exc, tb) -> None:
+    """Record an uncaught exception as a crash, then print the summary."""
+    global _crashed
+    _crashed = True
+    print()
+    traceback.print_exception(exc_type, exc, tb)
+    _summary()
+
+
+sys.excepthook = _on_crash
+atexit.register(_summary)
 def chk(name, ok, detail=""):
     """Record one check.
 
@@ -36,19 +81,19 @@ def chk(name, ok, detail=""):
 print("1. imports")
 chk("all four modules import", True)
 
-print("\n2. data layer")
+section("2. data layer")
 wk = load_weekly(2026); pbp = load_pbp(2026)
 chk("weekly 2026", len(wk) > 5000, f"{len(wk)} rows, {len(wk.columns)} cols")
 chk("pbp 2026", len(pbp) > 15000, f"{len(pbp)} plays")
 
-print("\n3. scoring engine — all four leagues")
+section("3. scoring engine — all four leagues")
 prep = prepare(wk, pbp)
 for key, lg in LEAGUES.items():
     s = score(prep, lg)
     chk(f"{key}", s.notna().all() and s.std() > 1,
         f"mean {s.mean():.2f} sd {s.std():.2f} max {s.max():.1f}")
 
-print("\n4. explosive-TD join integrity (GSIS id, not name)")
+section("4. explosive-TD join integrity (GSIS id, not name)")
 ex = add_explosive_tds(wk, pbp)
 jl = ex[ex.player_display_name.str.contains("Jordan Love", na=False)]
 jv = ex[ex.player_display_name.str.contains("Julian Love|Jeremiyah Love", na=False)]
@@ -58,13 +103,13 @@ contam = jv[pass_col].sum().sum() if pass_col else 0
 chk("Jordan Love credited", tot > 0, f"{tot:.0f} explosive pass TDs")
 chk("no name contamination", contam == 0, f"Julian/Jeremiyah Love credited {contam:.0f}")
 
-print("\n5. props — threshold + stat resolution")
+section("5. props — threshold + stat resolution")
 log = player_series(wk[wk.season_type=="REG"], "Jaxon Smith-Njigba", "receiving_yards")
 e = threshold_prob(log, 90)
 chk("stat read from attrs not last column", log.attrs.get("stat") == "receiving_yards")
 chk("probability sane", 0 < e.blended < 1, f"P(90+) = {e.blended:.1%}")
 
-print("\n6. props — de-vig and edge")
+section("6. props — de-vig and edge")
 o, u, hold = devig(-110, -110)
 chk("symmetric devig = 50/50", abs(o - 0.5) < 1e-9, f"over {o:.4f} hold {hold:.3%}")
 ed = prop_edge(e, -110, -110)
@@ -73,7 +118,7 @@ for bad in (0.0, 1.0, 1.5, -0.1):
     try: prop_edge(e, -110, -110, fair_over=bad); chk(f"B4 rejects fair_over={bad}", False)
     except ValueError: chk(f"B4 rejects fair_over={bad}", True)
 
-print("\n7. props — usage trend verdicts")
+section("7. props — usage trend verdicts")
 sh = add_shares(wk[wk.season_type=="REG"])
 # The previous check here was close to unfalsifiable: it passed if ANY one of
 # five players returned ANY verdict, UNKNOWN included. One run had Rashee Rice
@@ -131,13 +176,13 @@ chk("role_trend: short sample -> UNKNOWN",
 chk("role_trend: unknown player -> UNKNOWN",
     role_trend(sh, "Zzz Notaplayer").verdict == "UNKNOWN")
 
-print("\n8. bye detection (partial-week guard)")
+section("8. bye detection (partial-week guard)")
 b = ff_props.bye_weeks(wk)
 cnt = pd.Series(list(b.values())).value_counts().sort_index()
 chk("no week has >8 byes", (cnt <= 8).all(), str(dict(cnt)))
 chk("byes found", len(b) >= 10, f"{len(b)} teams")
 
-print("\n9. guillotine — name resolution + B5")
+section("9. guillotine — name resolution + B5")
 pool = ff_guillotine.build_pool(wk, LEAGUES["guillotine"])
 chk("Mahomes resolves", ff_guillotine.resolve("Patrick Mahomes II", pool) is not None)
 chk("garbage does not resolve", ff_guillotine.resolve("Zzz Notaplayer", pool) is None)
@@ -148,7 +193,7 @@ try:
 except ValueError as ex:
     chk("B5 raises on undersized roster", True, str(ex)[:50])
 
-print("\n10. add_shares idempotency (B6)")
+section("10. add_shares idempotency (B6)")
 once = add_shares(wk[wk.season_type == "REG"])
 twice = add_shares(once)
 chk("second call does not raise", True)
@@ -158,7 +203,7 @@ chk("share values unchanged",
 chk("role_trend works on pre-shared frame",
     role_trend(once, "Travis Kelce").verdict != "UNKNOWN")
 
-print("\n11. shin de-vig (P3)")
+section("11. shin de-vig (P3)")
 chk("shin == mult on a balanced market",
     abs(devig(-110, -110, "shin")[0] - devig(-110, -110, "multiplicative")[0]) < 1e-6)
 m450, s450 = devig(450, -600, "multiplicative")[0], devig(450, -600, "shin")[0]
@@ -232,7 +277,7 @@ chk("hold is de-vig independent",
     abs(prop_edge(e, 450, -600).hold
         - prop_edge(e, 450, -600, fair_over=0.17).hold) < 1e-12)
 
-print("\n12. live-quote screen (P2)")
+section("12. live-quote screen (P2)")
 import datetime as _dt
 _now = _dt.datetime.now(_dt.timezone.utc).timestamp()
 _iso = lambda s: _dt.datetime.fromtimestamp(_now - s, _dt.timezone.utc).isoformat()
@@ -279,7 +324,7 @@ except TypeError:
     chk("prop_edge rejects a None price with a clear error", False,
         "still raises TypeError from american_to_prob")
 
-print("\n13. bet log (E2+P6)")
+section("13. bet log (E2+P6)")
 import shutil, tempfile
 _tmp = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp)
@@ -339,7 +384,7 @@ chk("history survives the rename",
 chk("nothing pending after upload", ff_betlog.upload_payload() is None)
 shutil.rmtree(_tmp, ignore_errors=True)
 
-print("\n14. boost verdict framing (P1)")
+section("14. boost verdict framing (P1)")
 from ff_props import boost_verdict, boost_leg_report, BOOST_VERDICTS
 _cleanq = [{"book": "FanDuel", "over": -115, "under": -105,
             "last_update": _iso(20)}]
@@ -364,7 +409,7 @@ chk("gap is in points, not a fraction",
     f"{(_ed2.model_p - _ed2.fair_p) * 100:+.1f} pts" in _rep,
     f"gap is {(_ed2.model_p - _ed2.fair_p)*100:+.1f} pts")
 
-print("\n15. DATA AS OF completeness guard")
+section("15. DATA AS OF completeness guard")
 _st = ff_data.data_status(2026)
 _pw = wk[wk.season_type == "REG"].groupby("week").team.nunique()
 _complete = _pw[_pw >= ff_data.MIN_TEAMS_COMPLETE_WEEK]
@@ -385,7 +430,7 @@ chk("the three completeness guards agree",
 chk("guard is shared, not duplicated",
     ff_data.MIN_TEAMS_COMPLETE_WEEK == 20)
 
-print("\n16. UNDER must be priced at the UNDER's price (F1)")
+section("16. UNDER must be priced at the UNDER's price (F1)")
 # Omitting under_odds used to fall back to over_odds, pricing a bet nobody
 # can place: on +275/-350 it reported EV +217%/$ and Kelly 0.79 where the
 # real figures were +8.7% and 0.31. Flattering, and reachable from the
@@ -413,7 +458,7 @@ chk("EV is no longer absurd", abs(_a.ev_per_dollar) < 1.0,
 chk("OVER side unaffected by omitting under_odds",
     prop_edge(_u, 275, fair_over=0.20).side == "OVER")
 
-print("\n17. prior-season fallback (F6)")
+section("17. prior-season fallback (F6)")
 _wk2 = ff_data.load_weekly([2025, 2026])
 _p26 = ff_guillotine.build_pool(_wk2[_wk2.season == 2026], LEAGUES["guillotine"])
 _pfb = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
@@ -443,7 +488,7 @@ chk("stale draw widens the spread but keeps the level",
     f"sd {_raw.std(ddof=0):.1f} -> {_drawn.std():.1f}, "
     f"mean {_raw.mean():.1f} -> {_drawn.mean():.1f}")
 
-print("\n18. bye/week safety (F5)")
+section("18. bye/week safety (F5)")
 _meta2 = ff_guillotine.build_meta(_wk2[_wk2.season == 2026])
 chk("team-code form works",
     len(ff_guillotine.players_on_bye(9, _meta2, {"PIT", "TEN"})) > 50)
@@ -459,7 +504,7 @@ chk("derived map + a played week still works",
     len(ff_guillotine.players_on_bye(
         5, _meta2, ff_guillotine.team_byes(_wk2[_wk2.season == 2026]))) > 50)
 
-print("\n19. Drive upload is verifiable (F7)")
+section("19. Drive upload is verifiable (F7)")
 _tmp2 = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp2)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
@@ -474,7 +519,7 @@ chk("a dropped line is caught",
     not ff_betlog.verify_uploaded("\n".join(_t2.splitlines()[:-1]) + "\n"))
 shutil.rmtree(_tmp2, ignore_errors=True)
 
-print("\n20. replacement-level fill for short rosters (F4/B17)")
+section("20. replacement-level fill for short rosters (F4/B17)")
 _rl = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
 ff_guillotine.add_replacement_level(_rl, _meta2, n_teams=10)
 for _pos in ("QB", "RB", "WR", "TE"):
@@ -507,7 +552,7 @@ try:
 except ValueError:
     chk("strict=True still refuses a short roster", True)
 
-print("\n21. Drive upload via base64 (F1 prevention)")
+section("21. Drive upload via base64 (F1 prevention)")
 _tmp3 = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp3)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
@@ -530,52 +575,105 @@ chk("corrupted base64 is caught, not silently accepted",
         ff_betlog.decode_downloaded(_b64[:40] + "X" + _b64[41:])))
 shutil.rmtree(_tmp3, ignore_errors=True)
 
-print("\n22. fill_replacement flag is authoritative (B19)")
+section("22. fill_replacement flag is authoritative (B19)")
 # add_replacement_level() mutates the pool in place. An earlier version gated
 # the padding on whether the pool CONTAINED replacement keys, so once any
 # fill=True run had touched a pool, a later fill=False run silently kept
 # filling — the A/B comparison the flag exists for quietly became A/A,
 # order-dependent and invisible in the report.
-_teams_g = json.load(open("guillotine_rosters.json"))["teams"]
-_bye9 = ff_guillotine.players_on_bye(9, _meta2, {"PIT", "TEN"})
+# SYNTHETIC league, built from names already in the pool. This section used
+# to load `guillotine_rosters.json`, which was never committed — so the suite
+# died here with FileNotFoundError on every clean clone, and died BEFORE
+# printing its count line, which is the one number sessions are told to
+# quote. A regression test must not depend on live roster data: it changes
+# weekly, and the thing being tested needs a SHORT roster to exist at all.
+# On the live Week 9 slate no roster was short, so this check was
+# unexercisable there even when the file was present.
+def _synthetic_league(pool, meta, n_teams=6):
+    """A league where exactly one team is deliberately short at RB."""
+    by_pos = {}
+    for name, v in pool.items():
+        if name.startswith(ff_guillotine.REPL_PREFIX) or len(v) < 4:
+            continue
+        info = meta.get(name)
+        if info and info[1] in ("QB", "RB", "WR", "TE"):
+            by_pos.setdefault(info[1], []).append((float(np.mean(v)), name))
+    for rows in by_pos.values():
+        rows.sort(key=lambda r: -r[0])
+
+    def take(pos, k, off):
+        return [n for _, n in by_pos[pos][off:off + k]]
+
+    teams = []
+    for i in range(n_teams):
+        teams.append({
+            "team_id": str(i), "team_name": f"synthetic {i}",
+            "roster": {"QB": take("QB", 2, i * 2), "RB": take("RB", 4, i * 4),
+                       "WR": take("WR", 5, i * 5), "TE": take("TE", 2, i * 2)},
+        })
+    # Team 1 keeps ONE RB. With RB needing 2 plus FLEX, that cannot be filled
+    # from the roster, which is exactly the state the flag governs.
+    teams[1]["roster"]["RB"] = teams[1]["roster"]["RB"][:1]
+    teams[1]["roster"]["WR"] = teams[1]["roster"]["WR"][:2]
+    teams[1]["roster"]["TE"] = teams[1]["roster"]["TE"][:1]
+    return teams
+
 _shared = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
+_teams_g = _synthetic_league(_shared, _meta2)
+_victim = "synthetic 1"
+chk("synthetic fixture needs no uncommitted file", True)
+try:
+    ff_guillotine.best_lineup(_teams_g[1]["roster"], _shared, strict=True)
+    chk("the fixture really is short at RB", False, "it filled a full lineup")
+except ValueError as _ex:
+    chk("the fixture really is short at RB", "RB needs 2" in str(_ex))
+
 _seq = []
 for _f in (True, False, True, False):
-    _r = ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=40_000,
-                           meta=_meta2, unavailable=_bye9, week=9,
-                           fill_replacement=_f)
-    _seq.append((_f, _r.opp_scores_mean["Ilhan's Brother"]))
+    _r = ff_guillotine.run(_teams_g, _shared, my_team_id="0", n_sims=40_000,
+                           meta=_meta2, week=9, fill_replacement=_f)
+    _seq.append((_f, _r.opp_scores_mean[_victim]))
 _on = [v for f, v in _seq if f]
 _off = [v for f, v in _seq if not f]
-chk("fill=True pads the short roster", min(_on) > 120, f"{_on}")
+chk("fill=True pads the short roster", min(_on) > max(_off), f"{_on}")
 chk("fill=False does NOT pad, even after a True run on the same pool",
-    max(_off) < 120, f"{_off}")
+    max(_off) < min(_on), f"{_off}")
 chk("the two modes stay separated across repeated alternation",
-    min(_on) - max(_off) > 5,
+    min(_on) - max(_off) > 3,
     f"on {sum(_on)/len(_on):.1f} vs off {sum(_off)/len(_off):.1f}")
-_short2 = {"QB": ["Patrick Mahomes"], "RB": ["Bijan Robinson"],
-           "WR": ["Jaxon Smith-Njigba", "DeVonta Smith"], "TE": ["Travis Kelce"]}
 chk("best_lineup honours fill=False with keys present in the pool",
-    len(ff_guillotine.best_lineup(_short2, _shared, strict=False, fill=False))
-    < len(ff_guillotine.best_lineup(_short2, _shared, strict=False, fill=True)))
+    len(ff_guillotine.best_lineup(_teams_g[1]["roster"], _shared,
+                                  strict=False, fill=False))
+    < len(ff_guillotine.best_lineup(_teams_g[1]["roster"], _shared,
+                                    strict=False, fill=True)))
 chk("replacement keys never enter my own lineup enumeration",
     not any(p.startswith(ff_guillotine.REPL_PREFIX)
             for lu in ff_guillotine.enumerate_lineups(
-                next(t for t in _teams_g if str(t["team_id"]) == "3")["roster"],
-                _shared)
+                _teams_g[0]["roster"], _shared)
             for p in lu))
 
-print("\n23. Monte Carlo resolution is reported (B20)")
-_rr = ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=20_000,
-                        meta=_meta2, unavailable=_bye9, week=9)
+section("23. Monte Carlo resolution is reported (B20)")
+# The LAST team holds the weakest players by construction, so it carries real
+# elimination risk while still fielding a legal lineup. Team 0 is strongest
+# and its P(elim) is 0, which makes se, sims_needed and the warning all
+# degenerate — a vacuous section rather than a passing one. Team 1 is the
+# deliberately-short roster and cannot enumerate its own lineups at all (the
+# B5 guard raises rather than fielding a silent low score), so it cannot be
+# my_team_id either.
+_me_weak = str(len(_teams_g) - 1)
+_rr = ff_guillotine.run(_teams_g, _shared, my_team_id=_me_weak, n_sims=20_000,
+                        meta=_meta2, week=9)
+chk("the error-bar fixture is non-degenerate",
+    0.001 < float(_rr.p_last[int(np.argmin(_rr.p_last))]) < 0.999,
+    f"P(elim) = {float(_rr.p_last[int(np.argmin(_rr.p_last))]):.1%}")
 _i = int(np.argmin(_rr.p_last))
 _p = float(_rr.p_last[_i])
 chk("se matches the binomial formula",
     abs(_rr.se() - np.sqrt(_p * (1 - _p) / 20_000)) < 1e-12,
     f"{_rr.se()*100:.3f} pts")
 chk("se shrinks as 1/sqrt(n)",
-    abs(ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=80_000,
-                          meta=_meta2, unavailable=_bye9, week=9).se()
+    abs(ff_guillotine.run(_teams_g, _shared, my_team_id=_me_weak,
+                          n_sims=80_000, meta=_meta2, week=9).se()
         - _rr.se() / 2) < _rr.se() * 0.25)
 chk("sims_needed scales as 1/resolve^2",
     abs(_rr.sims_needed(0.0005) / _rr.sims_needed(0.001) - 4) < 0.1,
@@ -586,8 +684,5 @@ chk("report warns when the default cannot resolve small differences",
 try: _rr.sims_needed(0); chk("sims_needed rejects a zero target", False)
 except ValueError: chk("sims_needed rejects a zero target", True)
 
-print("\n" + ("="*60))
-print(f"{len(ran)} checks run, {len(ran) - len(fails)} passed, "
-      f"{len(fails)} failed")
-print(f"{'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)}")
+_summary()
 raise SystemExit(1 if fails else 0)
