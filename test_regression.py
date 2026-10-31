@@ -268,7 +268,7 @@ chk("Edge records which de-vig ran",
 # On the fair_over path the de-vig happened upstream; prop_edge must not
 # claim to have chosen it, and must report the caller's label when given one.
 chk("external fair line: reports upstream, not a lie",
-    prop_edge(e, 450, -600, fair_over=0.17).devig_method.startswith("upstream"))
+    prop_edge(e, 450, -600, fair_over=0.17).devig_method.startswith("UNKNOWN"))
 chk("external fair line: echoes the caller's label",
     prop_edge(e, 450, -600, fair_over=0.17,
               devig_method="shin (get_event_ev)").devig_method
@@ -652,7 +652,71 @@ chk("replacement keys never enter my own lineup enumeration",
                 _teams_g[0]["roster"], _shared)
             for p in lu))
 
-section("23. Monte Carlo resolution is reported (B20)")
+section("23. native PropLine shape is read correctly (B24)")
+from ff_props import flatten_odds, _prices
+# THE GAP THIS CLOSES: every fixture in sections 12 and 21 used the
+# pre-flattened {"over":…, "under":…} shape. propline_get_odds actually
+# returns one row PER OUTCOME, and "price" was listed in PRICE_KEYS_OVER with
+# no name check — so a native Under row returned (-113, None), reporting the
+# Under's price AS the Over's price. 135 passing checks said nothing about
+# it, because the native shape was never tested.
+chk("native Under row reads as the UNDER",
+    _prices({"name": "Under", "price": -113}) == (None, -113.0))
+chk("native Over row reads as the OVER",
+    _prices({"name": "Over", "price": -111}) == (-111.0, None))
+chk("milestone rung prices the backable side",
+    _prices({"name": "280+ Passing Yards", "price": 349}) == (349.0, None))
+chk("anytime-TD player row prices the yes side",
+    _prices({"name": "Travis Kelce", "price": 270}) == (270.0, None))
+chk("flattened shape still works",
+    _prices({"over": -111, "under": -113}) == (-111.0, -113.0))
+
+# The real get_odds envelope, trimmed to the markets that matter.
+_resp = {"bookmakers": [{"key": "draftkings", "pregame_only": False,
+    "last_update": "2026-10-31T04:34:23+00:00", "markets": [
+    {"key": "player_pass_yds", "line_type": "main", "suspended_at": None,
+     "last_update": "2026-10-31T04:34:23+00:00", "outcomes": [
+       {"name": "Over", "description": "Patrick Mahomes", "price": -111,
+        "point": 222.5, "last_seen_at": "2026-10-31T04:34:23+00:00"},
+       {"name": "Under", "description": "Patrick Mahomes", "price": -113,
+        "point": 222.5, "last_seen_at": "2026-10-31T04:34:23+00:00"}]},
+    {"key": "player_pass_yds", "line_type": "milestone", "suspended_at": None,
+     "last_update": "2026-10-31T04:34:23+00:00", "outcomes": [
+       {"name": "280+ Passing Yards", "description": "Patrick Mahomes",
+        "price": 349, "point": None,
+        "last_seen_at": "2026-10-31T04:34:23+00:00"}]}]}]}
+
+_main = flatten_odds(_resp, line_type="main")
+chk("flatten_odds pairs the two sides", len(_main) == 1
+    and _main[0]["over"] == -111.0 and _main[0]["under"] == -113.0,
+    f"{_main[0]['over']}/{_main[0]['under']}" if _main else "nothing returned")
+chk("flatten_odds carries the line and player",
+    _main[0]["line"] == 222.5 and _main[0]["player"] == "Patrick Mahomes")
+chk("flatten_odds carries suspended_at and pregame_only",
+    _main[0]["suspended_at"] is None and _main[0]["pregame_only"] is False)
+chk("line_type filter excludes milestone rungs from main",
+    all(q["line_type"] == "main" for q in _main))
+_mile = flatten_odds(_resp, line_type="milestone")
+chk("milestone rung comes back one-sided",
+    len(_mile) == 1 and _mile[0]["under"] is None
+    and _mile[0]["over"] == 349.0)
+
+# The symptom that was actually observed: a two-sided market reported as
+# one-sided because the Under's price had been read as the Over's.
+_sc = screen_quotes(_main, max_age_s=10**9)
+chk("a two-sided main line is NOT reported one-sided",
+    _sc.one_sided == [] and len(_sc.usable) == 1, f"{_sc.one_sided}")
+chk("a milestone rung IS reported one-sided",
+    screen_quotes(_mile, max_age_s=10**9).one_sided == ["draftkings"])
+# Either side missing counts: checking only `under` missed the Under-only row.
+for _lbl, _q in (("over-only", {"book": "dk", "name": "Over", "price": -111,
+                                "last_update": "2026-10-31T04:34:23+00:00"}),
+                 ("under-only", {"book": "dk", "name": "Under", "price": -113,
+                                 "last_update": "2026-10-31T04:34:23+00:00"})):
+    chk(f"{_lbl} row is flagged one-sided",
+        screen_quotes([_q], max_age_s=10**9).one_sided == ["dk"])
+
+section("24. Monte Carlo resolution is reported (B20)")
 # The LAST team holds the weakest players by construction, so it carries real
 # elimination risk while still fielding a legal lineup. Team 0 is strongest
 # and its P(elim) is 0, which makes se, sims_needed and the warning all

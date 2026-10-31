@@ -810,7 +810,8 @@ def prop_edge(est: Estimate,
         # choose it and must not claim to have. Pass the upstream choice as
         # devig_method so the report says something true.
         used_devig = (devig_method if devig_method not in ("auto", "")
-                      else "upstream (set by whatever produced fair_over)")
+                      else "UNKNOWN — get_event_ev defaults to MULTIPLICATIVE "
+                           "unless you passed devig='shin'")
     elif under_odds is None:
         # No two-way price and no external fair line: fall back to the raw
         # vigged number. The edge will read better than it is.
@@ -1130,35 +1131,145 @@ LIVE_MAX_AGE_S = 120       # pass as max_age on in-play pulls
 PREGAME_MAX_AGE_S = 900    # pregame prices move slower; 15 min is tolerable
 
 
+# Names PropLine uses for each side of a two-way market. Checked BEFORE any
+# generic price key, because a generic key cannot tell you which side it is.
+OVER_NAMES = {"over", "yes", "o"}
+UNDER_NAMES = {"under", "no", "u"}
+
 PRICE_KEYS_OVER = ("over", "over_odds", "price_over", "odds_over",
-                   "over_price", "yes", "yes_odds", "price", "odds",
-                   "american", "american_odds")
+                   "over_price", "yes", "yes_odds")
 PRICE_KEYS_UNDER = ("under", "under_odds", "price_under", "odds_under",
                     "under_price", "no", "no_odds")
+PRICE_KEYS_BARE = ("price", "odds", "american", "american_odds")
+
+
+def _num(v):
+    if isinstance(v, dict):
+        v = v.get("odds", v.get("price", v.get("american")))
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.replace("+", "").strip())
+        except ValueError:
+            return None
+    return None
 
 
 def _prices(q: dict) -> tuple[float | None, float | None]:
-    """Pull (over, under) American prices out of a book quote.
+    """Pull (over, under) American prices out of a quote.
 
-    PropLine's field naming varies by market and book, so this checks the
-    known spellings rather than assuming one. Returns None for a side that
-    carries no price — which is the normal case on one-sided markets like
-    anytime-TD at books that list one outcome per player.
+    Handles two shapes. A FLATTENED quote carries both sides on one dict
+    (`{"over": -111, "under": -113}`). A SINGLE OUTCOME row carries one price
+    plus a `name` saying which side it is (`{"name": "Under", "price": -113}`)
+    — that is what `propline_get_odds` actually returns, one row per outcome.
+
+    The `name` is read FIRST, and a bare `price`/`odds` key is only treated as
+    the over when nothing says otherwise. An earlier version listed "price" in
+    PRICE_KEYS_OVER with no name check, so a native Under row returned
+    (-113, None): **the Under's price came back as the Over's price**, and a
+    plainly two-sided market was then reported as one-sided. That is the same
+    swap as the prop_edge UNDER bug, one layer upstream, in the screen whose
+    whole job is to stop bad prices reaching prop_edge — and it arrives as a
+    plausible number rather than an error.
+
+    A single outcome cannot be de-vigged on its own. Use `flatten_odds()` to
+    pair the sides before screening.
     """
-    def pick(keys):
-        for k in keys:
-            v = q.get(k)
-            if isinstance(v, dict):          # {"odds": -110, ...}
-                v = v.get("odds", v.get("price", v.get("american")))
-            if isinstance(v, (int, float)):
-                return float(v)
-            if isinstance(v, str):
-                try:
-                    return float(v.replace("+", ""))
-                except ValueError:
+    over = under = None
+    for k in PRICE_KEYS_OVER:
+        v = _num(q.get(k))
+        if v is not None:
+            over = v
+            break
+    for k in PRICE_KEYS_UNDER:
+        v = _num(q.get(k))
+        if v is not None:
+            under = v
+            break
+    if over is not None or under is not None:
+        return over, under
+
+    # Single-outcome row: the name decides the side.
+    bare = None
+    for k in PRICE_KEYS_BARE:
+        bare = _num(q.get(k))
+        if bare is not None:
+            break
+    if bare is None:
+        return None, None
+
+    label = str(q.get("name") or q.get("side") or q.get("outcome") or "").strip().lower()
+    if label in UNDER_NAMES:
+        return None, bare
+    # "Over", "Yes", a player name, or an N+ milestone rung all price the
+    # side you can actually back, which is the over/yes side.
+    return bare, None
+
+
+def flatten_odds(response: dict,
+                 line_type: str = "main",
+                 market: str | None = None,
+                 player: str | None = None) -> list[dict]:
+    """Turn a `propline_get_odds` event response into screenable quotes.
+
+    THE MISSING ADAPTER. `get_odds` returns bookmakers[].markets[].outcomes[],
+    one row per outcome; `screen_quotes` and `prop_edge` want one dict per
+    book carrying both sides. Nothing bridged them, and feeding the native
+    shape straight in silently misread an Under price as an Over price.
+
+    Returns one dict per (book, market, player, line) with `over`/`under`
+    paired, plus the fields the screen needs: `suspended_at` from the market,
+    `pregame_only` from the bookmaker, and `last_update`.
+
+    `line_type` defaults to "main" — a book's primary two-sided line.
+    "milestone" rungs are one-sided by construction (one N+ outcome each) and
+    come back with `under=None`, which `screen_quotes` flags rather than
+    pricing.
+    """
+    out: list[dict] = []
+    for bk in response.get("bookmakers") or []:
+        book = bk.get("key") or bk.get("title") or "?"
+        for mk in bk.get("markets") or []:
+            if line_type and mk.get("line_type") != line_type:
+                continue
+            if market and mk.get("key") != market:
+                continue
+            groups: dict[tuple, dict] = {}
+            for oc in mk.get("outcomes") or []:
+                who = oc.get("description") or oc.get("name") or "?"
+                if player and player.lower() not in str(who).lower():
                     continue
-        return None
-    return pick(PRICE_KEYS_OVER), pick(PRICE_KEYS_UNDER)
+                label = str(oc.get("name") or "").strip().lower()
+                key = (who, oc.get("point"))
+                g = groups.setdefault(key, {
+                    "book": book,
+                    "market": mk.get("key"),
+                    "player": who,
+                    "line": oc.get("point"),
+                    "over": None,
+                    "under": None,
+                    "line_type": mk.get("line_type"),
+                    "suspended_at": mk.get("suspended_at"),
+                    "pregame_only": bk.get("pregame_only"),
+                    "last_update": oc.get("last_seen_at") or mk.get("last_update")
+                                   or bk.get("last_update"),
+                    "outcome_names": [],
+                })
+                price = _num(oc.get("price"))
+                g["outcome_names"].append(oc.get("name"))
+                if label in UNDER_NAMES:
+                    g["under"] = price
+                else:
+                    g["over"] = price
+                    # A milestone rung names its own threshold ("280+ Passing
+                    # Yards"); carry it so the caller knows what was priced.
+                    if label not in OVER_NAMES:
+                        g["rung"] = oc.get("name")
+            out += list(groups.values())
+    return out
 
 
 @dataclass
@@ -1253,9 +1364,11 @@ def screen_quotes(quotes: list[dict],
             out.dropped.append((book, "no price in the quote — nothing to "
                                       "price off"))
             continue
-        if under is None:
-            # Usable, but say so: a one-sided market cannot be de-vigged, so
-            # anything priced off it needs an external fair line.
+        if over is None or under is None:
+            # EITHER side missing means the market cannot be de-vigged, so
+            # anything priced off it needs an external fair line. Checking
+            # only `under` missed the Under-only case, which arrives whenever
+            # a native outcome row is screened without being paired first.
             out.one_sided.append(book)
 
         out.usable.append(q)
