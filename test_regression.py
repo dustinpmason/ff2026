@@ -530,6 +530,62 @@ chk("corrupted base64 is caught, not silently accepted",
         ff_betlog.decode_downloaded(_b64[:40] + "X" + _b64[41:])))
 shutil.rmtree(_tmp3, ignore_errors=True)
 
+print("\n22. fill_replacement flag is authoritative (B19)")
+# add_replacement_level() mutates the pool in place. An earlier version gated
+# the padding on whether the pool CONTAINED replacement keys, so once any
+# fill=True run had touched a pool, a later fill=False run silently kept
+# filling — the A/B comparison the flag exists for quietly became A/A,
+# order-dependent and invisible in the report.
+_teams_g = json.load(open("guillotine_rosters.json"))["teams"]
+_bye9 = ff_guillotine.players_on_bye(9, _meta2, {"PIT", "TEN"})
+_shared = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
+_seq = []
+for _f in (True, False, True, False):
+    _r = ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=40_000,
+                           meta=_meta2, unavailable=_bye9, week=9,
+                           fill_replacement=_f)
+    _seq.append((_f, _r.opp_scores_mean["Ilhan's Brother"]))
+_on = [v for f, v in _seq if f]
+_off = [v for f, v in _seq if not f]
+chk("fill=True pads the short roster", min(_on) > 120, f"{_on}")
+chk("fill=False does NOT pad, even after a True run on the same pool",
+    max(_off) < 120, f"{_off}")
+chk("the two modes stay separated across repeated alternation",
+    min(_on) - max(_off) > 5,
+    f"on {sum(_on)/len(_on):.1f} vs off {sum(_off)/len(_off):.1f}")
+_short2 = {"QB": ["Patrick Mahomes"], "RB": ["Bijan Robinson"],
+           "WR": ["Jaxon Smith-Njigba", "DeVonta Smith"], "TE": ["Travis Kelce"]}
+chk("best_lineup honours fill=False with keys present in the pool",
+    len(ff_guillotine.best_lineup(_short2, _shared, strict=False, fill=False))
+    < len(ff_guillotine.best_lineup(_short2, _shared, strict=False, fill=True)))
+chk("replacement keys never enter my own lineup enumeration",
+    not any(p.startswith(ff_guillotine.REPL_PREFIX)
+            for lu in ff_guillotine.enumerate_lineups(
+                next(t for t in _teams_g if str(t["team_id"]) == "3")["roster"],
+                _shared)
+            for p in lu))
+
+print("\n23. Monte Carlo resolution is reported (B20)")
+_rr = ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=20_000,
+                        meta=_meta2, unavailable=_bye9, week=9)
+_i = int(np.argmin(_rr.p_last))
+_p = float(_rr.p_last[_i])
+chk("se matches the binomial formula",
+    abs(_rr.se() - np.sqrt(_p * (1 - _p) / 20_000)) < 1e-12,
+    f"{_rr.se()*100:.3f} pts")
+chk("se shrinks as 1/sqrt(n)",
+    abs(ff_guillotine.run(_teams_g, _shared, my_team_id="3", n_sims=80_000,
+                          meta=_meta2, unavailable=_bye9, week=9).se()
+        - _rr.se() / 2) < _rr.se() * 0.25)
+chk("sims_needed scales as 1/resolve^2",
+    abs(_rr.sims_needed(0.0005) / _rr.sims_needed(0.001) - 4) < 0.1,
+    f"{_rr.sims_needed(0.001):,} for 0.1pt")
+chk("report states the error bar", "1 se on P(elim)" in _rr.report(top=1))
+chk("report warns when the default cannot resolve small differences",
+    "Do not quote a difference smaller" in _rr.report(top=1))
+try: _rr.sims_needed(0); chk("sims_needed rejects a zero target", False)
+except ValueError: chk("sims_needed rejects a zero target", True)
+
 print("\n" + ("="*60))
 print(f"{len(ran)} checks run, {len(ran) - len(fails)} passed, "
       f"{len(fails)} failed")

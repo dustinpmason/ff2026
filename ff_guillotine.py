@@ -482,7 +482,7 @@ def add_replacement_level(pool: Pool, meta: dict[str, tuple[str, str]],
 
 
 def best_lineup(roster: dict[str, list[str]], pool: dict[str, np.ndarray],
-                strict: bool = True) -> list[str]:
+                strict: bool = True, fill: bool = True) -> list[str]:
     """The highest expected-points lineup. This is what a normal league wants,
     and it is the thing the survival simulation is testing against.
     """
@@ -519,10 +519,15 @@ def best_lineup(roster: dict[str, list[str]], pool: dict[str, np.ndarray],
     # Fill what is missing at REPLACEMENT level rather than leaving it empty.
     # An empty slot scores nothing and understates the team; a waiver add is
     # what a real manager would do, and its level is knowable even though the
-    # wire itself is not in this data. Only possible when the pool carries
-    # replacement distributions (add_replacement_level); without them the
-    # short lineup is fielded as-is, as before.
-    if not strict:
+    # wire itself is not in this data.
+    #
+    # `fill` is passed in, NOT inferred from whether the pool happens to carry
+    # replacement keys. Inferring it was a real bug: add_replacement_level()
+    # mutates the pool in place, so once any run with fill_replacement=True
+    # had touched a pool, a later run with False silently kept filling. The
+    # A/B comparison the flag exists for quietly became A/A, order-dependent
+    # and with no trace in the report.
+    if not strict and fill:
         for pos, count in (("QB", SLOTS["QB"]), ("RB", SLOTS["RB"]),
                            ("WR", SLOTS["WR"]), ("TE", SLOTS["TE"])):
             have = len([p for p in roster.get(pos, []) if p in out])
@@ -599,11 +604,35 @@ class Result:
     opp_scores_mean: dict[str, float]
     variance_inflation: float
     week: int | None = None
+    # Monte Carlo resolution. Every P(elim) here is a binomial proportion over
+    # n_sims draws, so it carries sqrt(p(1-p)/n) of simulation noise. Reported
+    # because a figure was quoted as a measurement when it sat inside its own
+    # error bar: at the 20,000 default, 1 se on a ~3% risk is ~0.12 points,
+    # and the replacement-fill correction being measured is ~0.28 points. A
+    # single pair of 20k runs resolves that to barely 2 se, and one such pair
+    # put the effect at +0.50 points where 80k runs put it at +0.28.
     flagged: list[str] = field(default_factory=list)
     unresolved_names: dict[str, list[str]] = field(default_factory=dict)
     excluded: list[str] = field(default_factory=list)
     short_rosters: list[str] = field(default_factory=list)
     stale_projections: dict[str, list[str]] = field(default_factory=dict)
+
+    def se(self, i: int | None = None) -> float:
+        """Standard error on P(eliminated) for lineup `i` (default: the best)."""
+        if i is None:
+            i = self._idx_min_risk()
+        p = float(self.p_last[i])
+        return float(np.sqrt(max(p * (1.0 - p), 0.0) / self.n_sims))
+
+    def sims_needed(self, resolve: float, i: int | None = None) -> int:
+        """How many sims to resolve a difference of `resolve` (as a fraction,
+        e.g. 0.003 for 0.3 points) at roughly 2 standard errors."""
+        if i is None:
+            i = self._idx_min_risk()
+        p = float(self.p_last[i])
+        if resolve <= 0:
+            raise ValueError("resolve must be positive")
+        return int(np.ceil(4.0 * max(p * (1.0 - p), 1e-9) / (resolve ** 2)))
 
     def _idx_max_ev(self) -> int:
         return int(np.argmax(self.means))
@@ -624,7 +653,14 @@ class Result:
             # byes were applied.
             L.append("  ! week not stated — pass week= so the byes applied "
                      "can be checked against the week being simulated")
-        L.append(f"  {self.n_sims:,} simulations, {len(self.lineups):,} legal lineups")
+        _i = self._idx_min_risk()
+        L.append(f"  {self.n_sims:,} simulations, {len(self.lineups):,} legal "
+                 f"lineups  (1 se on P(elim) = {self.se()*100:.2f} pts)")
+        if self.se() * 100 > 0.10:
+            L.append(f"    Do not quote a difference smaller than "
+                     f"{self.se()*200:.2f} pts as a measurement at this sim "
+                     f"count — that is 2 se. For 0.10 pt resolution use "
+                     f"n_sims={self.sims_needed(0.001):,}.")
         L.append(f"  opponents' weekly minimum averages {self.opp_min_mean:.1f} pts")
         if self.variance_inflation != 1.0:
             L.append(f"  variance inflation applied: {self.variance_inflation:.2f}x")
@@ -729,8 +765,9 @@ def run(teams: list[dict],
     # waiver boundary in the wrong place for an 18-team guillotine, where the
     # wire is far thinner. Added automatically so a short roster is filled at
     # a realistic level rather than scoring the slot as nothing.
-    if fill_replacement and meta is not None \
-            and replacement_name("RB") not in pool and isinstance(pool, Pool):
+    # Recomputing when the keys are already present is cheap and keeps a
+    # reused pool from carrying a level sized to a different league.
+    if fill_replacement and meta is not None and isinstance(pool, Pool):
         add_replacement_level(pool, meta, n_teams=len(teams))
 
     # Remove unavailable players (bye, Out, IR) from every roster BEFORE
@@ -761,7 +798,8 @@ def run(teams: list[dict],
         try:
             L = best_lineup(t["roster"], pool)
         except ValueError as e:
-            L = best_lineup(t["roster"], pool, strict=False)
+            L = best_lineup(t["roster"], pool, strict=False,
+                            fill=fill_replacement)
             short.append(f"{t['team_name']}: "
                          f"{str(e).split('.')[0].replace('roster cannot fill the lineup: ', '')}")
         if use_corr:
