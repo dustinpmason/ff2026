@@ -9,7 +9,7 @@ look like they were off.
 import warnings; warnings.filterwarnings("ignore")
 import atexit, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
-import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog
+import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 from ff_data import load_weekly, load_pbp
 from ff_scoring import LEAGUES, score, score_all, add_explosive_tds, prepare
 from ff_props import (player_series, threshold_prob, prop_edge, usage_trend,
@@ -855,7 +855,160 @@ _ey = threshold_prob(player_series(_reg26, "Jaxon Smith-Njigba",
 chk("a continuous stat is not caught by the binary rule",
     not any("MODEL ABSTAINS" in x for x in boost_verdict(_ey)[1]))
 
-section("27. Monte Carlo resolution is reported (B20)")
+section("27. backtest falsification criteria (F2)")
+from ff_backtest import (Leg as BLeg, Slip as BSlip, audit, breakeven_p,
+                         boosted_return, expected_roi, roi_band,
+                         espn_to_gsis, resolve_gsis, grade_leg, grade_slip)
+
+# The boost economics the whole strategy rests on.
+chk("unboosted +300 needs 25%", abs(breakeven_p(300, 0.0) - 0.25) < 1e-9)
+chk("a 30% boost drops +300 to ~20.4%",
+    abs(breakeven_p(300, 0.30) - 1 / 4.9) < 1e-9,
+    f"{breakeven_p(300, 0.30):.3%}")
+chk("a bigger boost always lowers the bar",
+    breakeven_p(300, 0.50) < breakeven_p(300, 0.30) < breakeven_p(300, 0.20))
+chk("$10 at +300 with 30% boost returns $49",
+    abs(boosted_return(10, 300, 0.30) - 49.0) < 1e-9)
+# Hold matters more than it looks: a 20% boost is break-even at best.
+chk("a 20% boost can be NEGATIVE after SGP hold",
+    roi_band(300, 0.20)[0] < 0, f"{roi_band(300, 0.20)[0]:+.1%} pessimistic")
+chk("a 30% boost is positive across the hold band",
+    roi_band(300, 0.30)[0] > 0, f"{roi_band(300, 0.30)[0]:+.1%} pessimistic")
+chk("zero hold is the ceiling, not the expectation",
+    expected_roi(300, 0.30, 0.0) > roi_band(300, 0.30)[1])
+
+# The ESPN->GSIS crosswalk: grading by id, never by name.
+_roster = pd.read_parquet(ff_data._dest("roster", 2026))
+_cw = espn_to_gsis(_roster)
+chk("crosswalk is populated", len(_cw) > 1000, f"{len(_cw)} entries")
+chk("a known PropLine id resolves",
+    resolve_gsis("espn:3139477", _cw) == "00-0033873",
+    f"-> {resolve_gsis('espn:3139477', _cw)}")
+chk("an unknown id returns None, not a guess",
+    resolve_gsis("espn:999999999", _cw) is None)
+chk("a None id returns None", resolve_gsis(None, _cw) is None)
+try:
+    espn_to_gsis(pd.DataFrame({"a": [1]}))
+    chk("a roster without the crosswalk raises", False)
+except ValueError as _ex:
+    chk("a roster without the crosswalk raises", "crosswalk" in str(_ex))
+
+# Grading against the real stats.
+_reg27 = wk[wk.season_type == "REG"]
+def _bleg(pid, mkt, line, side, week=7, quoted="2026-10-19T12:00:00Z",
+          commence="2026-10-19T17:00:00Z"):
+    return BLeg(week=week, event_id="e", book="draftkings", market=mkt,
+                player="?", propline_player_id=pid,
+                gsis_id=resolve_gsis(pid, _cw), line=line, side=side,
+                odds=-110, quoted_at=quoted, commence_time=commence)
+
+_mah = grade_leg(_bleg("espn:3139477", "player_pass_yds", 1.5, "OVER"), _reg27)
+chk("an easily-cleared OVER wins", _mah.result == "WIN",
+    f"actual {_mah.actual}")
+chk("the same line as UNDER loses",
+    grade_leg(_bleg("espn:3139477", "player_pass_yds", 1.5, "UNDER"),
+              _reg27).result == "LOSS")
+chk("anytime-TD uses the implicit 0.5 line and sums rush+rec",
+    grade_leg(_bleg("espn:4567048", "player_anytime_td", None, "YES"),
+              _reg27).result in ("WIN", "LOSS"))
+_dnp = grade_leg(_bleg("espn:3139477", "player_pass_yds", 200.5, "OVER",
+                       week=99), _reg27)
+chk("a player-week with no row is UNGRADED, not silently a loss",
+    _dnp.result == "UNGRADED" and "did not play" in (_dnp.ungraded_reason or ""))
+chk("an unresolvable id is UNGRADED with the reason",
+    grade_leg(_bleg("espn:999999999", "player_pass_yds", 1.5, "OVER"),
+              _reg27).ungraded_reason == "no gsis_id (id join failed)")
+
+# A parlay needs every leg; an UNGRADED leg counts as a LOSS, never dropped.
+_win3 = BSlip(week=7, legs=[_bleg("espn:3139477", "player_pass_yds", 1.5, "OVER")
+                            for _ in range(3)], slip_odds=300, boost_pct=0.30)
+chk("all legs winning wins the slip",
+    grade_slip(_win3, _reg27).result == "WIN")
+chk("a winning slip pays the boosted amount",
+    abs(_win3.payout - 49.0) < 1e-9, f"${_win3.payout:.2f}")
+_mixed = BSlip(week=7, legs=[
+    _bleg("espn:3139477", "player_pass_yds", 1.5, "OVER"),
+    _bleg("espn:3139477", "player_pass_yds", 200.5, "OVER", week=99)],
+    slip_odds=300, boost_pct=0.30)
+chk("an UNGRADED leg makes the slip a LOSS, not a drop",
+    grade_slip(_mixed, _reg27).result == "LOSS")
+
+# And the audit itself: it must fail on each leak, not just pass on clean.
+def _synth(n_wins, n, odds=300, boost=0.30, quoted="2026-10-19T12:00:00Z",
+           ungraded=0):
+    out = []
+    for i in range(n):
+        legs = [BLeg(week=7, event_id=f"e{i}", book="dk",
+                     market="player_pass_yds", player=f"p{i}",
+                     propline_player_id=f"espn:{i}", gsis_id=f"00-{i}",
+                     line=200.5, side="OVER", odds=-110, quoted_at=quoted,
+                     commence_time="2026-10-19T17:00:00Z") for _ in range(3)]
+        sl = BSlip(week=7, legs=legs, slip_odds=odds, boost_pct=boost)
+        if i < ungraded:
+            legs[0].result, legs[0].ungraded_reason = "UNGRADED", "did not play"
+            for l in legs[1:]:
+                l.result = "WIN"
+            sl.result, sl.payout = "LOSS", 0.0
+        else:
+            w = i < ungraded + n_wins
+            for l in legs:
+                l.result = "WIN" if w else "LOSS"
+            sl.result = "WIN" if w else "LOSS"
+            sl.payout = boosted_return(10, odds, boost) if w else 0.0
+        out.append(sl)
+    return out
+
+chk("a clean backtest passes the audit", audit(_synth(25, 100)).ok)
+_leak = audit(_synth(50, 100))
+chk("a hit rate far above implied FAILS", not _leak.ok)
+chk("the hit-rate failure names leakage",
+    any("leaked" in f for f in _leak.failures))
+_look = audit(_synth(25, 100, quoted="2026-10-19T20:00:00Z"))
+chk("a price timestamped after kickoff FAILS", not _look.ok)
+chk("the lookahead failure counts the legs",
+    any("after kickoff" in f for f in _look.failures))
+_surv = audit(_synth(25, 100, ungraded=20))
+chk("too many ungraded legs FAILS", not _surv.ok)
+chk("the survivorship failure names the reasons",
+    any("did not play" in f for f in _surv.failures))
+chk("an empty backtest FAILS rather than reporting 0%", not audit([]).ok)
+chk("the audit always states its noise floor",
+    any("2 se on the hit rate" in n for n in audit(_synth(25, 100)).notes))
+chk("the audit states the expected ROI band",
+    any("expected ROI band" in n for n in audit(_synth(25, 100)).notes))
+# Slips from one game share legs and game script. Treating them as
+# independent understates the error bar by ~sqrt(slips per event), which is
+# the exact error this audit exists to catch — committed by the audit itself.
+def _clustered(n, per_event):
+    out = []
+    for i in range(n):
+        _eid = f"e{i // per_event}"
+        legs = [BLeg(week=7, event_id=_eid, book="dk",
+                     market="player_pass_yds", player="p",
+                     propline_player_id=None, gsis_id="00-1", line=200.5,
+                     side="OVER", odds=-110,
+                     quoted_at="2026-10-19T12:00:00Z",
+                     commence_time="2026-10-19T17:00:00Z") for _ in range(3)]
+        sl = BSlip(week=7, legs=legs, slip_odds=300, boost_pct=0.30)
+        _w = i < n // 4
+        for l in legs:
+            l.result = "WIN" if _w else "LOSS"
+        sl.result = "WIN" if _w else "LOSS"
+        sl.payout = boosted_return(10, 300, 0.30) if _w else 0.0
+        out.append(sl)
+    return out
+
+_spread = audit(_clustered(100, 1))
+_tight = audit(_clustered(100, 20))
+chk("the audit counts distinct events",
+    _spread.n_clusters == 100 and _tight.n_clusters == 5)
+chk("clustered slips get a WIDER error bar",
+    _tight.hit_rate_se > _spread.hit_rate_se * 3,
+    f"{_spread.hit_rate_se:.1%} spread vs {_tight.hit_rate_se:.1%} clustered")
+chk("clustering is reported, not silently applied",
+    any("correlated" in n for n in _tight.notes))
+
+section("28. Monte Carlo resolution is reported (B20)")
 # The LAST team holds the weakest players by construction, so it carries real
 # elimination risk while still fielding a legal lineup. Team 0 is strongest
 # and its P(elim) is 0, which makes se, sims_needed and the warning all
