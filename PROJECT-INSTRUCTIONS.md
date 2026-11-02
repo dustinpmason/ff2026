@@ -532,8 +532,11 @@ ROI at the pessimistic end of each band:
   slips is mostly real correlation, not margin — **do not quote it as hold**,
   and do not conclude the slip is bad because the number looks terrible.
 
-Use `hold_band(cross_game=)`, `roi_band(odds, boost, cross_game=)` and
-`min_boost(odds, cross_game=)` in `ff_backtest.py`. **An unknown structure
+Use `hold_band(cross_game=)`, `roi_band(odds, boost, cross_game=)`,
+`min_boost(odds, cross_game=)` and **`audit(slips, cross_game=)`** in
+`ff_backtest.py`. Pass `cross_game` to the audit or it quotes the pessimistic
+same-game band — on 250 genuinely cross-game slips that reported −8.5% to
++2.0% where the right band was +1.3% to +4.1%, i.e. the wrong sign. **An unknown structure
 returns the SAME-GAME band**, because assuming the cheaper product when you do
 not know which you have is the error that loses money.
 
@@ -683,6 +686,43 @@ historical slips would not pin profitability.
 positive but thin; 50% is where the money is. Replace `SGP_HOLD_BAND` with
 the measured hold once it is known — that is the single number that sharpens
 all of this.
+
+### Pinnacle IS available historically — do not de-vig a book against itself
+
+**Confirmed 2026-11-02** on event 53166 (DAL@GB, Week 6): `get_odds_history`
+with `bookmakers="pinnacle"` returns two-sided main lines, `redacted: false`,
+with liquidity figures and pre-kickoff snapshots — CeeDee Lamb's line even
+moves 81.5 → 82.5 as liquidity doubles. So historical EV screening has a real
+sharp anchor and there is no reason to de-vig a recreational book against
+itself.
+
+This matters because the F2 validation did exactly that by accident: it pulled
+history filtered to draftkings/fanduel/betmgm, found no sharp book, and
+de-vigged each against itself — the circularity these instructions forbid.
+Every "no-vig implied" figure in that run was a recreational book's opinion of
+itself, which weakens the audit's central hit-rate check. **Always include
+`pinnacle` in a historical pull**, exactly as you would live.
+
+### `search_players` traps — both measured, both silent
+
+**`team_abbr` is as-of-today, not as-of-game.** Kaleb Johnson reads `GB (as of
+2026-10-21)` but was propped in a Week 5 PIT game; Jaydon Blue reads `PHI` but
+was propped in a Week 6 DAL game. Using it to validate a historical event
+would reject real legs. This is why `event_teams` comes from **nflverse**, not
+from the search result.
+
+**Duplicate player records exist.** `DeVonta Smith` returns two espn ids with
+identical `name` AND identical `known_names`, both `team: null`:
+`espn:4241478` and `espn:4594449`. PropLine offers nothing to separate them.
+The tiebreak that worked was the crosswalk — only `4241478` has a GSIS id —
+but that is **luck, not logic**: if both carried GSIS ids it would be
+unresolvable, and "pick the one that resolves" would silently favour whichever
+happens to be in the roster. Flag an ambiguity, never pick silently.
+
+`search_players` also matches substrings anywhere in a name (`Strong` matched
+`Armstrong`; `Ty Johnson` returned 4). Resolve those on an exact
+`known_names` match, which also collapses book spelling variants correctly
+(Josh/Joshua Palmer, Pierre Strong/Strong Jr.).
 
 ### The historical endpoints carry NO player_id — the one unavoidable name step
 

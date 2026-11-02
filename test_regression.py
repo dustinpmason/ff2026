@@ -996,6 +996,21 @@ chk("the audit always states its noise floor",
     any("2 se on the hit rate" in n for n in audit(_synth(25, 100)).notes))
 chk("the audit states the expected ROI band",
     any("expected ROI band" in n for n in audit(_synth(25, 100)).notes))
+# B36: audit() quoted the pessimistic same-game band even for slips the
+# caller knew were cross-game. Measured live on 250 genuinely cross-game
+# slips: it reported -8.5% to +2.0% where the right band was +1.3% to +4.1% —
+# the SIGN of the answer, from a default meant to be cautious.
+_cg = [n for n in audit(_synth(25, 100), cross_game=True).notes
+       if "expected ROI band" in n][0]
+_sg = [n for n in audit(_synth(25, 100), cross_game=False).notes
+       if "expected ROI band" in n][0]
+_unk = [n for n in audit(_synth(25, 100)).notes if "expected ROI band" in n][0]
+chk("cross_game=True quotes the cross-game band", "cross-game" in _cg
+    and "18%-21%" in _cg, _cg[-30:])
+chk("cross_game=False quotes the same-game band", "same-game" in _sg)
+chk("the two bands actually differ", _cg != _sg)
+chk("omitting structure still defaults pessimistic and SAYS so",
+    "UNKNOWN structure" in _unk and "pass cross_game=" in _unk)
 # Slips from one game share legs and game script. Treating them as
 # independent understates the error bar by ~sqrt(slips per event), which is
 # the exact error this audit exists to catch — committed by the audit itself.

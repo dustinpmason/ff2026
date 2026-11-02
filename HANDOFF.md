@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "219 checks run, 219 passed, 0 failed"
+python3 test_regression.py        # expect: "223 checks run, 223 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md** and **PROJECT-INSTRUCTIONS.md** from the repo. They are
@@ -33,31 +33,33 @@ context.
 
 ## Current state
 
-- **219 regression checks, all passing.** Six engine modules: `ff_data`,
+- **223 regression checks, all passing.** Six engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 partially complete.
 - Eight deployment-test rounds done. Six of eight found real bugs.
 
-## In flight — the one thing waiting on an answer
+## F2 is settled — nothing is waiting on an answer
 
-A **pipeline validation** was just run in a project thread. Its key question is
-step 4: **what fraction of historical props resolve to a player id?**
+The pipeline validation ran on 8 events, Weeks 5–6, 950 graded legs.
 
-`get_odds_history` and `get_odds_closing` carry **no `player_id`** — only a
-name. So a backtest's entry point must go through `propline_search_players` to
-recover an espn id before the id-join to GSIS. That is a name-shaped hole in
-the never-join-on-name rule at exactly the point a backtest needs it.
+- **Name resolution was not the blocker: 99.2% end-to-end.** That hypothesis
+  is dead. The `event_teams` guard fired on **0 of 950 real legs with 0 false
+  positives**, and a probe confirmed it is live rather than silent.
+- **The verdict is still: do not build a scaled outcome backtest** — for the
+  sample arithmetic, which cannot be fixed. 8 events gave 2se = 23 points on
+  the hit rate; all 84 event-clusters would tighten ROI to roughly ±13%
+  against an effect of +1.3% to +4.1%. The NFL does not produce enough
+  independent games.
+- **Pinnacle IS available historically** (confirmed on event 53166: two-sided
+  main lines, `redacted: false`, liquidity, pre-kickoff snapshots). The
+  validation had de-vigged recreational books against themselves because its
+  pull excluded Pinnacle — always include it.
+- The hold got independent corroboration from a different data path: per-leg
+  Shin hold 6.30% compounds to **17.74%** over three legs, on the bottom edge
+  of the measured cross-game band.
 
-**What the answer decides:**
-- Resolution rate good → a scaled backtest stays viable for later in the
-  season, when enough history exists to say something.
-- Resolution rate poor → F2 tops out at what is already measured (the hold).
-  Stop building the backtest and put the effort into **P0, the boost-slip
-  optimiser**, using the hold numbers directly.
-
-Also check whether the `event_teams` guard produced any FALSE POSITIVES — it
-firing on a player who genuinely was in that game would mean it rejects real
-data.
+**Start with P0, the boost-slip optimiser.** It is the item that solves the
+actual use case and its input — the hold — is measured.
 
 ## The measured facts that drive decisions
 
@@ -90,12 +92,13 @@ assess a leg is not the leg being broken.
 
 ## Next, in order
 
-1. **Fold in whatever the validation found**, then decide F2's fate per the
-   rule above.
-2. **Re-measure the hold on a full Sunday slate** (Saturday, once props post).
-   Three events for a true cross-game SGPx, and BetMGM live.
-3. **P0 — the boost-slip optimiser.** This is the item that solves the actual
-   use case, and the hold numbers are the input it needs.
+1. **P0 — the boost-slip optimiser.** The item that solves the actual use
+   case. Its input is measured.
+2. **Widen the hold measurement** on a full Sunday slate — 3+ events for a
+   true cross-game SGPx, BetMGM live, and an attempt at the
+   same-game-correlated case that is currently unmeasurable.
+3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
+   that works at a $10 stake.
 4. Tiers 3–5 as listed in BACKLOG.md.
 
 ## Workflow improvement not yet done

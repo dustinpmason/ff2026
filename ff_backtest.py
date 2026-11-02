@@ -298,7 +298,8 @@ class Audit:
         return "\n".join(L)
 
 
-def audit(slips: list[Slip], fair_implied: list[float] | None = None) -> Audit:
+def audit(slips: list[Slip], fair_implied: list[float] | None = None,
+          cross_game: bool | None = None) -> Audit:
     """Run every falsification check. Call this BEFORE quoting any result.
 
     `fair_implied` is the no-vig probability of each slip, when available from
@@ -434,11 +435,22 @@ def audit(slips: list[Slip], fair_implied: list[float] | None = None) -> Audit:
     # Compare against what the boost can actually produce once the book's
     # hold is accounted for. Landing above the band is a reason to re-check
     # the grading, not a finding.
-    bands = [roi_band(s.slip_odds, s.boost_pct) for s in graded]
+    # `cross_game` must be passed, or the band quoted is the pessimistic
+    # SAME-GAME one. Measured live: a run of 250 genuinely cross-game slips
+    # was told to expect -8.5% to +2.0% when the correct band was +1.3% to
+    # +4.1% — the sign of the answer, from a default meant to be cautious.
+    # Cautious is right when structure is unknown; wrong when it is known and
+    # simply was not supplied.
+    bands = [roi_band(s.slip_odds, s.boost_pct, cross_game) for s in graded]
     band_lo = float(np.mean([b[0] for b in bands]))
     band_hi = float(np.mean([b[1] for b in bands]))
+    _hb = hold_band(cross_game)
+    _struct = ("cross-game" if cross_game else
+               "same-game" if cross_game is False else
+               "UNKNOWN structure, so the pessimistic same-game band — pass "
+               "cross_game= if you know")
     a.notes.append(f"expected ROI band for these slips, after SGP hold of "
-                   f"{SGP_HOLD_BAND[0]:.0%}-{SGP_HOLD_BAND[1]:.0%}: "
+                   f"{_hb[0]:.0%}-{_hb[1]:.0%} ({_struct}): "
                    f"{band_lo:+.1%} to {band_hi:+.1%}")
     if a.n_graded and a.roi > band_hi + 2 * a.hit_rate_se * 4:
         a.notes.append(f"realised ROI {a.roi:+.1%} is above the top of that "
