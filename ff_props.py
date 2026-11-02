@@ -1030,6 +1030,32 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
         caution(f"team volume at {u.team_volume_ratio:.0%} but share held at "
                 f"{u.share_ratio:.0%} — game script, not role loss")
 
+    # A binary, low-event stat breaks the threshold model. Measured live:
+    # Rome Odunze came back at 1.0% against a 25.2% Pinnacle fair line on 7
+    # games — a 24-point gap produced by a stat that is 0 or 1 each week with
+    # almost no events in the sample. The right outcome happened there only
+    # because the one-sided guard refused the unpriced side. A gap that large
+    # invites exactly the misreading this whole framing exists to prevent.
+    if est.stat.endswith("_tds") and est.line <= 1.5:
+        gap = abs(est.blended - (edge.fair_p if edge is not None
+                                 and edge.side == "OVER" else est.blended))
+        if est.hits <= 1 or est.n < 10:
+            # CAUTION, not VETO. The model abstaining is not the same as the
+            # leg being broken — a veto is for a collapsed role or a probable
+            # scratch. A TD leg the model cannot assess may be perfectly fine
+            # at the market price, and TD legs are a market Dustin actively
+            # wants. Vetoing them would remove a whole leg type for the wrong
+            # reason.
+            caution(f"MODEL ABSTAINS — binary stat, {est.hits} event(s) in "
+                    f"{est.n} games. Its {est.blended:.0%} is not evidence "
+                    f"either way; a {est.hits}/{est.n} sample cannot pin a TD "
+                    f"rate. Judge this leg on the market price alone and "
+                    f"ignore the gap shown.")
+        elif gap > 0.15:
+            caution(f"binary stat and the model disagrees with the market by "
+                    f"{gap*100:.0f} pts — on TD markets that is usually the "
+                    f"model being wrong, not an edge")
+
     if est.sample_verdict == "THIN":
         caution(f"only {est.n} games")
     if est.ci_width > 0.50:
@@ -1248,6 +1274,13 @@ def flatten_odds(response: dict,
                     "book": book,
                     "market": mk.get("key"),
                     "player": who,
+                    # Carried, not dropped. After three separate name-matching
+                    # bugs this project's standing rule is never to join
+                    # player data on a name — and an adapter that discards the
+                    # id forces exactly that. Not universally present:
+                    # DraftKings' anytime-TD board has player_id null for some
+                    # entries and for D/ST, so expect None and fall back.
+                    "player_id": oc.get("player_id"),
                     "line": oc.get("point"),
                     "over": None,
                     "under": None,
@@ -1257,17 +1290,59 @@ def flatten_odds(response: dict,
                     "last_update": oc.get("last_seen_at") or mk.get("last_update")
                                    or bk.get("last_update"),
                     "outcome_names": [],
+                    "unknown_labels": [],
+                    # DFS books price a leg at a multiplier; 1.0 is a standard
+                    # pick, 1.5 a boost, 0.75 a discount. Dropping it made a
+                    # boosted DFS leg indistinguishable from a standard one.
+                    "payout_multiplier": oc.get("payout_multiplier"),
                 })
                 price = _num(oc.get("price"))
                 g["outcome_names"].append(oc.get("name"))
+                if oc.get("payout_multiplier") is not None:
+                    g["payout_multiplier"] = oc.get("payout_multiplier")
+
                 if label in UNDER_NAMES:
-                    g["under"] = price
+                    side = "under"
+                elif label in OVER_NAMES:
+                    side = "over"
                 else:
-                    g["over"] = price
-                    # A milestone rung names its own threshold ("280+ Passing
-                    # Yards"); carry it so the caller knows what was priced.
-                    if label not in OVER_NAMES:
+                    # NOT silently the over. An unrecognised label on a market
+                    # that should pair two sides is the B24 signature all over
+                    # again — a plausible number instead of an error. A
+                    # synthetic `{"name": "Mystery Label", "price": -250}`
+                    # came back as over=-250 with nothing to show for it.
+                    #
+                    # Unrecognised labels ARE legitimate on one-sided boards:
+                    # anytime-TD names the player, a milestone names its rung
+                    # ("280+ Passing Yards"). Those carry point=None. A market
+                    # WITH a point is an Over/Under, so a strange label there
+                    # is recorded and surfaced.
+                    side = "over"
+                    if oc.get("point") is not None:
+                        g["unknown_labels"].append(oc.get("name"))
+                    elif "+" in str(oc.get("name") or ""):
                         g["rung"] = oc.get("name")
+                    else:
+                        # A player name on a one-sided board. Previously
+                        # written into `rung`, which made "Ameer Abdullah"
+                        # look like a threshold.
+                        g["outcome_label"] = oc.get("name")
+
+                if g[side] is not None:
+                    raise ValueError(
+                        f"two outcomes claim the same side of "
+                        f"{mk.get('key')} / {who} / {oc.get('point')} at "
+                        f"{book}: {g['outcome_names']}. One of them was "
+                        f"misclassified, so neither price can be trusted.")
+                g[side] = price
+
+            for g in groups.values():
+                if g["unknown_labels"]:
+                    g["label_warning"] = (
+                        f"unrecognised outcome label(s) "
+                        f"{g['unknown_labels']} on a market with a line "
+                        f"({g['line']}) — priced as the OVER, which may be "
+                        f"wrong. Check the raw response before betting it.")
             out += list(groups.values())
     return out
 
@@ -1370,6 +1445,13 @@ def screen_quotes(quotes: list[dict],
             # only `under` missed the Under-only case, which arrives whenever
             # a native outcome row is screened without being paired first.
             out.one_sided.append(book)
+
+        if q.get("label_warning"):
+            # A strange outcome label on a market that carries a line means
+            # the side assignment is a guess. Priced as the over, flagged
+            # here, and NOT quietly usable.
+            out.dropped.append((book, q["label_warning"]))
+            continue
 
         out.usable.append(q)
 

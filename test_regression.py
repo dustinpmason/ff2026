@@ -773,7 +773,89 @@ for _lbl, _q in (("over-only", {"book": "dk", "name": "Over", "price": -111,
     chk(f"{_lbl} row is flagged one-sided",
         screen_quotes([_q], max_age_s=10**9).one_sided == ["dk"])
 
-section("25. Monte Carlo resolution is reported (B20)")
+section("25. flatten_odds guards and carried fields (B28-B31)")
+def _mkresp(line_type, outcomes, market="player_pass_yds"):
+    return {"bookmakers": [{"key": "dk", "pregame_only": False,
+        "last_update": "2026-11-02T12:00:00+00:00", "markets": [
+        {"key": market, "line_type": line_type, "suspended_at": None,
+         "last_update": "2026-11-02T12:00:00+00:00",
+         "outcomes": outcomes}]}]}
+
+def _oc(name, price, point=222.5, **kw):
+    return dict(name=name, description="P", price=price, point=point,
+                last_seen_at="2026-11-02T12:00:00+00:00", **kw)
+
+# B28: an unrecognised label on a market WITH a line was silently priced as
+# the OVER — the B24 signature inside the adapter written to fix B24. A
+# synthetic {"name": "Mystery Label"} came back as over=-250 with no error.
+_myst = flatten_odds(_mkresp("main", [_oc("Mystery Label", -250),
+                                      _oc("Under", -113)]))[0]
+chk("unrecognised label on a lined market is recorded",
+    _myst["unknown_labels"] == ["Mystery Label"])
+chk("unrecognised label raises a warning on the quote",
+    "unrecognised outcome label" in _myst.get("label_warning", ""))
+chk("screen_quotes DROPS a quote with an unknown label",
+    len(screen_quotes([_myst], max_age_s=10**9).usable) == 0)
+chk("a normal Over/Under market carries no warning",
+    "label_warning" not in flatten_odds(
+        _mkresp("main", [_oc("Over", -111), _oc("Under", -113)]))[0])
+
+# One-sided boards legitimately carry odd labels — those are not warnings.
+_rung = flatten_odds(_mkresp("milestone",
+    [_oc("280+ Passing Yards", 349, None)]), line_type="milestone")[0]
+chk("milestone rung goes to `rung`, not unknown_labels",
+    _rung.get("rung") == "280+ Passing Yards" and not _rung["unknown_labels"])
+# B31: a player name on a one-sided board used to be written into `rung`,
+# making "Ameer Abdullah" look like a threshold.
+_td = flatten_odds(_mkresp("main", [_oc("Ameer Abdullah", 700, None)],
+                           market="player_anytime_td"))[0]
+chk("player name goes to `outcome_label`, not `rung`",
+    _td.get("outcome_label") == "Ameer Abdullah" and "rung" not in _td)
+
+# A side collision means one outcome was misclassified; neither price is safe.
+try:
+    flatten_odds(_mkresp("main", [_oc("Over", -111), _oc("Over", -120)]))
+    chk("two outcomes on the same side raises", False)
+except ValueError as _ex:
+    chk("two outcomes on the same side raises",
+        "claim the same side" in str(_ex))
+
+# B29/B30: fields the adapter used to discard.
+chk("player_id is carried",
+    flatten_odds(_mkresp("main", [_oc("Over", -111, player_id="espn:1"),
+                                  _oc("Under", -113, player_id="espn:1")])
+                 )[0]["player_id"] == "espn:1")
+chk("missing player_id is None, not an error",
+    flatten_odds(_mkresp("main", [_oc("Over", -111), _oc("Under", -113)])
+                 )[0]["player_id"] is None)
+chk("payout_multiplier is carried",
+    flatten_odds(_mkresp("main", [_oc("Over", -111, payout_multiplier=1.5),
+                                  _oc("Under", -113)])
+                 )[0]["payout_multiplier"] == 1.5)
+chk("line_type='alternate' returns rows when they exist",
+    len(flatten_odds(_mkresp("alternate", [_oc("Over", -140, 230.5),
+                                           _oc("Under", 115, 230.5)]),
+                     line_type="alternate")) == 1)
+
+section("26. model abstains on low-event binary stats (B32)")
+# Live: Rome Odunze came back at 1.0% against a 25.2% Pinnacle fair line on
+# 0-for-7. The threshold model cannot estimate a TD rate from that, and a
+# 24-point "gap" invites exactly the misreading the boost framing exists to
+# prevent. CAUTION, not VETO — the model abstaining is not the leg being
+# broken, and TD legs are a market actively in use.
+_reg26 = wk[wk.season_type == "REG"]
+for _who in ("Rome Odunze", "Travis Kelce"):
+    _et = threshold_prob(player_series(_reg26, _who, "receiving_tds"), 0.5)
+    _v, _r = boost_verdict(_et)
+    chk(f"{_who}: abstains rather than claiming an edge",
+        _v == "CAUTION" and any("MODEL ABSTAINS" in x for x in _r),
+        f"{_v}, model {_et.blended:.0%} on {_et.hits}/{_et.n}")
+_ey = threshold_prob(player_series(_reg26, "Jaxon Smith-Njigba",
+                                   "receiving_yards"), 79.5)
+chk("a continuous stat is not caught by the binary rule",
+    not any("MODEL ABSTAINS" in x for x in boost_verdict(_ey)[1]))
+
+section("27. Monte Carlo resolution is reported (B20)")
 # The LAST team holds the weakest players by construction, so it carries real
 # elimination risk while still fielding a legal lineup. Team 0 is strongest
 # and its P(elim) is 0, which makes se, sims_needed and the warning all
