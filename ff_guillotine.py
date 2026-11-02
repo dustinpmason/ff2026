@@ -77,7 +77,7 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from ff_data import MIN_TEAMS_COMPLETE_WEEK
+from ff_data import MIN_TEAMS_COMPLETE_WEEK, complete_weeks
 from ff_scoring import League, score
 
 RNG = np.random.default_rng(20261029)
@@ -103,7 +103,8 @@ SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 
 
-def team_byes(weekly: pd.DataFrame) -> dict[str, int]:
+def team_byes(weekly: pd.DataFrame,
+               current_week: int | None = None) -> dict[str, int]:
     """Each NFL team's bye week, derived from the data: the week in which no
     player on that team recorded a game."""
     df = weekly[weekly.season_type == "REG"] if "season_type" in weekly.columns else weekly
@@ -112,8 +113,7 @@ def team_byes(weekly: pd.DataFrame) -> dict[str, int]:
     # refreshed mid-week, so only Thursday's game is in) makes every team that
     # has not played yet look like it is on bye — this produced "21 teams on
     # bye in Week 8" when only the TNF game had been recorded.
-    per_week = df.groupby("week").team.nunique()
-    complete = set(per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK].index)
+    complete = complete_weeks(df, current_week)
     if not complete:
         return {}
     df = df[df.week.isin(complete)]

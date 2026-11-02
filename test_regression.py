@@ -411,9 +411,16 @@ chk("gap is in points, not a fraction",
 
 section("15. DATA AS OF completeness guard")
 _st = ff_data.data_status(2026)
-_pw = wk[wk.season_type == "REG"].groupby("week").team.nunique()
-_complete = _pw[_pw >= ff_data.MIN_TEAMS_COMPLETE_WEEK]
-_partial = _pw[_pw < ff_data.MIN_TEAMS_COMPLETE_WEEK]
+_reg15 = wk[wk.season_type == "REG"]
+_pw = _reg15.groupby("week").team.nunique()
+# Completeness comes from the shared function, NOT from the threshold alone.
+# This check used to recompute it as "every week clearing MIN_TEAMS", which is
+# the exact assumption B27 corrected — so it failed the moment the newest-week
+# rule landed. A check that re-implements the logic it is testing will always
+# drift away from it.
+_done = ff_data.complete_weeks(_reg15)
+_complete = _pw[[w in _done for w in _pw.index]]
+_partial = _pw[[w not in _done for w in _pw.index]]
 chk("reports the last COMPLETE week, not week.max()",
     f"through Week {int(_complete.index.max())}" in _st,
     f"complete through {int(_complete.index.max())}, "
@@ -421,10 +428,14 @@ chk("reports the last COMPLETE week, not week.max()",
 if not _partial.empty:
     chk("names the in-progress week instead of hiding it",
         "IN PROGRESS" in _st and
-        all(f"Week {int(w)}" in _st for w in _partial.index if w > _complete.index.max()),
+        all(f"Week {int(w)}" in _st for w in _partial.index
+            if w > _complete.index.max()),
         f"partial: {dict(_partial)}")
+    chk("names which teams have no rows yet, so byes are not inferred",
+        "no rows yet for" in _st and "do not read them as byes" in _st)
 else:
     chk("no partial week this run — nothing to flag", True)
+    chk("no partial week this run — nothing to name", True)
 chk("the three completeness guards agree",
     ff_props.bye_weeks(wk) == ff_guillotine.team_byes(wk))
 chk("guard is shared, not duplicated",
@@ -652,7 +663,53 @@ chk("replacement keys never enter my own lineup enumeration",
                 _teams_g[0]["roster"], _shared)
             for p in lu))
 
-section("23. native PropLine shape is read correctly (B24)")
+section("23. newest week is treated as in progress (B27)")
+from ff_data import complete_weeks
+# The threshold alone cannot decide this. On 2026-11-02 Week 8 held 26 teams,
+# clearing the old threshold of 20, so it was called COMPLETE while Chicago
+# and Seattle had not played Monday night. Both had played every other week,
+# so Week 8 was their only gap and team_byes assigned them A BYE IN WEEK 8 —
+# a wrong value, not a silent omission, on a week they were playing. Jaxon
+# Smith-Njigba (SEA) and Luther Burden III (CHI) were both in the live best
+# lineup at the time.
+def _wkframe(counts):
+    """counts: {week: n_teams} -> a minimal REG frame."""
+    rows = []
+    for w, n in counts.items():
+        for i in range(n):
+            rows.append({"week": w, "team": f"T{i:02d}", "season": 2026,
+                         "season_type": "REG"})
+    return pd.DataFrame(rows)
+
+_mid = _wkframe({1: 32, 2: 32, 3: 30, 4: 28, 5: 26})
+chk("newest week is excluded even when it clears the threshold",
+    complete_weeks(_mid) == {1, 2, 3, 4}, f"{sorted(complete_weeks(_mid))}")
+chk("earlier weeks below the threshold are still excluded",
+    complete_weeks(_wkframe({1: 32, 2: 2, 3: 30, 4: 28})) == {1, 3},
+    f"{sorted(complete_weeks(_wkframe({1: 32, 2: 2, 3: 30, 4: 28})))}")
+chk("connector current_week overrides the newest-week rule",
+    complete_weeks(_mid, current_week=6) == {1, 2, 3, 4, 5},
+    f"{sorted(complete_weeks(_mid, current_week=6))}")
+chk("current_week keeps the in-progress week out",
+    5 not in complete_weeks(_mid, current_week=5))
+chk("a single-week frame yields nothing complete",
+    complete_weeks(_wkframe({1: 32})) == set())
+
+# The live symptom: a team absent only from the newest week must NOT get a bye.
+_live = ff_data.load_weekly(2026)
+_b = ff_guillotine.team_byes(_live)
+_reg = _live[_live.season_type == "REG"]
+_maxw = int(_reg.week.max())
+_absent_newest = sorted(set(_reg.team) - set(_reg[_reg.week == _maxw].team))
+chk("no team is assigned a bye in the newest week",
+    all(v != _maxw for v in _b.values()),
+    f"week {_maxw}, {len(_absent_newest)} teams absent: {_absent_newest}")
+chk("byes that ARE established still resolve",
+    len(_b) >= 8, f"{len(_b)} teams with a known bye")
+chk("props and guillotine agree on byes",
+    ff_props.bye_weeks(_live) == _b)
+
+section("24. native PropLine shape is read correctly (B24)")
 from ff_props import flatten_odds, _prices
 # THE GAP THIS CLOSES: every fixture in sections 12 and 21 used the
 # pre-flattened {"over":…, "under":…} shape. propline_get_odds actually
@@ -716,7 +773,7 @@ for _lbl, _q in (("over-only", {"book": "dk", "name": "Over", "price": -111,
     chk(f"{_lbl} row is flagged one-sided",
         screen_quotes([_q], max_age_s=10**9).one_sided == ["dk"])
 
-section("24. Monte Carlo resolution is reported (B20)")
+section("25. Monte Carlo resolution is reported (B20)")
 # The LAST team holds the weakest players by construction, so it carries real
 # elimination risk while still fielding a legal lineup. Team 0 is strongest
 # and its P(elim) is 0, which makes se, sims_needed and the warning all

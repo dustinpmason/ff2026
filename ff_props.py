@@ -40,7 +40,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from ff_data import ensure_deps, MIN_TEAMS_COMPLETE_WEEK
+from ff_data import ensure_deps, MIN_TEAMS_COMPLETE_WEEK, complete_weeks
 
 # scipy is used for the normal-fit estimate. A fresh sandbox does not have it,
 # and without this the failure lands on the first prop question rather than at
@@ -210,7 +210,8 @@ class Decline:
         return "\n".join(L)
 
 
-def bye_weeks(weekly: pd.DataFrame) -> dict[str, int]:
+def bye_weeks(weekly: pd.DataFrame,
+              current_week: int | None = None) -> dict[str, int]:
     """Each team's bye, derived from the data: the week in which no player on
     that team recorded a game. Avoids needing a schedule feed to tell a bye
     apart from an absence."""
@@ -220,8 +221,7 @@ def bye_weeks(weekly: pd.DataFrame) -> dict[str, int]:
     # refreshed mid-week, so only Thursday's game is in) makes every team that
     # has not played yet look like it is on bye — this produced "21 teams on
     # bye in Week 8" when only the TNF game had been recorded.
-    per_week = df.groupby("week").team.nunique()
-    complete = set(per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK].index)
+    complete = complete_weeks(df, current_week)
     if not complete:
         return {}
     df = df[df.week.isin(complete)]

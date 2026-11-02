@@ -194,13 +194,51 @@ def refresh_all(years: list[int] | None = None, force: bool = True) -> None:
 
 
 # A week counts as complete when at least this many teams recorded a game.
-# A full slate is 28-32 teams (32 minus byes); a Thursday-only partial week is
+# A full slate is 26-32 teams (32 minus byes); a Thursday-only partial week is
 # 2. Shared by data_status(), bye_weeks() and team_byes() so the three cannot
 # disagree about which weeks are real.
 MIN_TEAMS_COMPLETE_WEEK = 20
 
 
-def data_status(year: int = CURRENT_SEASON) -> str:
+def complete_weeks(reg: "pd.DataFrame",
+                   current_week: int | None = None) -> set[int]:
+    """Which regular-season weeks are actually finished.
+
+    Two rules, because a team count alone cannot decide this:
+
+    1. The HIGHEST week present is treated as IN PROGRESS. Data arrives
+       incrementally through a week, so the newest week is always the one
+       most likely to be partial — and a count cannot tell a finished week
+       from an unfinished one. On 2026-11-02 Week 8 held 26 teams, which
+       cleared the old threshold of 20, so it was called complete while
+       Chicago and Seattle had not yet played Monday night. Worse than the
+       wrong label: both had played every other week, so Week 8 was their
+       only gap and `team_byes()` assigned them **a bye in Week 8** — a wrong
+       value, not a silent omission, and one that would have excluded Bears
+       and Seahawks players from a lineup on a week they were playing.
+
+    2. Any other week needs MIN_TEAMS_COMPLETE_WEEK teams, which catches the
+       opposite case: on 2026-10-30 Week 8 held 2 teams (the Thursday game)
+       and 30 teams looked like they were on bye.
+
+    `current_week` from the connector overrides rule 1 when supplied: a week
+    strictly below the current week is finished whatever the data looks like.
+    Pass it when you have it — without it this is deliberately conservative,
+    and will call a genuinely finished week in-progress until the next week's
+    first game lands.
+    """
+    per_week = reg.groupby("week").team.nunique()
+    weeks = {int(w) for w, n in per_week.items()
+             if n >= MIN_TEAMS_COMPLETE_WEEK}
+    if not weeks:
+        return set()
+    if current_week is not None:
+        return {w for w in weeks if w < int(current_week)}
+    return weeks - {int(per_week.index.max())}
+
+
+def data_status(year: int = CURRENT_SEASON,
+                current_week: int | None = None) -> str:
     """How current is the data? Report the latest completed week on file.
 
     Always surface this before giving advice — if the latest week on file is
@@ -239,8 +277,9 @@ def data_status(year: int = CURRENT_SEASON) -> str:
     # did not, which is the worst place to miss it — it is the one claim that
     # travels with every other number.
     per_week = reg.groupby("week").team.nunique()
-    complete = per_week[per_week >= MIN_TEAMS_COMPLETE_WEEK]
-    partial = per_week[per_week < MIN_TEAMS_COMPLETE_WEEK]
+    done = complete_weeks(reg, current_week)
+    complete = per_week[[w in done for w in per_week.index]]
+    partial = per_week[[w not in done for w in per_week.index]]
 
     pulled = time.strftime("%Y-%m-%d %H:%M",
                            time.localtime(_dest("weekly", year).stat().st_mtime))
@@ -253,9 +292,16 @@ def data_status(year: int = CURRENT_SEASON) -> str:
     out = [f"DATA AS OF: {year} regular season complete through Week {last}."]
     extra = partial[partial.index > last]
     if not extra.empty:
-        bits = ", ".join(f"Week {int(w)} ({int(n)} teams)"
-                         for w, n in extra.items())
-        out.append(f"IN PROGRESS, do not treat as complete: {bits}.")
+        bits = []
+        for w, n in extra.items():
+            played = set(reg[reg.week == w].team)
+            absent = sorted(set(reg.team) - played)
+            bits.append(f"Week {int(w)} ({int(n)} teams; no rows yet for "
+                        f"{', '.join(absent) if absent else 'none'})")
+        out.append("IN PROGRESS, do not treat as complete: "
+                   + "; ".join(bits) + ". Teams with no rows are EITHER on "
+                   "bye OR have not played yet — the data cannot tell them "
+                   "apart, so do not read them as byes.")
     out.append(f"Files pulled {pulled}. Weeks after {last} are not complete "
                f"in this data.")
     return " ".join(out)
