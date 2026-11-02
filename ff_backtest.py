@@ -89,6 +89,14 @@ class Leg:
     odds: float                    # American, as available PRE-GAME
     quoted_at: str                 # snapshot timestamp of that price
     commence_time: str
+    # The two nflverse team codes in this event, e.g. ("PIT", "IND"). Supply
+    # it whenever you can: it is the only check that catches a WRONG BUT
+    # VALID player id. A fabricated "espn:4241478" resolved to DeVonta Smith
+    # (PHI) instead of Jaylen Warren (PIT); Smith had no row that week, so
+    # the pipeline returned a plausible "did not play" rather than an error —
+    # the B24/B28 signature again. With the event's teams known, a player
+    # from neither team is caught immediately.
+    event_teams: tuple[str, str] | None = None
     # Filled by grading.
     actual: float | None = None
     result: str | None = None      # WIN / LOSS / PUSH / UNGRADED
@@ -139,10 +147,50 @@ def breakeven_p(slip_odds: float, boost_pct: float) -> float:
     return 1.0 / (1.0 + (d - 1.0) * (1.0 + boost_pct))
 
 
-# Books price a same-game parlay with far more margin than a single leg. This
-# band is what a 3-leg SGP typically carries; the exact figure varies by book
-# and by how correlated the legs are.
-SGP_HOLD_BAND = (0.08, 0.20)
+# MEASURED 2026-11-02, not guessed. 12 priced 3-leg combinations, 2 events,
+# DraftKings and FanDuel. The earlier guess of (8%, 20%) was badly optimistic:
+# 8% was not attained by a single slip, and the lowest compounded leg vig
+# observed was 17.7%.
+#
+# And it is not ONE number — structure matters more than price does:
+#
+#   CROSS-GAME (SGPx): hold 18.6% median, range 17.7-20.9%. This is just the
+#     per-leg vig compounded, and it is EXACT for cross-game, because the
+#     measured correlation table says cross-game legs are independent, so no
+#     correlation model is needed. Confirmed against price_parlay.
+#
+#   SAME-GAME, independent legs (three receivers, say): hold 30.2% median,
+#     range 23.1-37.2%. The extra ~12 points is the book haircutting legs
+#     that are NOT actually correlated — you pay for correlation that does
+#     not exist.
+#
+#   SAME-GAME, correlated (a QB stack): NOT MEASURABLE this way. The book's
+#     price implies the true joint is 1.8-1.95x the independent product, and
+#     whether QB-WR at +0.31 delivers that on a ~12.6% three-way tail needs a
+#     joint model this project does not have. The apparent "hold" of 80-95%
+#     on those slips is mostly real correlation, not margin. Do not quote it.
+#
+# Corroboration: the books' own correlation_factor tracked the measured
+# correlation table closely — 0.61-0.65 on QB stacks, 0.87-0.96 on
+# receiver-only slips, and ABOVE 1.0 on opposing RBs, i.e. the book paying
+# for the -0.14 anti-correlation.
+SGP_HOLD_CROSS_GAME = (0.177, 0.209)
+SGP_HOLD_SAME_GAME = (0.231, 0.372)
+
+# Kept for callers that do not know the slip's structure. Deliberately the
+# SAME-GAME band, because assuming the cheaper product when you do not know
+# which you have is the error that loses money.
+SGP_HOLD_BAND = SGP_HOLD_SAME_GAME
+
+
+def hold_band(cross_game: bool | None = None) -> tuple[float, float]:
+    """The measured hold band for a slip of this structure.
+
+    `cross_game=None` means unknown, and returns the same-game band — the
+    pessimistic one. Guessing the cheaper product is how you talk yourself
+    into a slip that is not +EV.
+    """
+    return SGP_HOLD_CROSS_GAME if cross_game else SGP_HOLD_SAME_GAME
 
 
 def expected_roi(slip_odds: float, boost_pct: float,
@@ -167,11 +215,29 @@ def expected_roi(slip_odds: float, boost_pct: float,
     return p * (d - 1.0) * (1.0 + boost_pct) - (1.0 - p)
 
 
-def roi_band(slip_odds: float, boost_pct: float) -> tuple[float, float]:
-    """(pessimistic, optimistic) ROI across the plausible SGP hold band."""
-    hi = expected_roi(slip_odds, boost_pct, SGP_HOLD_BAND[0])
-    lo = expected_roi(slip_odds, boost_pct, SGP_HOLD_BAND[1])
-    return (lo, hi)
+def roi_band(slip_odds: float, boost_pct: float,
+             cross_game: bool | None = None) -> tuple[float, float]:
+    """(pessimistic, optimistic) ROI across the measured hold band."""
+    band = hold_band(cross_game)
+    return (expected_roi(slip_odds, boost_pct, band[1]),
+            expected_roi(slip_odds, boost_pct, band[0]))
+
+
+def min_boost(slip_odds: float, cross_game: bool | None = None,
+              step: float = 0.005) -> float:
+    """The smallest boost that makes this slip +EV at the measured hold.
+
+    Measured answers: a +300 cross-game SGPx needs about 25%; the same slip
+    built same-game needs about 40%. Structure is worth ~15 points of boost,
+    which makes "prefer SGPx" the main lever rather than a tidiness
+    preference.
+    """
+    b = 0.0
+    while b <= 2.0:
+        if expected_roi(slip_odds, b, hold_band(cross_game)[1]) > 0:
+            return b
+        b += step
+    return float("nan")
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +315,23 @@ def audit(slips: list[Slip], fair_implied: list[float] | None = None) -> Audit:
     graded = [s for s in slips if s.result in ("WIN", "LOSS")]
     a.n_graded = len(graded)
 
+    # 0. The wrong-id guard can only fire when the event's teams are known,
+    #    and without it a wrong id grades as a NORMAL WIN OR LOSS. Measured:
+    #    a fabricated id resolved to DeVonta Smith, who played and cleared
+    #    the line, so the leg graded WIN — a wrong answer with no trace. At
+    #    backtest scale that is a systematic hole, not an edge case.
+    no_teams = [l for s in slips for l in s.legs if not l.event_teams]
+    if no_teams:
+        share_nt = len(no_teams) / max(len([l for s in slips for l in s.legs]), 1)
+        msg = (f"{len(no_teams)} leg(s) ({share_nt:.0%}) carry no "
+               f"`event_teams`, so a wrong player_id cannot be detected — it "
+               f"would grade as an ordinary win or loss. Supply the event's "
+               f"two nflverse team codes on every leg.")
+        if share_nt > 0.10:
+            a.fail(msg)
+        else:
+            a.notes.append(msg)
+
     # 1. Lookahead. Every price must predate its own kickoff.
     late = [(s.week, l.player, l.quoted_at, l.commence_time)
             for s in slips for l in s.legs
@@ -297,7 +380,24 @@ def audit(slips: list[Slip], fair_implied: list[float] | None = None) -> Audit:
     ev = {l.event_id for s in graded for l in s.legs}
     a.n_clusters = len(ev)
     n_eff = min(len(graded), max(a.n_clusters, 1))
-    a.hit_rate_se = math.sqrt(max(a.hit_rate * (1 - a.hit_rate), 1e-12) / n_eff)
+
+    # AGRESTI-COULL, not the raw binomial. At a 0% or 100% hit rate the plain
+    # binomial se is exactly zero, so the audit claimed PERFECT resolution
+    # from the least informative sample possible: two slips, both losses,
+    # printed "2 se on the hit rate is 0.0%" and "resolving 1 point needs ~0
+    # slips". That is the B33 error — noise read as signal — committed inside
+    # the audit's own noise reporting. Adding two notional successes and two
+    # failures keeps the interval finite at the boundaries, which is what the
+    # estimator is for.
+    # Computed on the FULL sample, then inflated by the design effect
+    # sqrt(n / n_eff) for clustering. An earlier version divided `wins` (a
+    # count over all slips) by `n_eff` (a count of events), which mixes
+    # scales: 25 wins over 1 cluster gave p_adj = 5.4 and a math domain
+    # error on sqrt of a negative.
+    n_full = len(graded)
+    p_adj = (wins + 2.0) / (n_full + 4.0)
+    se_full = math.sqrt(p_adj * (1.0 - p_adj) / (n_full + 4.0))
+    a.hit_rate_se = se_full * math.sqrt(n_full / max(n_eff, 1))
     if a.n_clusters < len(graded):
         a.notes.append(f"{len(graded)} slips but only {a.n_clusters} distinct "
                        f"event(s) — slips from one game are correlated, so "
@@ -361,11 +461,17 @@ def audit(slips: list[Slip], fair_implied: list[float] | None = None) -> Audit:
     # 5. Noise floor. The lesson from quoting a 20k-sim figure as a
     #    measurement: say what the sample can and cannot resolve.
     two_se = 2 * a.hit_rate_se
-    a.notes.append(f"2 se on the hit rate is {two_se:.1%}; at {len(graded)} "
-                   f"slips do not read any difference smaller than that as "
-                   f"real. Resolving 1 point needs ~"
-                   f"{int(4 * a.hit_rate * (1 - a.hit_rate) / 0.01**2):,} "
-                   f"slips.")
+    # Sized off the ADJUSTED rate, so a degenerate sample cannot claim
+    # perfect resolution.
+    need = int(math.ceil(4.0 * p_adj * (1.0 - p_adj) / 0.01 ** 2))
+    a.notes.append(f"2 se on the hit rate is {two_se:.1%} over {n_eff} "
+                   f"effective observation(s); do not read any difference "
+                   f"smaller than that as real. Resolving 1 point needs "
+                   f"~{need:,} independent slips.")
+    if n_eff < 30:
+        a.notes.append(f"{n_eff} effective observation(s) is too few to "
+                       f"measure anything about profitability — this sample "
+                       f"can only catch a pipeline fault, not an edge")
     return a
 
 
@@ -404,13 +510,13 @@ def resolve_gsis(propline_player_id: str | None,
 # Grading, against local nflverse stats
 # ---------------------------------------------------------------------------
 
-def _actual(weekly: pd.DataFrame, gsis_id: str, week: int,
-            market: str) -> float | None:
+def _rows(weekly: pd.DataFrame, gsis_id: str, week: int) -> pd.DataFrame:
+    return weekly[(weekly.player_id == gsis_id) & (weekly.week == week)]
+
+
+def _actual(rows: pd.DataFrame, market: str) -> float | None:
     cols = MARKET_STAT.get(market)
-    if not cols:
-        return None
-    rows = weekly[(weekly.player_id == gsis_id) & (weekly.week == week)]
-    if rows.empty:
+    if not cols or rows.empty:
         return None
     total = 0.0
     for c in cols:
@@ -439,10 +545,30 @@ def grade_leg(leg: Leg, weekly: pd.DataFrame) -> Leg:
         leg.result, leg.ungraded_reason = "UNGRADED", "no line and no implicit line"
         return leg
 
-    actual = _actual(weekly, leg.gsis_id, leg.week, leg.market)
+    rows = _rows(weekly, leg.gsis_id, leg.week)
+
+    # WRONG-ID GUARD. Checked before the "did not play" branch, because a
+    # wrong id usually LOOKS like a player who did not play — which is a
+    # plausible answer, and therefore the dangerous one.
+    if leg.event_teams and not rows.empty and "team" in rows.columns:
+        teams = {str(t) for t in rows.team.unique()}
+        if not (teams & set(leg.event_teams)):
+            leg.result = "UNGRADED"
+            leg.ungraded_reason = (
+                f"id resolves to a player on {sorted(teams)}, who is not in "
+                f"this event ({' vs '.join(leg.event_teams)}) — "
+                f"player_id {leg.propline_player_id!r} is probably wrong")
+            return leg
+
+    actual = _actual(rows, leg.market)
     if actual is None:
         leg.result = "UNGRADED"
-        leg.ungraded_reason = "no stat row for that player-week (did not play)"
+        reason = "no stat row for that player-week (did not play)"
+        if leg.event_teams:
+            reason += (" — note a WRONG player_id also looks like this when "
+                       "the wrong player also sat; the team check above only "
+                       "fires when he played")
+        leg.ungraded_reason = reason
         return leg
 
     leg.actual = actual

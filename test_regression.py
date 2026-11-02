@@ -869,13 +869,32 @@ chk("a bigger boost always lowers the bar",
     breakeven_p(300, 0.50) < breakeven_p(300, 0.30) < breakeven_p(300, 0.20))
 chk("$10 at +300 with 30% boost returns $49",
     abs(boosted_return(10, 300, 0.30) - 49.0) < 1e-9)
-# Hold matters more than it looks: a 20% boost is break-even at best.
-chk("a 20% boost can be NEGATIVE after SGP hold",
-    roi_band(300, 0.20)[0] < 0, f"{roi_band(300, 0.20)[0]:+.1%} pessimistic")
-chk("a 30% boost is positive across the hold band",
-    roi_band(300, 0.30)[0] > 0, f"{roi_band(300, 0.30)[0]:+.1%} pessimistic")
+# MEASURED holds, not guessed. These assertions replaced ones built on a
+# guessed (8%, 20%) band — the old check "a 30% boost is positive across the
+# hold band" was TRUE under the guess and FALSE against the measurement,
+# which is how the wrong band would have survived.
+from ff_backtest import (hold_band, min_boost, SGP_HOLD_CROSS_GAME,
+                         SGP_HOLD_SAME_GAME)
+chk("the hold band is the measured one, not the old guess",
+    SGP_HOLD_CROSS_GAME[0] > 0.17 and SGP_HOLD_SAME_GAME[1] > 0.35,
+    f"cross {SGP_HOLD_CROSS_GAME}, same {SGP_HOLD_SAME_GAME}")
+chk("same-game costs more hold than cross-game",
+    SGP_HOLD_SAME_GAME[0] > SGP_HOLD_CROSS_GAME[1])
+chk("unknown structure defaults to the PESSIMISTIC band",
+    hold_band(None) == SGP_HOLD_SAME_GAME)
+chk("a 20% boost is negative on both structures",
+    roi_band(300, 0.20, True)[0] < 0 and roi_band(300, 0.20, False)[0] < 0,
+    f"cross {roi_band(300, 0.20, True)[0]:+.1%}, "
+    f"same {roi_band(300, 0.20, False)[0]:+.1%}")
+chk("a 30% boost is marginal cross-game and NEGATIVE same-game",
+    roi_band(300, 0.30, True)[1] > 0 > roi_band(300, 0.30, False)[1],
+    f"cross {roi_band(300, 0.30, True)[1]:+.1%} best case, "
+    f"same {roi_band(300, 0.30, False)[1]:+.1%} best case")
+chk("structure is worth 15+ points of boost",
+    min_boost(300, False) - min_boost(300, True) > 0.15,
+    f"cross needs {min_boost(300, True):.0%}, same needs {min_boost(300, False):.0%}")
 chk("zero hold is the ceiling, not the expectation",
-    expected_roi(300, 0.30, 0.0) > roi_band(300, 0.30)[1])
+    expected_roi(300, 0.30, 0.0) > roi_band(300, 0.30, True)[1])
 
 # The ESPN->GSIS crosswalk: grading by id, never by name.
 _roster = pd.read_parquet(ff_data._dest("roster", 2026))
@@ -942,7 +961,8 @@ def _synth(n_wins, n, odds=300, boost=0.30, quoted="2026-10-19T12:00:00Z",
                      market="player_pass_yds", player=f"p{i}",
                      propline_player_id=f"espn:{i}", gsis_id=f"00-{i}",
                      line=200.5, side="OVER", odds=-110, quoted_at=quoted,
-                     commence_time="2026-10-19T17:00:00Z") for _ in range(3)]
+                     commence_time="2026-10-19T17:00:00Z",
+                     event_teams=("PIT", "TB")) for _ in range(3)]
         sl = BSlip(week=7, legs=legs, slip_odds=odds, boost_pct=boost)
         if i < ungraded:
             legs[0].result, legs[0].ungraded_reason = "UNGRADED", "did not play"
@@ -988,7 +1008,8 @@ def _clustered(n, per_event):
                      propline_player_id=None, gsis_id="00-1", line=200.5,
                      side="OVER", odds=-110,
                      quoted_at="2026-10-19T12:00:00Z",
-                     commence_time="2026-10-19T17:00:00Z") for _ in range(3)]
+                     commence_time="2026-10-19T17:00:00Z",
+                     event_teams=("PIT", "TB")) for _ in range(3)]
         sl = BSlip(week=7, legs=legs, slip_odds=300, boost_pct=0.30)
         _w = i < n // 4
         for l in legs:
@@ -1007,6 +1028,68 @@ chk("clustered slips get a WIDER error bar",
     f"{_spread.hit_rate_se:.1%} spread vs {_tight.hit_rate_se:.1%} clustered")
 chk("clustering is reported, not silently applied",
     any("correlated" in n for n in _tight.notes))
+
+# B34: the noise floor collapsed at a 0% or 100% hit rate. Two slips, both
+# losses, printed "2 se is 0.0%" and "resolving 1 point needs ~0 slips" —
+# perfect resolution claimed from the least informative sample possible,
+# which is the B33 error inside the audit's own noise reporting.
+def _degenerate(n_wins, n):
+    out = []
+    for i in range(n):
+        legs = [BLeg(week=7, event_id=f"e{i}", book="dk",
+                     market="player_pass_yds", player="p",
+                     propline_player_id=None, gsis_id="00-1", line=200.5,
+                     side="OVER", odds=-110,
+                     quoted_at="2026-10-19T12:00:00Z",
+                     commence_time="2026-10-19T17:00:00Z",
+                     event_teams=("PIT", "TB"))]
+        sl = BSlip(week=7, legs=legs, slip_odds=300, boost_pct=0.30)
+        _w = i < n_wins
+        for l in legs:
+            l.result = "WIN" if _w else "LOSS"
+        sl.result = "WIN" if _w else "LOSS"
+        sl.payout = boosted_return(10, 300, 0.30) if _w else 0.0
+        out.append(sl)
+    return out
+
+for _nw, _lbl in ((0, "0% hit rate"), (2, "100% hit rate")):
+    _d = audit(_degenerate(_nw, 2))
+    chk(f"se stays finite at a {_lbl}", _d.hit_rate_se > 0.05,
+        f"se {_d.hit_rate_se:.1%}")
+chk("a tiny sample does not claim to resolve 1 point cheaply",
+    all("~0 slips" not in n for n in audit(_degenerate(0, 2)).notes))
+chk("a tiny sample is told it cannot measure profitability",
+    any("too few" in n for n in audit(_degenerate(0, 2)).notes))
+chk("a large well-spread sample is not warned",
+    not any("too few" in n for n in audit(_clustered(200, 1)).notes))
+# The scale bug: wins counted over slips, divided by cluster count.
+chk("clustered wins do not produce a math domain error",
+    audit(_clustered(100, 100)).hit_rate_se > 0)
+
+# B35: a wrong-but-valid player id graded as an ordinary win.
+_roster35 = pd.read_parquet(ff_data._dest("roster", 2026))
+_cw35 = espn_to_gsis(_roster35)
+def _leg35(pid, teams):
+    return BLeg(week=6, event_id="53245", book="dk",
+                market="player_reception_yds", player="?",
+                propline_player_id=pid, gsis_id=resolve_gsis(pid, _cw35),
+                line=26.5, side="OVER", odds=-110,
+                quoted_at="2026-10-18T12:00:00Z",
+                commence_time="2026-10-18T17:00:00Z", event_teams=teams)
+# espn:4241478 is DeVonta Smith (PHI) — a real player, not in PIT@TB.
+_wrong = grade_leg(_leg35("espn:4241478", ("PIT", "TB")), _reg27)
+chk("a player from neither team is caught, not graded",
+    _wrong.result == "UNGRADED" and "probably wrong" in (_wrong.ungraded_reason or ""),
+    f"{_wrong.result}")
+chk("without event_teams the same id grades as an ordinary result",
+    grade_leg(_leg35("espn:4241478", None), _reg27).result in ("WIN", "LOSS"))
+chk("a real player in the event still grades",
+    grade_leg(_leg35("espn:3116165", ("PIT", "TB")), _reg27).result == "WIN")
+_noteams = BSlip(week=6, legs=[_leg35("espn:3116165", None)],
+                 slip_odds=300, boost_pct=0.30)
+grade_slip(_noteams, _reg27)
+chk("the audit FAILS when legs carry no event_teams",
+    not audit([_noteams]).ok)
 
 section("28. Monte Carlo resolution is reported (B20)")
 # The LAST team holds the weakest players by construction, so it carries real
