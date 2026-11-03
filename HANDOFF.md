@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "223 checks run, 223 passed, 0 failed"
+python3 test_regression.py        # expect: "288 checks run, 288 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md** and **PROJECT-INSTRUCTIONS.md** from the repo. They are
@@ -33,9 +33,10 @@ context.
 
 ## Current state
 
-- **223 regression checks, all passing.** Six engine modules: `ff_data`,
-  `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`.
-- Tier 0 and Tier 1 complete. P1 complete. F2 partially complete.
+- **288 regression checks, all passing.** Seven engine modules: `ff_data`,
+  `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
+  `ff_boost`.
+- Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
 - Eight deployment-test rounds done. Six of eight found real bugs.
 
 ## F2 is settled — nothing is waiting on an answer
@@ -58,8 +59,9 @@ The pipeline validation ran on 8 events, Weeks 5–6, 950 graded legs.
   Shin hold 6.30% compounds to **17.74%** over three legs, on the bottom edge
   of the measured cross-game band.
 
-**Start with P0, the boost-slip optimiser.** It is the item that solves the
-actual use case and its input — the hold — is measured.
+**P0 is now built.** `ff_boost.py` — see the P0 section in BACKLOG.md for what
+it does, what it refuses to do, and why step 4 of the original spec was
+replaced.
 
 ## The measured facts that drive decisions
 
@@ -92,11 +94,20 @@ assess a leg is not the leg being broken.
 
 ## Next, in order
 
-1. **P0 — the boost-slip optimiser.** The item that solves the actual use
-   case. Its input is measured.
-2. **Widen the hold measurement** on a full Sunday slate — 3+ events for a
+1. **Widen the hold measurement** on a full Sunday slate — 3+ events for a
    true cross-game SGPx, BetMGM live, and an attempt at the
-   same-game-correlated case that is currently unmeasurable.
+   same-game-correlated case that is currently unmeasurable. **Measure both
+   structures deliberately.** Dustin uses single-game mode about half the
+   time (TNF/SNF/MNF boosts are usually offered for that game alone), so the
+   same-game band is not secondary — and at 23.1–37.2% off 12 slips on one
+   slate it is the weaker of the two numbers. It is also the number that
+   will be rejecting most of his standalone-game boosts, so it had better be
+   right.
+2. **Deployment-test P0** on a live slate. Eight of eight prior rounds that
+   touched new code found something; this module has never seen a real
+   payload. The intake path (`get_event_ev` + `flatten_odds` +
+   `screen_quotes` → `BoostLeg`) is the part most likely to be wrong,
+   because every fixture behind it is synthetic by design.
 3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
    that works at a $10 stake.
 4. Tiers 3–5 as listed in BACKLOG.md.

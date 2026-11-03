@@ -656,6 +656,98 @@ offer. So the useful question is which legs are quietly broken — the collapsed
 role, the market three books just suspended — and that is what gets vetoed.
 Stake sizing does not apply; `STAKES` is for standalone props only.
 
+## Building a boost slip — `ff_boost.py`
+
+This is the module that solves the actual use case. It does **not** fetch
+anything: the sandbox has no network to PropLine and the MCP tools are
+yours, not Python's. Pull the payloads, build `BoostLeg`s, then let it
+enumerate.
+
+**Mode is an explicit input and is never inferred**, because nothing in the
+sandbox can read a boost's terms:
+
+- `mode="single-game"` + `event_id=` — a TNF/SNF/MNF boost offered on one
+  game. **Roughly half of all use.**
+- `mode="cross-game"` — the Sunday 1pm/4pm windows, legs from any game that
+  has not kicked off.
+
+```python
+from ff_props import flatten_odds, screen_quotes, boost_verdict
+from ff_boost import BoostLeg, enumerate_candidates, price_candidate, report
+
+# 1. price from YOUR book; fair probability from a sharp anchor, devig="shin"
+quotes = flatten_odds(resp, line_type="main")
+scr    = screen_quotes(quotes, game_started=False)
+
+# 2. one BoostLeg per surviving quote. verdict comes from boost_verdict().
+legs = [BoostLeg(event_id="53172", book="draftkings",
+                 market="player_reception_yds", player="Rashee Rice",
+                 side="OVER", line=45.5, odds=-145,
+                 fair_prob=0.578, fair_source="pinnacle (via get_event_ev)",
+                 devig_method="shin (get_event_ev)",
+                 team="KC", pos="WR",          # from build_meta(), not recall
+                 verdict=v, verdict_reasons=why), ...]
+
+# 3. shortlist locally — costs no tool calls
+sl = enumerate_candidates(legs, meta, boost_pct=0.30, mode="cross-game")
+if not sl.playable:
+    print(sl.reason)      # say this to Dustin. Do not go looking for a slip.
+
+# 4. price ONLY the shortlist. price_sgp is one call per slip per book.
+c = price_candidate(sl.candidates[0], book_odds=352, correlation_factor=0.94)
+print(report([c], "30% boost"))
+```
+
+**`team` and `pos` come from `build_meta()` or the connector, never from
+recall.** The module uses them to decide whether legs correlate, so a wrong
+team silently changes a slip's structure and therefore its hold band.
+
+### What it will refuse, and why you should not argue with it
+
+**`playable=False` is the answer.** It goes False when the boost does not
+cover the measured hold for that structure. Report `sl.reason` and stop —
+do not rebuild the slip a different way to get a yes. The individual
+candidates are still in `sl.candidates` with their numbers if Dustin asks.
+
+Expect this often in single-game mode: same-game at +300 is −16.2% at a 20%
+boost and −10.7% at 30%, and the measured minimum is ~50%. Stretching to
++500 does not rescue it. **If the typical standalone-game offer is 20–30%,
+the honest answer on most of them is "don't play this."**
+
+### The three structures, and the one that gets no EV
+
+`classify()` derives the structure **from the legs**. A caller asking for
+cross-game does not make a slip cross-game — two legs in one event make it
+`mixed`, which takes the pessimistic same-game band.
+
+- **cross-game** — fair joint is the product of the de-vigged legs, so
+  P(cash) and EV are real numbers. The default.
+- **same-game-independent** — also priceable, but the measured hold is
+  ~12 points worse.
+- **same-game-correlated** — **no EV, no P(cash), ever.** The true joint is
+  not the product and this project has no joint model. It still returns the
+  real price, the real payout and the book's factor against the measured
+  table. **Unpriceable is not a verdict against the slip** — the 30.2%
+  same-game figure was measured on independent legs and does not apply.
+
+### Reading the output
+
+- **`ev_pct` is None until the slip is priced.** Before pricing, the only
+  honest number is `ev_band`, the anticipated ROI across the measured hold.
+  The product of the legs is a shortlisting estimate, not a price anyone
+  will lay — three legs at −150 are +363 as a product and +225 at a 0.62
+  factor. An EV computed against the product is an EV for a bet that does
+  not exist, and an early build of this module printed a cheerful "+15.7%"
+  next to a NEGATIVE verdict for exactly that reason.
+- **`slip_hold` beats the reference band once priced.** The band is a
+  population figure; `slip_hold` is the hold observed on the slip in front
+  of you.
+- **`factor_note` is qualitative and stays that way.** Never back the joint
+  out of `correlation_factor` — it cancels.
+- **P(cash) inherits the anchor.** It is a product of de-vigged market
+  probabilities and will look precise. Read `fair_source` off the line being
+  priced; the anchor is per-LINE, not per-book.
+
 ## Backtesting — `ff_backtest.py`, and what it can and cannot answer
 
 **It cannot tell you whether the strategy is profitable. Do not ask it to.**

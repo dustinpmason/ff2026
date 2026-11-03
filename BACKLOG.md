@@ -137,11 +137,129 @@ All shipped and covered by `test_regression.py` (37 checks, all passing).
 
 ### Next, now that F2 is settled
 
-| # | Item | Why |
-|---|---|---|
-| **1** | Widen the hold measurement, not the outcome backtest | `SGP_HOLD_*` is what every ROI figure depends on, it converges fast because prices carry no outcome variance, and the same-game-correlated case is still unmeasurable. Re-run on a full Sunday slate with 3+ events and BetMGM live. |
-| **2** | **P0 — the boost-slip optimiser** | The item that solves the actual use case. The hold numbers are its input and they are now measured. |
-| **3** | Grade forward via the bet log | CLV across 30+ legs is the measurement that actually works at a $10 stake. A retrospective backtest of a strategy claiming no leg-selection edge was never going to produce a trustworthy number. |
+HANDOFF.md and this table disagreed on the order of items 1 and 2 — a real
+contradiction between the two docs, now resolved in favour of P0 first.
+**P0 depends on the hold's interface, not its value.** `ff_boost` imports
+`SGP_HOLD_*` from `ff_backtest` rather than restating them, so Sunday's
+re-measurement updates one place and P0 follows it with no rework. Meanwhile
+the re-measurement is gated on a full Sunday slate, and running it on a
+Monday reproduces the exact constraint that caused the original caveat.
+
+| # | Item | Status | Why |
+|---|---|---|---|
+| **1** | **P0 — the boost-slip optimiser** | **DONE 2026-11-02** | `ff_boost.py`, 65 checks. See the P0 section below. |
+| **2** | Widen the hold measurement | NEXT | `SGP_HOLD_*` is what every ROI figure depends on, it converges fast because prices carry no outcome variance, and the same-game-correlated case is still unmeasurable. Re-run on a full Sunday slate with 3+ events and BetMGM live. **Re-scoped:** Dustin uses single-game mode roughly half the time (TNF/SNF/MNF boosts), so the same-game band matters at least as much as the cross-game one — and it is the weaker number, 23.1–37.2% off 12 slips on one slate. Measure both structures deliberately, not just the cross-game case the original caveat named. |
+| **3** | Grade forward via the bet log | | CLV across 30+ legs is the measurement that actually works at a $10 stake. A retrospective backtest of a strategy claiming no leg-selection edge was never going to produce a trustworthy number. |
+
+## P0 — boost-slip optimiser · COMPLETE (2026-11-02)
+
+`ff_boost.py`. Falsification criteria written first, as `test_boost.py`, then
+folded into `test_regression.py` as sections 29–39 once green. Suite went
+223 → **288 checks**.
+
+### Usage, as stated by Dustin 2026-11-02
+
+**Single-game mode is roughly half the use**, not an edge case — TNF/SNF/MNF
+boosts are usually offered for that game alone. Cross-game is the Sunday
+1pm/4pm window. Both are first-class; mode is an explicit input because the
+module cannot read a boost's terms.
+
+Consequence worth stating plainly: **under the measured numbers P0 will
+refuse most standalone-game boosts.** Same-game at +300 is −16.2% at a 20%
+boost and −10.7% at 30%; the measured minimum is ~50%. Stretching to +500
+does not rescue it (−8.9% at 30%). If the typical TNF offer is 20–30%, the
+honest answer on most of them is "don't play this."
+
+### Step 4 of the original spec was replaced
+
+The 2026-10-29 spec said to **prefer** positively correlated combinations
+because they raise the true joint. That is wrong on its own terms, before
+the hold measurement is even considered: it counts the lift and not its
+price. Books charge 0.61–0.65 on QB stacks, and this project's own note
+records that their factors track the measured correlation table closely.
+Buying a real lift at its real price is not an edge, and it costs you the
+ability to state an EV.
+
+Two further reasons it was replaced:
+
+- **The haircut fights the +300 floor, which is the binding constraint.**
+  Three legs at −150 price at +363 independent and +225 at a 0.62 factor. To
+  clear +300 same-game-correlated you must reach for materially longer legs
+  — lower per-leg hit probability — against an unquantifiable correlation
+  offset. Cross-game at ~1.0 clears the floor with the shortest legs.
+- **The table's actionable content is a veto, not a selector.** The
+  detectable bad deal is a book haircutting legs the table puts at ~0.00
+  (receiver-only slips came back 0.87–0.96). That is a charge for
+  correlation that does not exist, and it needs no joint model.
+
+**Replacement:** default to cross-game. Construct same-game candidates too,
+tagged by structure. Penalise a `correlation_factor` lower than the table
+justifies. Correlated slips carry a price, a payout and the factor
+comparison but **never an EV or a P(cash)**. When the boost restricts the
+slip to one game, prefer correlated over same-game-independent and say why.
+
+### Decisions made during the build
+
+| | |
+|---|---|
+| **A `mixed` structure kind** | Two legs in one event and a third elsewhere is neither cross-game nor same-game. It takes the pessimistic band. Without it, the likeliest real mistake — accidentally doubling up on one game while building a Sunday slip — reads as cross-game and gets scored against a band ~12 points too favourable. That is B36's signature in the one direction this module is most exposed to. |
+| **Structure is derived, never declared** | `classify()` reads it off the legs. A caller passing `mode="cross-game"` does not make a slip cross-game. |
+| **Refusal, with the losers still visible** | `Shortlist.playable` is the headline verdict and goes False when the boost does not cover the measured hold. Every enumerated slip is still returned carrying its own `PLAY` / `NEGATIVE` / `UNPRICEABLE` tag and its numbers. A returned slip reads as a recommendation, so the verdict has to be separate from the data — but hiding the data is the other failure. |
+| **UNPRICEABLE counts as playable, NEGATIVE does not** | The 30.2% same-game figure was measured on *independent* legs. Letting it reject a stack would be using a number outside what it measured. |
+| **P0 can detect opposing RBs; the guillotine cannot** | `correlation_matrix()` treats every different-team pair as independent because it does not model the schedule. P0 knows the event, so two backs inside one event are genuinely facing each other and the measured −0.14 applies. |
+| **`fair_prob` validated at construction** | Same rule as B4, one layer earlier: a 0.0 or 1.0 cannot reach a slip. |
+| **`price_candidate` returns a copy** | B19 shipped because a function mutated a shared pool in place and a later run inherited the earlier one's state. |
+
+### B37 — two EV computations that could contradict each other
+
+Found by reading the suite's own output on the first green run, not by a
+check. The 20%-boost refusal printed *"a 20% boost returns nothing playable
+— Best candidate is **+15.7%** at the pessimistic end"*: a positive EV
+beside a NEGATIVE verdict.
+
+Cause: `verdict` derived the true probability from the offered price and the
+measured hold, while `ev_pct` used the de-vigged joint directly against the
+*independent product* — which is not a price anyone will lay. The book's SGP
+quote is routinely far shorter, so a direct EV computed against the product
+is an EV for a bet that does not exist.
+
+Fix: `ev_pct` is **None until the slip is priced**. Before pricing the only
+honest number is `ev_band`, the anticipated ROI across the measured hold
+band. Once a real `price_sgp` quote is attached, `ev_pct` is computed
+against *that*, and `slip_hold` reports the hold actually observed on that
+slip rather than the population band — which for a cross-game slip is the
+better number, since the band is a population figure and this is the slip in
+front of you.
+
+This is the project's recurring signature again: a plausible number rather
+than an error, in the flattering direction.
+
+### Falsification probes
+
+Each of the four documented failure modes was confirmed catchable by
+deliberately breaking the module and checking the right checks went red:
+
+| Break | Result |
+|---|---|
+| mixed slips tagged `cross-game` | 3 failures, including the hold-band check |
+| EV/P(cash)/breakeven ungated on correlated slips | 3 failures |
+| `correlation_factor` divided into the joint | 1 failure — EV moved when the factor moved |
+| floor read off the product, not the book price | 1 failure |
+
+Breaking `ev_pct`'s gate *alone* raises a `TypeError` rather than failing a
+check, because `p_cash` is gated by the same flag. The harness names the
+section and exits non-zero, so nothing is silent, but the assertion itself
+is only exercised when both gates are removed together.
+
+### Not built, deliberately
+
+- **No fetching.** The sandbox has no network to PropLine and the MCP tools
+  belong to the session. Every function takes already-pulled payloads, the
+  same shape as `flatten_odds`.
+- **No full-slate pricing.** `price_sgp` is one call per slip per book, and a
+  Sunday slate enumerates hundreds of combinations. Enumeration and ranking
+  are local and free; the shortlist caps at 8 and only those get priced. The
+  local ranking is a heuristic, the book price is the answer.
 
 ## Tier 2 — core builds · ~5 hours
 
@@ -149,8 +267,8 @@ All shipped and covered by `test_regression.py` (37 checks, all passing).
 
 | # | Item | Effort | Payoff |
 |---|---|---|---|
-| **F2** | Backtest harness + method comparison | 120m | **BUILD FIRST.** Decides which construction method P0 should implement, measured on games already played at zero risk |
-| **P0** | Boost-slip optimizer | 90m | Implements whichever method F2 says actually cashes |
+| ~~**F2**~~ | Backtest harness + method comparison | — | **SETTLED 2026-11-02.** Verdict: do not build a scaled outcome backtest. See the F2 section above. |
+| ~~**P0**~~ | Boost-slip optimizer | — | **DONE 2026-11-02.** `ff_boost.py`. See the P0 section above. |
 | **F1** | Market-implied fantasy projections | 60-90m | Independent of the other two — build whenever. `get_event_ev` already returns fair probs, so a ~50/50 line IS the market's median projection for that stat. Improves every lineup call across 4 leagues |
 
 **Why F2 first, reversing the original order:** P0 has to commit to a
