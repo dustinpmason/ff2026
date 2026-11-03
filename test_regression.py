@@ -11,7 +11,7 @@ import atexit, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 import ff_boost
-from ff_boost import (BoostLeg, classify, independent_odds,
+from ff_boost import (BoostLeg, classify, independent_odds, make_candidate,
                       enumerate_candidates, price_candidate, FLOOR, CEILING)
 from ff_data import load_weekly, load_pbp
 from ff_scoring import LEAGUES, score, score_all, add_explosive_tds, prepare
@@ -479,21 +479,44 @@ _pfb = ff_guillotine.build_pool(_wk2, LEAGUES["guillotine"], season=2026)
 chk("2026-only pool has no stale entries", len(_p26.stale) == 0)
 chk("fallback pool adds prior-season players", len(_pfb) > len(_p26),
     f"{len(_p26)} -> {len(_pfb)}, {len(_pfb.stale)} stale")
+# SYNTHETIC, by requirement. These three checks used to name Zach
+# Charbonnet as the returning player and De'Zhaun Stribling as the absent
+# one, read straight from live nflverse. On 2026-11-03 Charbonnet played
+# Week 8, picked up a 2026 row, and all three checks failed — the data
+# moved out from under the fixture. That is B21/B23 a third time: a
+# regression check must not depend on live data, which changes weekly,
+# when the condition it needs (a player with prior-season rows only) can
+# be constructed exactly.
+_tmpl = _wk2[_wk2.season == 2025].head(1)
+def _synth_rows(name, season, n):
+    r = pd.concat([_tmpl] * n, ignore_index=True)
+    r["player_display_name"] = name
+    r["season"] = season
+    r["week"] = range(1, n + 1)
+    return r
+# "Absent Player" is deliberately NOT added to the frame — the point of
+# that check is a name with no rows in any season, which is a different
+# situation from a returning player and must get a different answer.
+_syn = pd.concat([_wk2, _synth_rows("Returning Player", 2025, 12)],
+                 ignore_index=True)
+_s26 = ff_guillotine.build_pool(_syn[_syn.season == 2026], LEAGUES["guillotine"])
+_sfb = ff_guillotine.build_pool(_syn, LEAGUES["guillotine"], season=2026)
+
 chk("returning player resolves only with the fallback",
-    ff_guillotine.resolve("Zach Charbonnet", _p26) is None
-    and ff_guillotine.resolve("Zach Charbonnet", _pfb) is not None)
+    ff_guillotine.resolve("Returning Player", _s26) is None
+    and ff_guillotine.resolve("Returning Player", _sfb) is not None)
 chk("returning player is marked stale",
-    ff_guillotine.resolve("Zach Charbonnet", _pfb) in _pfb.stale)
+    ff_guillotine.resolve("Returning Player", _sfb) in _sfb.stale)
 chk("truly-absent player stays unresolved in both",
-    ff_guillotine.resolve("De'Zhaun Stribling", _p26) is None
-    and ff_guillotine.resolve("De'Zhaun Stribling", _pfb) is None)
+    ff_guillotine.resolve("Absent Player", _s26) is None
+    and ff_guillotine.resolve("Absent Player", _sfb) is None)
 _fakeroster = [{"team_id": "9", "team_name": "T",
-                "roster": {"RB": ["Zach Charbonnet"],
-                           "BN": ["De'Zhaun Stribling"]}}]
+                "roster": {"RB": ["Returning Player"],
+                           "BN": ["Absent Player"]}}]
 chk("stale and unresolved are reported separately",
-    ff_guillotine.stale_names(_fakeroster, _pfb) == {"T": ["Zach Charbonnet"]}
-    and ff_guillotine.unresolved(_fakeroster, _pfb)
-        == {"T": ["De'Zhaun Stribling"]})
+    ff_guillotine.stale_names(_fakeroster, _sfb) == {"T": ["Returning Player"]}
+    and ff_guillotine.unresolved(_fakeroster, _sfb)
+        == {"T": ["Absent Player"]})
 _raw = _pfb["Zach Charbonnet"]
 _drawn = ff_guillotine._draw(_pfb, "Zach Charbonnet", 40000)
 chk("stale draw widens the spread but keeps the level",
@@ -1191,6 +1214,7 @@ def leg(player, event_id, odds=-150, fair_prob=0.60, **kw):
         devig_method=kw.pop("devig_method", "shin (get_event_ev)"),
         line=kw.pop("line", 45.5),
         player_id=kw.pop("player_id", f"espn:{abs(hash(player)) % 10**7}"),
+        verdict=kw.pop("verdict", "CLEAR"),
         team=META.get(player, (None, None))[0],
         pos=META.get(player, (None, None))[1],
         **kw,
@@ -1199,7 +1223,9 @@ def leg(player, event_id, odds=-150, fair_prob=0.60, **kw):
 
 CROSS = [leg("WR A1", EV1), leg("WR C1", EV2), leg("WR E1", EV3)]
 SAME_INDEP = [leg("WR A1", EV1), leg("WR A2", EV1), leg("WR B1", EV1)]
-SAME_STACK = [leg("QB A", EV1), leg("WR A1", EV1), leg("RB B1", EV1)]
+SAME_STACK = [leg("QB A", EV1, market="player_pass_yds"),
+              leg("WR A1", EV1),
+              leg("RB B1", EV1, market="player_rush_yds")]
 
 
 section("29. P0 boost optimiser — constants")
@@ -1227,12 +1253,15 @@ chk("a correlated slip is NOT priceable", s.priceable is False)
 chk("the correlated pair is named with its r",
     any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs), str(s.pairs))
 
-s = classify([leg("QB A", EV1), leg("TE A1", EV1), leg("WR B1", EV1)], META)
+s = classify([leg("QB A", EV1, market="player_pass_yds"),
+              leg("TE A1", EV1), leg("WR B1", EV1)], META)
 chk("QB + his own TE is correlated (+0.27)",
     s.kind == "same-game-correlated" and any(abs(p[2] - 0.27) < 1e-9
                                              for p in s.pairs), s.kind)
 
-s = classify([leg("QB A", EV1), leg("RB A1", EV1), leg("WR B1", EV1)], META)
+s = classify([leg("QB A", EV1, market="player_pass_yds"),
+              leg("RB A1", EV1, market="player_rush_yds"),
+              leg("WR B1", EV1)], META)
 chk("QB + his own RB is correlated (-0.10), not independent",
     s.kind == "same-game-correlated" and any(abs(p[2] + 0.10) < 1e-9
                                              for p in s.pairs), s.kind)
@@ -1240,11 +1269,15 @@ chk("QB + his own RB is correlated (-0.10), not independent",
 # The guillotine's correlation_matrix cannot see the schedule, so it treats
 # every different-team pair as independent. P0 knows the event, so two backs
 # inside one event ARE facing each other and the measured -0.14 applies.
-s = classify([leg("RB A1", EV1), leg("RB B1", EV1), leg("WR C1", EV2)], META)
+s = classify([leg("RB A1", EV1, market="player_rush_yds"),
+              leg("RB B1", EV1, market="player_rush_yds"),
+              leg("WR C1", EV2)], META)
 chk("opposing RBs inside one event are correlated (-0.14)",
     any(abs(p[2] + 0.14) < 1e-9 for p in s.pairs), str(s.pairs))
 
-s = classify([leg("RB A1", EV1), leg("RB C1", EV2), leg("WR E1", EV3)], META)
+s = classify([leg("RB A1", EV1, market="player_rush_yds"),
+              leg("RB C1", EV2, market="player_rush_yds"),
+              leg("WR E1", EV3)], META)
 chk("RBs in DIFFERENT events are independent, not opposing",
     s.kind == "cross-game" and s.pairs == [], f"{s.kind} {s.pairs}")
 
@@ -1253,6 +1286,113 @@ s = classify([leg("WR A1", EV1), leg("WR A2", EV1), leg("WR C1", EV2)], META)
 chk("two legs sharing an event are NOT cross-game", s.kind != "cross-game", s.kind)
 chk("a mixed slip is tagged mixed, not same-game",
     s.kind == "mixed", s.kind)
+
+# ---------------------------------------------------------------------------
+section("30b. independence is ESTABLISHED, never assumed")
+# Found on first contact with live payloads, 2026-11-02. Every check here is
+# a way the module could score a correlated slip as independent and hand it
+# an EV it must never receive.
+# ---------------------------------------------------------------------------
+# build_meta() returns Travis Hunter as CB — his nflverse primary position —
+# while he carries a receiving prop on his QB's team. Position-keyed
+# classification scored that as independent. The side must come from the
+# MARKET, which is what the correlation table was measured on.
+CB_META = dict(META, **{"CB A1": ("AAA", "CB")})
+s = classify([leg("QB A", EV1, market="player_pass_yds"),
+              leg("CB A1", EV1, market="player_reception_yds"),
+              leg("WR B1", EV1)], CB_META)
+chk("a receiving prop on a CB still pairs with his QB",
+    s.kind == "same-game-correlated" and not s.priceable, s.kind)
+chk("the pair is scored off the market, not the roster label",
+    any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs), str(s.pairs))
+
+s = classify([leg("QB A", EV1, market="player_pass_yds"),
+              leg("TE A1", EV1, market="player_reception_yds"),
+              leg("WR B1", EV1)], META)
+chk("a TE receiving prop takes the TE coefficient, not the WR one",
+    any(abs(p[2] - 0.27) < 1e-9 for p in s.pairs), str(s.pairs))
+
+# The correlation table was measured on YARDS. anytime-TD is a boost staple
+# and nobody here has measured it, so independence would be a claim.
+s = classify([leg("WR A1", EV1, market="player_anytime_td", line=None),
+              leg("WR A2", EV1, market="player_anytime_td", line=None),
+              leg("WR B1", EV1)], META)
+chk("two same-event anytime-TD legs are NOT asserted independent",
+    not s.priceable, f"{s.kind} priceable={s.priceable}")
+chk("the unmeasured pair is kept apart from the measured ones",
+    s.unmeasured and not s.pairs, f"{s.unmeasured} / {s.pairs}")
+chk("the reason says independence would be an assumption",
+    "assumption" in s.reason.lower(), s.reason[:90])
+
+c = make_candidate([leg("WR A1", EV1, market="player_anytime_td", line=None),
+                    leg("WR A2", EV1, market="player_anytime_td", line=None),
+                    leg("WR B1", EV1)], META, boost_pct=0.50)
+chk("an unmeasured-market slip gets no EV", c.ev_pct is None)
+chk("an unmeasured-market slip gets no P(cash)", c.p_cash is None)
+
+# Cross-game is the pair the measurement IS emphatic about, so an
+# unmeasured market across different events stays independent.
+s = classify([leg("WR A1", EV1, market="player_anytime_td", line=None),
+              leg("WR C1", EV2, market="player_anytime_td", line=None),
+              leg("WR E1", EV3)], META)
+chk("anytime-TD legs in DIFFERENT events are still independent",
+    s.priceable and s.kind == "cross-game", f"{s.kind} {s.unmeasured}")
+
+# A missing team used to read as "uncorrelated". A live run built all 32
+# legs with team=None and every one classified independent.
+noteam = BoostLeg(event_id=EV1, book="draftkings",
+                  market="player_reception_yds", player="Ghost",
+                  side="OVER", odds=-150, fair_prob=0.6,
+                  fair_source="pinnacle", devig_method="shin",
+                  verdict="CLEAR")
+s = classify([leg("QB A", EV1, market="player_pass_yds"), noteam,
+              leg("WR B1", EV1)], {})
+chk("an unknown team in a shared event is unmeasurable, not independent",
+    not s.priceable, f"{s.kind} priceable={s.priceable}")
+chk("the unknown team is named", "Ghost" in str(s.unmeasured),
+    str(s.unmeasured))
+
+# ---------------------------------------------------------------------------
+section("30c. an unchecked leg is not a clear leg")
+# A live run built 32 legs that all read CLEAR without boost_verdict() ever
+# being called. "Nothing found against it" must not be the default state.
+# ---------------------------------------------------------------------------
+chk("BoostLeg defaults to UNSCREENED, not CLEAR",
+    BoostLeg(event_id=EV1, book="dk", market="player_reception_yds",
+             player="X", side="OVER", odds=-150, fair_prob=0.6,
+             fair_source="pinnacle", devig_method="shin").verdict
+    == "UNSCREENED")
+uns = leg("WR C1", EV2, verdict="UNSCREENED")
+sl = enumerate_candidates([leg("WR A1", EV1), uns, leg("WR E1", EV3)],
+                          META, boost_pct=0.50, mode="cross-game")
+chk("an UNSCREENED leg never reaches a slip",
+    all(uns.player not in [l.player for l in cc.legs]
+        for cc in sl.candidates))
+chk("the drop says the screen was never run",
+    any("boost_verdict" in why for _, why in sl.dropped), str(sl.dropped))
+
+# ---------------------------------------------------------------------------
+section("30d. the refusal reason reports the measured direction")
+# Live: all 4,144 combinations priced ABOVE the ceiling and none below the
+# floor, and the hardcoded string said "legs are too short".
+# ---------------------------------------------------------------------------
+long_legs = [leg("WR A1", EV1, odds=120, fair_prob=0.45),
+             leg("WR C1", EV2, odds=120, fair_prob=0.45),
+             leg("WR E1", EV3, odds=120, fair_prob=0.45)]
+sl = enumerate_candidates(long_legs, META, boost_pct=0.50, mode="cross-game")
+chk("legs too LONG are reported as too long", "too LONG" in sl.reason,
+    sl.reason)
+chk("legs too long are NOT reported as too short",
+    "too short" not in sl.reason.lower(), sl.reason)
+
+tiny = [leg("WR A1", EV1, odds=-400, fair_prob=0.80),
+        leg("WR C1", EV2, odds=-400, fair_prob=0.80),
+        leg("WR E1", EV3, odds=-400, fair_prob=0.80)]
+sl = enumerate_candidates(tiny, META, boost_pct=0.50, mode="cross-game")
+chk("legs too SHORT are still reported as too short",
+    "too short" in sl.reason.lower(), sl.reason)
+chk("the short reason names the floor, not the ceiling",
+    "BELOW" in sl.reason, sl.reason)
 
 # ---------------------------------------------------------------------------
 section("31. the floor applies to the price you can actually bet")

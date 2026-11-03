@@ -127,6 +127,32 @@ MODES = ("cross-game", "single-game")
 SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 
+# The measured table was built on YARDS — QB passing, RB rushing, WR/TE
+# receiving. So the side of a pair is decided by the MARKET being bet, not
+# by the player's roster label.
+#
+# Found live 2026-11-02: build_meta() returns Travis Hunter as CB (his
+# nflverse primary position) while he carries a receiving-yards prop on
+# Trevor Lawrence's team. Position-keyed classification scored a genuine
+# QB x receiver pair as INDEPENDENT, which hands it the cheaper hold band
+# AND an ev_pct and p_cash it must never receive. Two failure modes at
+# once, arriving through the data rather than the code — and he was in the
+# shortlisted candidate that got priced.
+MARKET_SIDE = {
+    "player_pass_yds": "PASS",
+    "player_rush_yds": "RUSH",
+    "player_reception_yds": "RECV",
+}
+
+# Markets NOT in MARKET_SIDE are outside what the correlation table
+# measured. player_anytime_td is the one that matters: it is a boost-parlay
+# staple, and two same-team receivers both scoring correlates through team
+# TD volume in a way nobody here has measured. Asserting +0.00 for them
+# would be claiming a measurement that does not exist, so a same-event pair
+# involving an unmeasured market is treated as UNMEASURED and makes the
+# slip unpriceable. Different-event pairs stay independent regardless of
+# market — that one IS measured, and it is what makes cross-game exact.
+
 VERDICTS = {
     "PLAY": "Clears the floor and is +EV at the pessimistic end of the "
             "measured hold band.",
@@ -167,7 +193,12 @@ class BoostLeg:
     devig_method: str
     line: float | None = None
     player_id: str | None = None
-    verdict: str = "CLEAR"                       # from ff_props.boost_verdict
+    # Default is UNSCREENED, not CLEAR. "Nothing was found against this
+    # leg" must not be the state you get when nothing was checked — that is
+    # the shape of the 6.0 phantom-player mean (B1), which outranked 1,058
+    # real players by being the fallback. A live run built 32 legs that all
+    # read CLEAR without boost_verdict() ever being called.
+    verdict: str = "UNSCREENED"                  # from ff_props.boost_verdict
     verdict_reasons: tuple[str, ...] = ()
     team: str | None = None
     pos: str | None = None
@@ -178,7 +209,7 @@ class BoostLeg:
                 f"fair_prob must be strictly between 0 and 1, got "
                 f"{self.fair_prob!r} for {self.player}. A 0 or 1 makes the "
                 f"EV infinite rather than wrong, which is harder to notice.")
-        if self.verdict not in ("CLEAR", "CAUTION", "VETO"):
+        if self.verdict not in ("CLEAR", "CAUTION", "VETO", "UNSCREENED"):
             raise ValueError(f"unknown leg verdict {self.verdict!r}")
         self.verdict_reasons = tuple(self.verdict_reasons)
 
@@ -206,9 +237,13 @@ class BoostLeg:
 class Structure:
     kind: str                       # cross-game | same-game-independent
                                     # | same-game-correlated | mixed
-    pairs: list[tuple]              # (player_a, player_b, r, why)
+    pairs: list[tuple]              # (player_a, player_b, r, why) — measured
     priceable: bool
     reason: str
+    # Pairs the measured table says NOTHING about. Kept apart from `pairs`
+    # on purpose: a measured +0.31 and an unmeasured unknown both block an
+    # EV, but only one of them is a number.
+    unmeasured: list[tuple] = field(default_factory=list)
 
     @property
     def cross_game(self) -> bool:
@@ -231,22 +266,45 @@ class Structure:
         return "same-game band 23.1-37.2% — all legs in one event"
 
 
-def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float, str]:
-    """Measured correlation for one pair, and why. Zero unless they share an
-    event — two players in different games are independent."""
+def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
+    """Measured correlation for one pair, and why.
+
+    Returns (0.0, "") for an established-independent pair, a non-zero r for
+    a measured correlation, and (None, why) for a pair the table never
+    measured — which is NOT the same as zero and must not be treated as it.
+    """
+    # Different games. This is the one the measurement is emphatic about,
+    # and it holds whatever the markets are.
     if a.event_id != b.event_id:
         return 0.0, ""
-    pa, pb = a.pos, b.pos
-    if pa is None or pb is None:
+
+    # Same event: team decides same-side vs opposing, so an unknown team
+    # makes the pair unmeasurable rather than independent.
+    if not a.team or not b.team:
+        missing = a.player if not a.team else b.player
+        return None, (f"no team known for {missing}, and these legs share "
+                      f"an event — cannot tell a teammate from an opponent")
+
+    sa, sb = MARKET_SIDE.get(a.market), MARKET_SIDE.get(b.market)
+    if sa is None or sb is None:
+        bad = a.market if sa is None else b.market
+        return None, (f"{bad} is outside the measured correlation table "
+                      f"(which was built on passing/rushing/receiving "
+                      f"YARDS), and these legs share an event")
+
+    if a.team == b.team:
+        # WR vs TE only refines the magnitude; default to the larger one.
+        if {sa, sb} == {"PASS", "RECV"}:
+            pos = (a.pos if sa == "RECV" else b.pos) or ""
+            r = SAME_TEAM_CORR[("QB", "TE")] if pos.upper() == "TE" \
+                else SAME_TEAM_CORR[("QB", "WR")]
+            return r, f"same team passing x receiving ({pos or 'receiver'})"
+        if {sa, sb} == {"PASS", "RUSH"}:
+            return SAME_TEAM_CORR[("QB", "RB")], "same team passing x rushing"
         return 0.0, ""
-    if a.team and b.team and a.team == b.team:
-        key = (pa, pb) if (pa, pb) in SAME_TEAM_CORR else (pb, pa)
-        if key in SAME_TEAM_CORR:
-            return SAME_TEAM_CORR[key], f"same team {key[0]}x{key[1]}"
-        return 0.0, ""
-    key = (pa, pb) if (pa, pb) in OPPOSING_CORR else (pb, pa)
-    if key in OPPOSING_CORR:
-        return OPPOSING_CORR[key], f"opposing {key[0]}x{key[1]} in one event"
+
+    if sa == "RUSH" and sb == "RUSH":
+        return OPPOSING_CORR[("RB", "RB")], "opposing rushing in one event"
     return 0.0, ""
 
 
@@ -265,25 +323,29 @@ def classify(legs, meta=None) -> Structure:
             if l.team is None or l.pos is None:
                 l.team, l.pos = meta.get(l.player, (None, None))
 
-    pairs = []
+    pairs, unmeasured = [], []
     for a, b in combinations(legs, 2):
         r, why = _pair_r(a, b)
-        if r:
+        if r is None:
+            unmeasured.append((a.player, b.player, why))
+        elif r:
             pairs.append((a.player, b.player, r, why))
 
     events = {l.event_id for l in legs}
     if len(events) == len(legs):
         kind = "cross-game"
     elif len(events) == 1:
-        kind = "same-game-correlated" if pairs else "same-game-independent"
+        kind = ("same-game-correlated" if (pairs or unmeasured)
+                else "same-game-independent")
     else:
         kind = "mixed"
 
-    priceable = not pairs
+    priceable = not pairs and not unmeasured
     if priceable:
-        reason = ("fair joint is the product of the de-vigged legs — no "
-                  "correlated pair in this slip")
-    else:
+        reason = ("fair joint is the product of the de-vigged legs — every "
+                  "pair in this slip is established-independent by the "
+                  "measured table")
+    elif pairs:
         detail = "; ".join(f"{a} x {b} r={r:+.2f} ({why})"
                            for a, b, r, why in pairs)
         reason = (f"NOT priceable: {detail}. The true joint is not the "
@@ -291,8 +353,13 @@ def classify(legs, meta=None) -> Structure:
                   f"is reported. That is not a verdict against the slip — "
                   f"the measured same-game hold was measured on INDEPENDENT "
                   f"legs and does not apply here.")
+    else:
+        detail = "; ".join(f"{a} x {b}: {why}" for a, b, why in unmeasured)
+        reason = (f"NOT priceable: {detail}. Independence here would be an "
+                  f"assumption, not a measurement, and assuming it is what "
+                  f"hands a correlated slip an EV it should never get.")
     return Structure(kind=kind, pairs=pairs, priceable=priceable,
-                     reason=reason)
+                     reason=reason, unmeasured=unmeasured)
 
 
 def independent_odds(legs) -> float:
@@ -533,6 +600,11 @@ def _intake(legs, mode: str, event_id: str | None) -> tuple[list, list]:
             dropped.append((l.player, "VETO: " +
                             ("; ".join(l.verdict_reasons) or "unspecified")))
             continue
+        if l.verdict == "UNSCREENED":
+            dropped.append((l.player,
+                            "never passed through boost_verdict() — run the "
+                            "screen; an unchecked leg is not a clear one"))
+            continue
         if l.circular:
             dropped.append((l.player,
                             f"fair line sourced from {l.book}, the book being "
@@ -586,13 +658,18 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
         combos = [list(c) for c in combinations(kept, legs_per_slip)]
 
     seen, cands = set(), []
+    n_short, n_long = 0, 0        # measured, not guessed — see the reason below
     for c in combos:
         names = tuple(sorted(l.player for l in c))
         if len(set(names)) != len(names) or names in seen:
             continue
         seen.add(names)
         cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake)
-        if not (floor <= cand.independent_odds <= ceiling):
+        if cand.independent_odds < floor:
+            n_short += 1
+            continue
+        if cand.independent_odds > ceiling:
+            n_long += 1
             continue
         cands.append(cand)
 
@@ -604,9 +681,28 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
         if not kept:
             reason = "every leg was dropped at intake"
         elif not cands:
-            reason = (f"no combination lands in the +{floor:.0f} to "
-                      f"+{ceiling:.0f} floor band — "
-                      f"{'legs are too short' if combos else 'not enough legs'}")
+            # The direction is MEASURED per combination, never assumed. The
+            # first version hardcoded "legs are too short"; on a live board
+            # all 4,144 combinations were ABOVE the ceiling and none below
+            # the floor, so it sent the reader hunting the wrong way. A
+            # plausible sentence instead of an error, which is this
+            # project's recurring signature.
+            if not n_short and not n_long:
+                reason = (f"not enough legs to build a "
+                          f"{legs_per_slip}-leg slip")
+            elif n_long and not n_short:
+                reason = (f"all {n_long} combination(s) price ABOVE the "
+                          f"+{ceiling:.0f} ceiling — the legs are too LONG "
+                          f"for this band. Either raise `ceiling`, or "
+                          f"pick legs at lower prices.")
+            elif n_short and not n_long:
+                reason = (f"all {n_short} combination(s) price BELOW the "
+                          f"+{floor:.0f} floor — the legs are too short to "
+                          f"reach the boost's minimum price.")
+            else:
+                reason = (f"no combination lands in the +{floor:.0f} to "
+                          f"+{ceiling:.0f} band: {n_short} below the floor, "
+                          f"{n_long} above the ceiling.")
         else:
             band = cands[0].hold_band
             reason = (f"a {boost_pct:.0%} boost does not cover the measured "

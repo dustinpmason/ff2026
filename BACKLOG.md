@@ -251,6 +251,75 @@ check, because `p_cash` is gated by the same flag. The harness names the
 section and exits non-zero, so nothing is silent, but the assertion itself
 is only exercised when both gates are removed together.
 
+### Found by the ninth deployment test (2026-11-02/03) — P0's first contact with live payloads
+
+The module's own logic held: all four adversarial probes passed, `classify()`
+was correct on the cases it could see, the no-EV gate held, and the
+circularity screen fired for the right reason and only that reason. **Every
+defect was in the intake path around it** — which is what the synthetic
+fixtures could not reach, exactly as HANDOFF's standing lesson 3 predicts.
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| **B38** | `classify()` was position-blind AND market-blind | DONE | `build_meta()` returns Travis Hunter as **CB** — his nflverse primary position — while he carried a receiving-yards prop on Trevor Lawrence's team. A genuine QB×receiver pair scored **independent**, which hands it the cheaper hold band *and* an `ev_pct` and `p_cash` it must never receive. Two failure modes at once, arriving through the data rather than the code, and he was in the shortlisted candidate that got priced. The side now comes from the **market** (`MARKET_SIDE`), which is what the correlation table was actually measured on. Same fix closed a second hole the live test could not reach because cross-game was unbuildable: the table was measured on **yards**, so two same-event `player_anytime_td` legs were being asserted independent at +0.00 when nobody has measured TD correlation at all. A same-event pair involving a market outside the table is now `unmeasured` and makes the slip unpriceable. Different-event pairs stay independent regardless of market — that one IS measured, and it is what makes cross-game exact. |
+| **B39** | Two flattering defaults, both meaning "nothing found against it" when nothing was checked | DONE | `BoostLeg.verdict` defaulted to `CLEAR`: a live run built **32 legs that all read CLEAR** without `boost_verdict()` ever being called. Default is now `UNSCREENED` and intake drops it naming the screen. Separately, `team=None`/`pos=None` were accepted silently and every such leg classified independent — the same live run built all 32 that way. An unknown team on legs **sharing an event** is now unmeasurable rather than independent. Both are the shape of the 6.0 phantom-player mean (B1), which outranked 1,058 real players by being the fallback. |
+| **B40** | The refusal reason hardcoded its direction | DONE | `'legs are too short' if combos else 'not enough legs'` — the direction was never checked. Live, **all 4,144 combinations priced ABOVE the ceiling and none below the floor**, and the message sent the reader hunting the wrong way. Confirmed hardcoded by feeding synthetic −400 legs (genuinely too short) and getting the same sentence verbatim. Now counts both directions per combination and reports what it measured. |
+| **B41** | A regression check depended on live data, for the third time | DONE | Section 17 named **Zach Charbonnet** as the returning player with 0 rows in 2026. On 2026-11-03 he played Week 8, picked up a row, and all three checks failed — the data moved out from under the fixture. B21 and B23 are the same lesson. The fixture is now synthetic: a constructed player with prior-season rows only, and an absent name deliberately never added to the frame. |
+
+### Verified by isolation, NOT a bug — the Pinnacle 0.5000 question
+
+A live run found Pinnacle quoting −114/−114 on essentially every yardage
+main line on event 87238, so 15 of 16 anchored lines de-vigged to exactly
+0.5000, and reported this as "the anchor carries almost no information."
+A dedicated isolation run settled it: **PropLine is not normalizing or
+degrading Pinnacle prices on this tier.**
+
+The decisive evidence needs no breadth: in the **same response, same book,
+same tier**, Pinnacle's `player_receptions` lines vary richly (−205/152,
+158/−215, 182/−250) while its yardage lines sit flat. No tier-level
+normalizer flattens one market and leaves another untouched in one payload.
+
+Mechanism: a continuous stat on a half-yard grid lets the **point** absorb
+the information, so the price stays flat and only tilts when the grid cannot
+absorb the value (2 of 20 lines did exactly that). Discrete stats —
+receptions at 1.5/2.5/3.5, pass TDs at 0.5/1.5 — have no grid, so price must
+carry everything.
+
+**But the finding underneath it is real and actionable.** `liquidity: 250`
+on every one of those lines is Pinnacle's opening tier, ~68 hours out. By
+the final pre-kickoff snapshot only 2 of 22 lines are exactly 0.5000, and on
+a second event inside the last six hours it is **0 of 16**. So an exact
+0.5000 at minimum limits is the book saying *"I set the point at my estimate
+and have taken no money yet"* — a prior, not a posterior. An EV built on it
+is an EV against an opening number.
+
+`liquidity` is present in the live `get_odds` payload and `ff_boost` ignores
+it. That is P2's shape exactly: a field carrying real information, discarded.
+**Batch two.**
+
+Caveat kept from the isolation run: the by-liquidity bucket table is small-
+sample and non-monotonic. The directional claim rests on the final-snapshot
+and second-event figures, which are clean; treat the buckets as
+consistent-with rather than proof.
+
+**Do not switch the anchor to Kalshi on the strength of its 98.9%
+"informative" rate.** That is an artifact of being an order-driven exchange
+where most alternate contracts carry under $5 — Derrick Henry rec 9.5 at
+113/−223 with `liquidity: 0.94` is noise wearing a precise-looking number,
+and it is the worst possible input to `fair_over`. Pinnacle stays default.
+The rule is a **timing** rule, not a book rule.
+
+### Structural constraint, bigger than any code bug
+
+`get_market_coverage(days=7)`, 15 events in window: **Pinnacle carries
+pass/rush/reception yards on ONE event.** Confirmed not to be a filter
+artifact — dropping the `bookmakers` filter showed 17 books on an event
+Pinnacle simply is not on. BetMGM carries **none** of the three markets.
+
+Cross-game mode needs three anchored events. So for most of the week the
+module cannot be used as designed, regardless of what gets fixed. Legs come
+anchored from one game until Sunday props post.
+
 ### Not built, deliberately
 
 - **No fetching.** The sandbox has no network to PropLine and the MCP tools
