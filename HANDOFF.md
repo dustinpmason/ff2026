@@ -13,7 +13,8 @@ rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/
 python3 test_regression.py        # expect: "349 checks run, 349 passed, 0 failed"
 ```
 
-Then read **BACKLOG.md** and **PROJECT-INSTRUCTIONS.md** from the repo. They are
+Then read **BACKLOG.md**, **PROJECT-INSTRUCTIONS.md** and **LEAGUE-CONFIG.md**
+from the repo. They are
 the authoritative record — every decision, every bug, every measured number.
 Do not re-derive anything they already state.
 
@@ -110,14 +111,21 @@ assess a leg is not the leg being broken.
    that works at a $10 stake.
 3. Tiers 3–5 as listed in BACKLOG.md.
 
-**Before item 1, settle whether its gate is reachable.** The re-measurement
-is gated on 3+ anchored events in one slate. The standing anchor-scarcity
-note says only TWO anchored events have ever been found at once. If that
-holds, the gate has never been met and waiting for a Sunday does not fix it
-— it is an anchor-sourcing problem wearing a calendar's clothes. Either
-lower the gate to 2 and caveat the result permanently, or treat anchor
-scarcity as the blocking item. Dustin has not ruled on this; do not quietly
-run a 2-event measurement and call it the widened one.
+**Two separate scarcity problems live near each other — do not merge them.**
+An earlier edit of this file did, and wrongly reported item 1 as blocked.
+
+- **The hold re-measurement needs EVENTS, not anchors.** Hold is measured by
+  de-vigging a book's OWN two-sided legs and comparing their product to that
+  book's parlay quote. No Pinnacle, no Kalshi, no external anchor is
+  involved — which is why the first measurement ran on DK + FD across 2
+  events while Pinnacle covered almost nothing. A full Sunday slate has
+  ~13 games, so "3+ events" is trivially met. **This gate is reachable; run
+  it.** Check BetMGM's coverage on the day rather than assuming it is
+  absent — that exact claim went stale once already (D16).
+- **Cross-game MODE needs 3 anchored events**, and that is the hard one:
+  Pinnacle carried the three yardage markets on 1 of 15 events in window.
+  That constrains using the module for live leg selection. It does not
+  constrain measuring the hold. See B51.
 
 ## Workflow improvement not yet done
 
