@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 
 import numpy as np
 import pandas as pd
@@ -1235,6 +1236,59 @@ def _prices(q: dict) -> tuple[float | None, float | None]:
     return bare, None
 
 
+_RUNG_RE = re.compile(r"\s*(\d+(?:\.\d+)?)\s*\+")
+
+
+def rung_threshold(name) -> float | None:
+    """Parse the N out of a milestone rung label like "175+ Passing Yards".
+
+    Returns None for anything that is not a leading `N+`, which includes every
+    anytime-TD outcome (those are player names) and any rung grammar a book
+    invents that we have not seen. None is a refusal to guess, not a zero:
+    callers must treat it as "this row has no threshold", never as a number.
+    """
+    m = _RUNG_RE.match(str(name or ""))
+    return float(m.group(1)) if m else None
+
+
+def canonical_bet(q: dict) -> tuple | None:
+    """The identity of the wager a quote represents, for collision detection.
+
+    A rung and a main line can be THE SAME BET under different labels.
+    DraftKings posts `238+ Passing Yards` at -113 alongside a main line of
+    `Over 237.5` at -111: identical wagers, two cents apart, arriving as two
+    rows because `flatten_odds` filters by `line_type` and so never sees both
+    in one call. Treated as two legs they would be parlayed with each other,
+    priced as independent, and the resulting P(cash) would be fiction.
+
+    So the equivalence is computed here rather than left for a caller to
+    notice. A rung at N is exactly "over N - 0.5", because these stats are
+    integer-valued: 238+ yards and >237.5 yards are the same event, and
+    neither can push.
+
+    NOTHING IS SNAPPED. If a book ever posts a whole-number main line at 237,
+    `Over 237` pushes at exactly 237 and is NOT the same bet as `238+`; the
+    subtraction leaves them unequal on its own, and that must stay true. This
+    is D18's rule — a fair probability for one point is not a fair
+    probability for a neighbouring one — applied to the rung grid.
+
+    Returns None when the row has no threshold at all (anytime-TD), meaning
+    "not comparable this way", never a default number.
+    """
+    if not isinstance(q, dict):
+        return None
+    if q.get("line") is not None:
+        threshold = float(q["line"])
+    elif q.get("rung_threshold") is not None:
+        threshold = float(q["rung_threshold"]) - 0.5
+    else:
+        return None
+    # player_id is the joiner; the name is the fallback for the boards that
+    # leave it null (DK anytime-TD, D/ST). See the note in flatten_odds.
+    return (q.get("player_id") or q.get("player"),
+            q.get("market"), "over", threshold)
+
+
 def flatten_odds(response: dict,
                  line_type: str = "main",
                  market: str | None = None,
@@ -1253,7 +1307,15 @@ def flatten_odds(response: dict,
     `line_type` defaults to "main" — a book's primary two-sided line.
     "milestone" rungs are one-sided by construction (one N+ outcome each) and
     come back with `under=None`, which `screen_quotes` flags rather than
-    pricing.
+    pricing. One row per rung: a real board posts 28 for a starting QB at
+    DraftKings, not the one the first fixture here carried. Each rung carries
+    its label in `rung`, its parsed threshold in `rung_threshold`, and
+    `line=None`.
+
+    This stays a TRANSLATION. It does not decide that a rung and a main line
+    are the same bet, because filtering by `line_type` means it never sees
+    both in one call — use `canonical_bet()` wherever the two lists are
+    merged.
     """
     out: list[dict] = []
     for bk in response.get("bookmakers") or []:
@@ -1269,7 +1331,30 @@ def flatten_odds(response: dict,
                 if player and player.lower() not in str(who).lower():
                     continue
                 label = str(oc.get("name") or "").strip().lower()
-                key = (who, oc.get("point"))
+                # B49. The key was (player, point). Every milestone rung
+                # carries point=None, so all of one player's rungs at one book
+                # collapsed into a single group, each took the `else` branch
+                # below as an "over", and the second one tripped the same-side
+                # guard. The guard was right; the key was wrong.
+                #
+                # The widening applies ONLY to the one-sided path. Whenever
+                # `point` is not None the key is exactly what it always was,
+                # because this is the code the B24 Under/Over swap lived in
+                # and the two-sided guard must not weaken by a hair.
+                #
+                # The third component is the parsed THRESHOLD, not the label:
+                # a book posting both "238+ Passing Yards" and an equivalent
+                # label for the same rung is a genuine duplicate and must
+                # still raise. The raw label is the fallback only when the
+                # grammar does not parse, so unparseable rungs still separate
+                # instead of colliding.
+                rung_label = None
+                rung_t = None
+                if oc.get("point") is None and "+" in str(oc.get("name") or ""):
+                    rung_label = oc.get("name")
+                    rung_t = rung_threshold(rung_label)
+                key = (who, oc.get("point"),
+                       rung_t if rung_t is not None else rung_label)
                 g = groups.setdefault(key, {
                     "book": book,
                     "market": mk.get("key"),
@@ -1320,8 +1405,20 @@ def flatten_odds(response: dict,
                     side = "over"
                     if oc.get("point") is not None:
                         g["unknown_labels"].append(oc.get("name"))
-                    elif "+" in str(oc.get("name") or ""):
-                        g["rung"] = oc.get("name")
+                    elif rung_label is not None:
+                        # Both keys are set ONLY on a rung. Absence is the
+                        # signal that a row is not one — B31 asserts a player
+                        # name on a one-sided board leaves `rung` absent, not
+                        # None — so neither is pre-seeded in the group above.
+                        #
+                        # The threshold is DERIVED from the label, and `line`
+                        # is a point a book posted. Writing 238.0 into `line`
+                        # would make the two indistinguishable, and the next
+                        # thing that happens to `line` is a join against the
+                        # EV grid — D18 with a new way in. `line` stays None
+                        # on a rung; the number lives here.
+                        g["rung"] = rung_label
+                        g["rung_threshold"] = rung_t
                     else:
                         # A player name on a one-sided board. Previously
                         # written into `rung`, which made "Ameer Abdullah"

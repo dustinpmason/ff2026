@@ -863,6 +863,118 @@ chk("line_type='alternate' returns rows when they exist",
                                            _oc("Under", 115, 230.5)]),
                      line_type="alternate")) == 1)
 
+section("25b. milestone rungs at real board cardinality (B49)")
+from ff_props import canonical_bet, rung_threshold
+# THE GAP THIS CLOSES: the milestone fixture in section 24 posts ONE rung for
+# Mahomes, and one rung never collides. The grouping key was (player, point);
+# every rung carries point=None, so a real board collapsed all of one
+# player's rungs into a single group and the second rung tripped B28's
+# same-side guard. The guard was right, the key was wrong.
+#
+# Two things that fixture could not show. First, the ValueError escapes
+# flatten_odds entirely, so ONE collision in the first book aborted the whole
+# call and took every other book's rungs with it. Second, the right SHAPE at
+# the wrong CARDINALITY passes while testing nothing: a fixture for a grouped
+# code path must carry at least two members of a group, and preferably the
+# count a real board posts. DraftKings posts 28 for a starting QB.
+#
+# Payload is live bovada/DK/FanDuel from event 87238 (JAX@BAL), 2026-11-03.
+_b49t = "2026-11-03T14:50:45Z"
+def _b49_rungs(ns, desc, pid):
+    return [{"name": f"{n}+ Passing Yards", "description": desc, "price": p,
+             "point": None, "player_id": pid, "last_seen_at": _b49t}
+            for n, p in ns]
+def _b49_ou(o, u, pt, desc, pid):
+    return [{"name": "Over", "description": desc, "price": o, "point": pt,
+             "player_id": pid, "last_seen_at": _b49t},
+            {"name": "Under", "description": desc, "price": u, "point": pt,
+             "player_id": pid, "last_seen_at": _b49t}]
+def _b49_mk(lt, ocs):
+    return {"key": "player_pass_yds", "line_type": lt, "suspended_at": None,
+            "last_update": _b49t, "outcomes": ocs}
+_b49_tl, _b49_jf = "espn:4360310", "espn:4429582"
+_b49_bov = [(175,-900),(200,-330),(225,-165),(250,110),(275,195),(300,330),
+            (325,550),(350,900),(375,1400),(400,2100),(450,3000)]
+_b49_dk = [(150,-1640),(160,-1080),(170,-740),(180,-526),(190,-392),(200,-293),
+           (210,-222),(220,-172),(230,-136),(238,-113),(240,-107),(250,118),
+           (260,150),(270,188),(280,234),(290,295),(300,371),(310,460),
+           (320,578),(330,710),(340,900),(350,1080),(360,1340),(370,1600),
+           (380,1940),(390,2300),(400,2600),(410,3000)]
+_b49_fag = [(150,-195),(160,-147),(170,-111),(180,119),(190,157),(200,202),
+            (210,260),(220,337),(230,427),(240,545),(250,690),(260,870),
+            (270,1100),(280,1400),(290,1760),(300,2100),(310,2500),(320,2900)]
+_b49_fd = [(150,-1450),(175,-600),(200,-290),(225,-158),(250,116),(275,200),
+           (300,350),(325,580),(350,920),(375,1400)]
+_b49_board = {"bookmakers": [
+    {"key": "bovada", "pregame_only": False, "last_update": _b49t, "markets": [
+        _b49_mk("milestone", _b49_rungs(_b49_bov, "Trevor Lawrence (JAX)", _b49_tl)),
+        _b49_mk("main", _b49_ou(-115, -115, 237.5, "Trevor Lawrence (JAX)", _b49_tl))]},
+    {"key": "draftkings", "pregame_only": False, "last_update": _b49t, "markets": [
+        _b49_mk("milestone", _b49_rungs(_b49_dk, "Trevor Lawrence", _b49_tl)),
+        _b49_mk("main", _b49_ou(-111, -113, 237.5, "Trevor Lawrence", _b49_tl)),
+        _b49_mk("milestone", _b49_rungs(_b49_fag, "Joe Fagnano", _b49_jf))]},
+    {"key": "fanduel", "pregame_only": False, "last_update": _b49t, "markets": [
+        _b49_mk("main", _b49_ou(-114, -114, 237.5, "Trevor Lawrence", _b49_tl)),
+        _b49_mk("milestone", _b49_rungs(_b49_fd, "Trevor Lawrence", _b49_tl))]}]}
+
+_b49_ms = flatten_odds(_b49_board, line_type="milestone")
+_b49_mn = flatten_odds(_b49_board, line_type="main")
+chk("a real milestone board does not raise", len(_b49_ms) == 67,
+    f"{len(_b49_ms)} rows")
+_b49_cnt = {}
+for _q in _b49_ms:
+    _b49_cnt[(_q["book"], _q["player"])] = _b49_cnt.get((_q["book"], _q["player"]), 0) + 1
+chk("every rung of every player survives the grouping",
+    sorted(_b49_cnt.values()) == [10, 11, 18, 28], f"{_b49_cnt}")
+chk("rungs still come back one-sided",
+    all(_q["under"] is None for _q in _b49_ms))
+chk("a rung never carries a posted line",
+    all(_q["line"] is None for _q in _b49_ms))
+chk("the threshold is parsed onto its own field",
+    all(_q["rung_threshold"] is not None for _q in _b49_ms)
+    and {_q["rung_threshold"] for _q in _b49_ms if _q["book"] == "fanduel"}
+        == {150., 175., 200., 225., 250., 275., 300., 325., 350., 375.})
+chk("the two-sided path is untouched by the widened key",
+    len(_b49_mn) == 3 and all(_q["under"] is not None for _q in _b49_mn))
+chk("a player quoted ONLY as rungs is still returned",
+    any(_q["player"] == "Joe Fagnano" for _q in _b49_ms)
+    and not any(_q["player"] == "Joe Fagnano" for _q in _b49_mn))
+try:
+    flatten_odds({"bookmakers": [{"key": "dk", "pregame_only": False,
+        "last_update": _b49t, "markets": [_b49_mk("milestone",
+            _b49_rungs([(200, -293), (200, -290)], "P", "id"))]}]},
+        line_type="milestone")
+    _b49_raised = False
+except ValueError:
+    _b49_raised = True
+chk("two rungs at the SAME threshold still raise", _b49_raised)
+
+# DraftKings posts 238+ alongside a main line of 237.5 — the same wager, two
+# cents apart, in two rows that no single flatten_odds call can see together.
+# Treated as two legs they would be parlayed with each other and priced as
+# independent, and the P(cash) that came out would be fiction.
+_b49_dkm = [_q for _q in _b49_mn if _q["book"] == "draftkings"][0]
+_b49_238 = [_q for _q in _b49_ms
+            if _q["book"] == "draftkings" and _q["rung_threshold"] == 238.0][0]
+_b49_240 = [_q for _q in _b49_ms
+            if _q["book"] == "draftkings" and _q["rung_threshold"] == 240.0][0]
+chk("238+ and Over 237.5 are recognised as ONE bet",
+    canonical_bet(_b49_238) == canonical_bet(_b49_dkm),
+    f"{canonical_bet(_b49_238)} vs {canonical_bet(_b49_dkm)}")
+chk("the same bet really is priced differently at the same book",
+    (_b49_dkm["over"], _b49_238["over"]) == (-111.0, -113.0))
+chk("the next rung up is NOT the same bet",
+    canonical_bet(_b49_240) != canonical_bet(_b49_dkm))
+# D18's rule on the rung grid: Over 237 pushes at exactly 237, 238+ cannot.
+chk("a whole-number line is never snapped onto the rung above it",
+    canonical_bet(dict(_b49_dkm, line=237.0)) != canonical_bet(_b49_238))
+chk("a row with no threshold is incomparable, not zero",
+    canonical_bet({"player": "P", "market": "player_anytime_td"}) is None)
+chk("rung_threshold refuses unknown grammar rather than guessing",
+    rung_threshold("Anytime Touchdown Scorer") is None
+    and rung_threshold("Ameer Abdullah") is None
+    and rung_threshold("175+ Passing Yards") == 175.0)
+
 section("26. model abstains on low-event binary stats (B32)")
 # Live: Rome Odunze came back at 1.0% against a 25.2% Pinnacle fair line on
 # 0-for-7. The threshold model cannot estimate a TD rate from that, and a

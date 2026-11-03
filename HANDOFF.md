@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "335 checks run, 335 passed, 0 failed"
+python3 test_regression.py        # expect: "349 checks run, 349 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md** and **PROJECT-INSTRUCTIONS.md** from the repo. They are
@@ -33,7 +33,7 @@ context.
 
 ## Current state
 
-- **335 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **349 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
@@ -106,13 +106,18 @@ assess a leg is not the leg being broken.
    slate it is the weaker of the two numbers. It is also the number that
    will be rejecting most of his standalone-game boosts, so it had better be
    right.
-2. **B49 — `flatten_odds` raises on milestone rungs.** Blocks using them as
-   legs, and some players are quoted only as rungs. The fix is in the
-   grouping code where the B24 Under/Over swap lived, so do it with a clear
-   head and a live payload to test against.
-3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
+2. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
    that works at a $10 stake.
-4. Tiers 3–5 as listed in BACKLOG.md.
+3. Tiers 3–5 as listed in BACKLOG.md.
+
+**Before item 1, settle whether its gate is reachable.** The re-measurement
+is gated on 3+ anchored events in one slate. The standing anchor-scarcity
+note says only TWO anchored events have ever been found at once. If that
+holds, the gate has never been met and waiting for a Sunday does not fix it
+— it is an anchor-sourcing problem wearing a calendar's clothes. Either
+lower the gate to 2 and caveat the result permanently, or treat anchor
+scarcity as the blocking item. Dustin has not ruled on this; do not quietly
+run a 2-event measurement and call it the widened one.
 
 ## Workflow improvement not yet done
 
@@ -142,10 +147,16 @@ reality.
    `build_meta()`, the roster, or the connector, and say which. A fabricated
    espn id resolved to a *different real player* who had no row that week,
    producing a plausible "did not play" instead of an error.
-3. **A test fixture that does not match the live shape proves nothing.** 135
-   passing checks were blind to `screen_quotes` reading an Under price as an
-   Over price, because every fixture used a pre-flattened shape that PropLine
-   never returns.
+3. **A test fixture that does not match the live shape proves nothing — and
+   SHAPE INCLUDES CARDINALITY.** 135 passing checks were blind to
+   `screen_quotes` reading an Under price as an Over price, because every
+   fixture used a pre-flattened shape that PropLine never returns. Then B49:
+   335 passing checks were blind to `flatten_odds` raising on milestone
+   rungs, because the fixture posted ONE rung and one rung never collides. A
+   real DraftKings board posts 28. The fixture had the right shape and the
+   wrong count, which is the same lesson one level down. **A fixture
+   exercising a grouped code path must carry at least two members of a
+   group, and should carry the count a live board actually posts.**
 4. **A check that cannot fail is worse than no check.** Two shipped: one passed
    if any player returned any verdict including UNKNOWN; one was literally
    `... if False else True`.
