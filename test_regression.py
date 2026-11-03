@@ -1574,6 +1574,27 @@ chk("exactly 0.5000 with liquidity unreported is still flagged",
     leg("WR A1", EV1, fair_prob=0.5).anchor_immature,
     "bovada returns null liquidity; the 0.5000 is the signal on its own")
 
+# The scope bug the first version shipped with: fair_prob was tested FIRST
+# and returned early, so the liquidity check was unreachable for any line
+# that was not exactly 0.5000. Live, a Kalshi anchor at $0.98 with
+# fair_prob 0.5052 read as a SETTLED price — the precise-looking number off
+# almost no money that these instructions single out as the worst possible
+# input to fair_over, invisible to the flag written to catch it.
+_thin = leg("WR A1", EV1, fair_prob=0.5052, anchor_liquidity=0.98)
+chk("a precise fair_prob off a $0.98 anchor is flagged",
+    _thin.anchor_immature, f"fair_prob 0.5052, liquidity 0.98")
+chk("it is flagged as THIN, not as opening",
+    _thin.anchor_thin and not _thin.anchor_opening)
+chk("the note says the number is noise, not that it is an opening line",
+    "noise" in (_thin.anchor_note or "").lower(),
+    str(_thin.anchor_note)[:70])
+chk("a Pinnacle opening board is NOT called thin",
+    not leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=250).anchor_thin,
+    "250 is a bet limit, not resting money — different unit entirely")
+chk("a deep anchor away from 0.5000 is flagged neither way",
+    not leg("WR A1", EV1, fair_prob=0.5052,
+            anchor_liquidity=10000).anchor_immature)
+
 sl = enumerate_candidates(
     [opening, leg("WR C1", EV2), leg("WR E1", EV3)], META,
     boost_pct=0.50, mode="cross-game")

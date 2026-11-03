@@ -142,6 +142,24 @@ MODES = ("cross-game", "single-game")
 # decimal place it has not earned.
 OPENING_LIQUIDITY = 250
 
+# A SEPARATE problem from an opening line, and the first version of this
+# module could not see it. `anchor_immature` tested fair_prob == 0.5 FIRST
+# and returned False otherwise, so it never reached the liquidity check —
+# which meant a Kalshi anchor at $0.98 with fair_prob 0.5052 read as a
+# settled price while a Pinnacle line at 250 read as immature. That is the
+# exact input these instructions call "noise wearing a precise-looking
+# number", and the flag written to catch it was structurally blind to it.
+#
+# 25 is CRUDE and deliberately so. Book liquidity is not one unit:
+# Pinnacle's 250 is a bet limit on an opening board, Kalshi's 0.98 is the
+# money actually resting on a contract. They are not comparable, and a
+# principled cross-book threshold would need a measurement nobody has
+# made. 25 sits far below every Pinnacle value observed (250 minimum,
+# rising to 10,000 by kickoff) and far above every thin Kalshi contract
+# observed (0.94, 0.98, 1.00, 1.06), so it separates the two populations
+# that exist today and errs toward flagging.
+THIN_ANCHOR_LIQUIDITY = 25
+
 # Measured over 43,228 same-game pairs, 2025-26. Everything absent is ~0.00,
 # INCLUDING WR x WR on the same team (+0.00 over 2,970 pairs) — target
 # competition cancels out team volume. Do not limit slips to stack shapes.
@@ -291,8 +309,8 @@ class BoostLeg:
         self.verdict_reasons = tuple(self.verdict_reasons)
 
     @property
-    def anchor_immature(self) -> bool:
-        """The anchor has not taken enough money to carry a price opinion.
+    def anchor_opening(self) -> bool:
+        """The anchor has set a point but taken no money against it.
 
         An exact 0.5000 is the signal on its own — by kickoff only ~9% of
         lines sit there — and low liquidity confirms it where the book
@@ -304,16 +322,39 @@ class BoostLeg:
                 or self.anchor_liquidity <= OPENING_LIQUIDITY)
 
     @property
+    def anchor_thin(self) -> bool:
+        """Barely any money is resting on the anchor, whatever it says.
+
+        Independent of anchor_opening: a precise-looking 0.5052 off a $0.98
+        Kalshi contract is worse input than a flat 0.5000 off Pinnacle, and
+        testing fair_prob first hid exactly that case.
+        """
+        return (self.anchor_liquidity is not None
+                and self.anchor_liquidity <= THIN_ANCHOR_LIQUIDITY)
+
+    @property
+    def anchor_immature(self) -> bool:
+        """Either way the anchor cannot carry the weight of an EV."""
+        return self.anchor_opening or self.anchor_thin
+
+    @property
     def anchor_note(self) -> str | None:
-        if not self.anchor_immature:
-            return None
-        lq = (f"liquidity {self.anchor_liquidity:g}"
-              if self.anchor_liquidity is not None
-              else "liquidity not reported by this book")
-        return (f"{self.player}: fair_prob is exactly 0.5000 at {lq} — this "
-                f"is the anchor's OPENING number, its prior rather than its "
-                f"posterior. Re-pull closer to kickoff; by then only ~9% of "
-                f"lines still sit at exactly 0.5000.")
+        if self.anchor_thin:
+            return (f"{self.player}: anchor liquidity is "
+                    f"{self.anchor_liquidity:g} — almost no money is resting "
+                    f"on this line, so its fair_prob of "
+                    f"{self.fair_prob:.4f} is noise wearing a precise-looking "
+                    f"number however far from 0.5000 it sits. This is the "
+                    f"worst input you can hand fair_over.")
+        if self.anchor_opening:
+            lq = (f"liquidity {self.anchor_liquidity:g}"
+                  if self.anchor_liquidity is not None
+                  else "liquidity not reported by this book")
+            return (f"{self.player}: fair_prob is exactly 0.5000 at {lq} — "
+                    f"this is the anchor's OPENING number, its prior rather "
+                    f"than its posterior. Re-pull closer to kickoff; by then "
+                    f"only ~9% of lines still sit at exactly 0.5000.")
+        return None
 
     @property
     def circular(self) -> bool:

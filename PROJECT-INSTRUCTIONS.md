@@ -190,22 +190,30 @@ general terms** rather than quoting a number you know is wrong.
 
 **ALWAYS pass both `markets` and `bookmakers` on `propline_get_odds`.** An
 unfiltered call returns every market across all 37 books and runs to megabytes —
-it looks like a hang. **Expect ~280KB for ONE market across four books**, and
-1.0MB for three markets — measured 2026-11-03, not the ~68KB an earlier note
-here claimed. Every full prop pull overflows to disk, so letting the harness
-save the response and reading it with Python is the NORMAL path for prop work,
-not a special case for slate-wide coverage calls.
+it looks like a hang. Measured sizes: ~280KB for one market across four books;
+**545KB for three markets across five books**; ~1.0MB for three markets across
+three books **with `include_depth=true`**, which roughly doubles the payload.
+Every full prop pull overflows to disk, so letting the harness save the
+response and reading it with Python is the NORMAL path for prop work, not a
+special case for slate-wide coverage calls.
 
 - My books that PropLine covers: `draftkings`, `fanduel`, `betmgm`. Plus
   `pinnacle` always, as the sharp reference line.
 - **Anchor scarcity is the binding constraint on prop work, not a detail.**
-  Measured 2026-11-03, `get_market_coverage(days=7)`, 15 events in window:
-  Pinnacle carried pass/rush/reception yards on **one event**; BetMGM
-  carried **none** of the three. Confirmed not to be a filter artifact —
-  dropping the `bookmakers` filter showed 17 books on an event Pinnacle is
-  simply not on. A cross-game slip needs three anchored events, so for most
-  of the week it cannot be built at all. Check coverage before planning the
-  work, and say so rather than substituting legs from one game.
+  A cross-game slip needs three events with an anchor book on them, and
+  across several measurements only two have ever been found at once. Check
+  coverage before planning the work, and say so rather than substituting
+  legs from one game.
+- **NEVER record a coverage figure in this file as a standing fact.**
+  Coverage moves hour to hour as books post, and D11 already says the
+  `days` window changes the denominator. Two claims written here anyway
+  both went stale within days: "BetMGM carried none of the three yardage
+  markets" (measured 1 event each three days later) and "Pinnacle DOES
+  carry anytime-TD, 13/13 events" (measured 0 of 15 four days later, with
+  every TD line on the test event anchoring on Kalshi). Both were
+  point-in-time measurements generalised into standing claims — the same
+  failure as P7, P8, D5 and D10. **Measure coverage at query time, state
+  the window, and report it as of now.**
 - **`redacted` does not exist on live `get_odds`** — not false, absent, at
   every level. It is an outcome-level field on `get_odds_history` only, so
   "check `redacted`" is not a usable guard on the live intake path. What
@@ -760,10 +768,29 @@ But it means the anchor has taken no money yet. At the final pre-kickoff
 snapshot only **2 of 22** lines are still exactly 0.5000, and on a second
 event inside the last six hours it is **0 of 16**.
 
-**Pass `anchor_liquidity=` on every BoostLeg.** `ff_boost` flags an exact
-0.5000 at minimum limits and the report prints `** OPENING ANCHOR **`. An
-EV built on one is an EV against an opening number — re-pull closer to
-kickoff before trusting it.
+**Pass `anchor_liquidity=` on every BoostLeg — and note where it comes
+from, because it is NOT where you would expect.** `get_event_ev` carries no
+`liquidity` field at any level; its line keys are exactly `description`,
+`fair_books`, `fair_probs`, `fair_source`, `market_key`, `outcomes`,
+`point`. So liquidity has to be joined back out of `get_odds` for whichever
+book `fair_source` names, which usually means a second pull. Of the books
+measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
+(0/276), FanDuel (0/204) and Bovada all return null.
+
+`ff_boost` then flags two distinct problems, and they are not the same:
+
+- **`anchor_opening`** — fair_prob exactly 0.5000 at or below Pinnacle's
+  250 minimum tier. The book set a point and has taken no money. Re-pull
+  closer to kickoff.
+- **`anchor_thin`** — liquidity at or under 25, *whatever* the fair_prob
+  says. A Kalshi contract with $0.98 resting on it produces a
+  precise-looking 0.5052 that is pure noise, and it is the worst input you
+  can hand `fair_over`.
+
+The report prints `** OPENING ANCHOR **` for either. Do not read a
+non-0.5000 anchor as settled without checking its liquidity — an early
+version of the flag tested fair_prob first and was structurally unable to
+see the thin case.
 
 **Do not switch the anchor to Kalshi** on the strength of it varying more.
 Kalshi is an order-driven exchange and most alternate contracts carry under
@@ -785,10 +812,22 @@ once — `Brian Thomas Jr.` at 9.5 (kalshi) and `Brian Thomas` at 10.5
 (pinnacle) — while DK and FD both priced him at **10.5**. A raw-name join
 found only the kalshi rows and his entire DK/FD board went unanchored.
 
-`norm_player()` strips suffixes and a trailing team parenthetical
-(`Garrett Wilson (NYJ)` → `Garrett Wilson`). It does **not** fix first-name
-variants (Josh/Joshua Palmer) — resolve those through
-`propline_search_players` on an exact `known_names` match.
+`norm_player()` strips suffixes and a trailing team parenthetical. Measured
+2026-11-03: **only Bovada emits the parenthetical** (187/187 outcomes;
+DraftKings 0/276, FanDuel 0/204, Kalshi 0/374, Pinnacle 0/40). It does
+**not** fix first-name variants (Josh/Joshua Palmer) — resolve those through
+`propline_search_players` on an exact `known_names` match — and it does not
+handle a mid-string parenthetical, which no book has yet been observed to
+produce.
+
+**A second, distinct way a leg loses its anchor: a LINE-GRID mismatch.**
+`Nate Boerkircher` was spelled identically in both payloads, but the EV
+response carried him at 7.5/9.5/14.5/… and **not at 6.5**, which was
+DraftKings' main line. FanDuel's 7.5 anchored fine. Same consequence as a
+name split, completely different cause, and `norm_player()` cannot help.
+**Do not "fix" it by snapping to the nearest point** — a fair probability
+for 7.5 is not a fair probability for 6.5, and substituting one invents the
+number. Leave the leg unanchored and say which book fell off the grid.
 
 ### The three structures, and the one that gets no EV
 

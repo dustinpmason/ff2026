@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import tempfile
 import subprocess
 import sys
 import time
@@ -57,11 +58,21 @@ def ensure_deps(*packages: str, quiet: bool = False) -> None:
         try:
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "-q", *flags, *missing],
-                check=True, capture_output=True, timeout=300,
+                check=True, capture_output=True, timeout=900,
             )
             break
         except subprocess.CalledProcessError:
             continue
+        except subprocess.TimeoutExpired:
+            # Named separately because the downstream symptom is nothing
+            # like the cause: a half-installed pyarrow surfaces as
+            # "ArrowKeyError: extension pandas.period already defined" from
+            # pd.read_parquet, several steps later.
+            print(f"  ! installing {missing} TIMED OUT. The package may be "
+                  f"left half-registered — re-run the bootstrap, which "
+                  f"usually succeeds once the wheel is cached.",
+                  file=sys.stderr)
+            return
         except Exception as e:
             print(f"  ! could not install {missing}: {e}", file=sys.stderr)
             return
@@ -82,12 +93,13 @@ import pandas as pd  # noqa: E402
 BASE = "https://github.com/nflverse/nflverse-data/releases/download"
 
 # Cache lives in the scratchpad so it never pollutes the project directory.
-CACHE = Path(
-    os.environ.get(
-        "FF_CACHE",
-        "/tmp/claude-0/-home-claude/a8825ed4-40ad-5c73-8fab-438a5034b895/scratchpad/nflverse",
-    )
-)
+# Derived at runtime. This used to hardcode a literal scratchpad path
+# carrying ANOTHER SESSION's UUID, which survived only because that path
+# happened to be writable in the sandboxes that ran it. A session whose
+# scratchpad differs would have written the cache somewhere unrelated to
+# itself, or failed outright. Found incidentally during a deployment test.
+CACHE = Path(os.environ.get("FF_CACHE")
+             or Path(tempfile.gettempdir()) / "ff-nflverse")
 
 CURRENT_SEASON = 2026
 

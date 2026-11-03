@@ -326,6 +326,69 @@ price swap behind fixtures in a shape PropLine never returns. `norm_player()`
 is shape-independent and fixes the part that actually failed. Build the
 adapter from a saved live payload, not from a guess.
 
+### Found by the tenth deployment test (2026-11-03) — batches one and two on live payloads
+
+Every structural guarantee held on live data: B38 confirmed with the real
+Travis Hunter leg (`build_meta` returns him CB, the pair still took +0.31
+from the market and the note surfaced `(CB)` so the disagreement is visible),
+B39 confirmed both halves, B40's direction matched an independent count of
+every combination, B44 recovered exactly the two Brian Thomas Jr. quotes and
+upgraded him from a Kalshi anchor to a Pinnacle one, B45 held at construction
+and at intake, and `ev_pct` was byte-identical across `correlation_factor`
+0.60 vs 1.40.
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| **B46** | `anchor_immature` could not see a thin anchor — a scope bug in B42 itself | DONE | It tested `fair_prob == 0.5` FIRST and returned early, so the liquidity check was unreachable for any line not exactly at 0.5000. Live: Rashod Bateman, Kalshi anchor, `fair_prob 0.5052`, **`anchor_liquidity 0.98`** → read as a SETTLED price. That is precisely the input these instructions single out as "noise wearing a precise-looking number" (Derrick Henry at liquidity 0.94), and **the flag written to catch it was structurally blind to it.** Three legs were in that state. Split into `anchor_opening` (exact 0.5000 at ≤250) and `anchor_thin` (liquidity ≤25, whatever fair_prob says); `anchor_immature` is either. The 25 threshold is crude and documented as such — Pinnacle's 250 is a bet limit, Kalshi's 0.98 is resting money, and the two are not the same unit. |
+| **B47** | `ff_data.CACHE` hardcoded another session's scratchpad UUID | DONE | `/tmp/claude-0/-home-claude/a8825ed4-…/scratchpad/nflverse` — a literal path from a session that no longer exists. It survived only because that path happened to be writable wherever it ran. Now derived at runtime from `FF_CACHE` or the system temp dir. Found incidentally; nobody was looking for it. |
+| **B48** | `ensure_deps()` swallowed an install timeout and produced a confusing downstream error | DONE | The bootstrap failed on first run: `pip install pyarrow` exceeded the hardcoded `timeout=300`, the generic `except Exception` swallowed the `TimeoutExpired`, and the process limped on with a half-registered pyarrow until `pd.read_parquet` died with `ArrowKeyError: extension pandas.period already defined` — nothing like the cause. Timeout raised to 900s and `TimeoutExpired` named separately with what to do about it. |
+| **D16** | Two coverage figures I wrote into the instructions went stale within days | DONE | "BetMGM carried **none** of the three yardage markets" → measured 1 event each three days later. "Pinnacle DOES carry anytime-TD, 13/13 events" → measured **0 of 15**, with every TD line on the test event anchoring on Kalshi. Both were point-in-time measurements generalised into standing claims, which is the P7/P8/D5/D10 failure for the fifth and sixth time. The fix is not newer numbers — they go stale too. The instructions now say **never record a coverage figure as a standing fact**; measure at query time and state the window. |
+| **D17** | The instructions said to pass `anchor_liquidity` without saying where it comes from | DONE | `get_event_ev` carries **no `liquidity` field at any level** — its line keys are exactly `description, fair_books, fair_probs, fair_source, market_key, outcomes, point`. Liquidity has to be joined back out of `get_odds` for whichever book `fair_source` names, which usually costs a second pull. Also recorded: **only Pinnacle and Kalshi report liquidity at all**; DK (0/276), FD (0/204) and Bovada all return null, not just Bovada as previously written. |
+| **D18** | A second, distinct way a leg loses its anchor: LINE-GRID mismatch | DONE | `Nate Boerkircher` is spelled identically in both payloads, but the EV response carries 7.5/9.5/14.5/… and **not 6.5**, which is DraftKings' main line; FanDuel's 7.5 anchors fine. Same consequence as a name split, completely different cause, and `norm_player()` cannot help. Documented with an explicit warning **not** to snap to the nearest point — a fair probability for 7.5 is not one for 6.5, and substituting it invents the number. |
+| **B49** | `flatten_odds(line_type="milestone")` raises instead of returning one-sided rows | **OPEN** | Milestone rungs all carry `point: None`, so the grouping key `(player, point)` collapses every rung for one player into one group and two rungs both classify as "over", tripping B28's same-side guard: `ValueError: two outcomes claim the same side of player_pass_yds / Trevor Lawrence (JAX) / None at bovada: ['175+ Passing Yards', '200+ Passing Yards']`. The docstring explicitly promises milestone comes back with `under=None` for `screen_quotes` to flag. It does not; it raises. `line_type="main"` is unaffected, so nothing in the boost path is blocked today — but it means **milestone rungs cannot be used as legs at all**, and DraftKings quotes some players (Travis Hunter on 87238) ONLY as rungs. Not fixed in-session on purpose: the fix is in `flatten_odds`'s grouping, which is the exact code where the B24 Under/Over swap lived, and that is not surgery to do at the end of a long session. |
+
+### The default band returns nothing on a real board — a design question, not a bug
+
+Two live events now, both yielding **zero candidates at the documented
++300/+450 band**. On 87238 every one of 1,248 distinct combinations priced
+ABOVE the ceiling (min +558.8, median +569.8, max +592.8), because every
+surviving main line sits at −110 to −115 and three near-coin-flips multiply
+to roughly +560–590.
+
+The documented target shape — "three legs near −150 each" — **does not exist
+on main-line prop boards.** A −150 prop main line is rare; the book moves the
+point until the price is near even money.
+
+The band is not obviously wrong, though. Computed against the measured hold:
+
+| price | 30% boost (cross) | 50% boost (cross) | 50% boost (same-game) |
+|---|---|---|---|
+| +575 | +3.9% to +6.7% | +17.9% to +21.1% | +3.9% to +15.8% |
+| +450 | +3.0% to +5.8% | +16.6% to +19.7% | +2.7% to +14.5% |
+
+Minimum boost for +EV barely moves with price: **25% cross-game at +575 vs
+26% at +450.** So the ceiling is not protecting EV — it is protecting hit
+rate, which is what Dustin actually asked for ("regular hits beat occasional
+big ones"). A +575 slip at ~12% true probability cashes about half as often
+as a +363 one at ~21%.
+
+**This is a decision for Dustin, not a fix.** Options: raise `CEILING` and
+accept a lower hit rate; drop to 2-leg slips where the boost allows; or
+source legs from alternate lines and milestone rungs, which carry real
+prices away from even money — and which B49 currently blocks.
+
+### The same-game hold band may be biased pessimistic — a hypothesis, NOT a finding
+
+Two live same-game slips have now held **below** the band's pessimistic end:
+19.2% and 21.9% against a floor of 23.1%. The band rests on 12 slips from one
+slate, so two more observations is not a measurement, and the test session
+that found the second one said so explicitly rather than claiming it.
+
+**Record it as the thing to test on the Sunday re-measurement**, which is
+already scoped to cover same-game deliberately. If the band is biased
+pessimistic, it matters: it is the number that will be rejecting most of the
+standalone-game boosts, which are half of Dustin's use.
+
 ### Structural constraint, bigger than any code bug
 
 `get_market_coverage(days=7)`, 15 events in window: **Pinnacle carries
