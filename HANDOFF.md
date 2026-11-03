@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "331 checks run, 331 passed, 0 failed"
+python3 test_regression.py        # expect: "335 checks run, 335 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md** and **PROJECT-INSTRUCTIONS.md** from the repo. They are
@@ -33,10 +33,13 @@ context.
 
 ## Current state
 
-- **331 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **335 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
+- **Band is +300 to +600** (ceiling raised 2026-11-03 — see BACKLOG). On a
+  standalone-game boost, 30% is marginal and 20% is a pass; structure
+  decides, not price.
 - Eight deployment-test rounds done. Six of eight found real bugs.
 
 ## F2 is settled — nothing is waiting on an answer
@@ -103,20 +106,13 @@ assess a leg is not the leg being broken.
    slate it is the weaker of the two numbers. It is also the number that
    will be rejecting most of his standalone-game boosts, so it had better be
    right.
-2. **Decide the floor/ceiling question.** Two live events have now yielded
-   ZERO candidates at the documented +300/+450 band, because main-line prop
-   prices cluster at −110 to −115 and three of them multiply to ~+575. The
-   target shape "three legs near −150" does not exist on these boards. The
-   minimum boost for +EV barely moves with price (25% cross-game at +575 vs
-   26% at +450), so the ceiling protects hit rate, not EV. **Needs Dustin's
-   call**, options in BACKLOG.md.
-3. **B49 — `flatten_odds` raises on milestone rungs.** Blocks using them as
+2. **B49 — `flatten_odds` raises on milestone rungs.** Blocks using them as
    legs, and some players are quoted only as rungs. The fix is in the
    grouping code where the B24 Under/Over swap lived, so do it with a clear
    head and a live payload to test against.
-4. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
+3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
    that works at a $10 stake.
-5. Tiers 3–5 as listed in BACKLOG.md.
+4. Tiers 3–5 as listed in BACKLOG.md.
 
 ## Workflow improvement not yet done
 

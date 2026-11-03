@@ -1230,7 +1230,15 @@ SAME_STACK = [leg("QB A", EV1, market="player_pass_yds"),
 
 section("29. P0 boost optimiser — constants")
 chk("FLOOR is the documented +300", FLOOR == 300, f"FLOOR={FLOOR}")
-chk("CEILING is the documented +450", CEILING == 450, f"CEILING={CEILING}")
+chk("CEILING is +600", CEILING == 600, f"CEILING={CEILING}")
+# Raised from 450 on 2026-11-03. The band assumed "three legs near -150",
+# which do not exist on main-line prop boards: books move the POINT until
+# the price is near even money, so three legs multiply to ~+575. Two live
+# events produced ZERO candidates at the old band. This check exists so the
+# value is changed deliberately rather than drifting back.
+chk("the band spans the prices main-line props actually produce",
+    FLOOR <= 575 <= CEILING,
+    "three near-coin-flip legs multiply to about +575")
 
 # ---------------------------------------------------------------------------
 section("30. structure is DERIVED from the legs, never taken from the caller")
@@ -1550,6 +1558,27 @@ chk("a stack-only shortlist reads UNPRICEABLE ONLY",
     sl.outlook == "UNPRICEABLE ONLY", sl.outlook)
 chk("but it is returned without an EV",
     all(cc.ev_pct is None for cc in sl.candidates))
+
+# The shape live boards actually produce: three near-coin-flip main lines.
+# Under the old +450 ceiling this returned nothing at any boost level.
+_coinflips = [leg("WR A1", EV1, odds=-112, fair_prob=0.5),
+              leg("WR C1", EV2, odds=-112, fair_prob=0.5),
+              leg("WR E1", EV3, odds=-110, fair_prob=0.5)]
+_sl = enumerate_candidates(_coinflips, META, boost_pct=0.30,
+                           mode="cross-game")
+chk("three main-line coin flips now land inside the band",
+    _sl.playable and _sl.candidates,
+    f"product {independent_odds(_coinflips):+.0f}")
+chk("and read LIKELY PLAYABLE at a 30% cross-game boost",
+    _sl.outlook == "LIKELY PLAYABLE", _sl.outlook)
+_sg = enumerate_candidates(
+    [leg("WR A1", EV1, odds=-112, fair_prob=0.5),
+     leg("WR A2", EV1, odds=-112, fair_prob=0.5),
+     leg("WR B1", EV1, odds=-110, fair_prob=0.5)],
+    META, boost_pct=0.30, mode="single-game")
+chk("the same shape SAME-GAME at 30% still reads LIKELY NEGATIVE",
+    _sg.outlook == "LIKELY NEGATIVE",
+    "structure, not the ceiling, is what decides a TNF slip")
 
 # ---------------------------------------------------------------------------
 section("35b. an opening anchor is a prior, not a price")

@@ -347,7 +347,7 @@ and at intake, and `ev_pct` was byte-identical across `correlation_factor`
 | **D18** | A second, distinct way a leg loses its anchor: LINE-GRID mismatch | DONE | `Nate Boerkircher` is spelled identically in both payloads, but the EV response carries 7.5/9.5/14.5/… and **not 6.5**, which is DraftKings' main line; FanDuel's 7.5 anchors fine. Same consequence as a name split, completely different cause, and `norm_player()` cannot help. Documented with an explicit warning **not** to snap to the nearest point — a fair probability for 7.5 is not one for 6.5, and substituting it invents the number. |
 | **B49** | `flatten_odds(line_type="milestone")` raises instead of returning one-sided rows | **OPEN** | Milestone rungs all carry `point: None`, so the grouping key `(player, point)` collapses every rung for one player into one group and two rungs both classify as "over", tripping B28's same-side guard: `ValueError: two outcomes claim the same side of player_pass_yds / Trevor Lawrence (JAX) / None at bovada: ['175+ Passing Yards', '200+ Passing Yards']`. The docstring explicitly promises milestone comes back with `under=None` for `screen_quotes` to flag. It does not; it raises. `line_type="main"` is unaffected, so nothing in the boost path is blocked today — but it means **milestone rungs cannot be used as legs at all**, and DraftKings quotes some players (Travis Hunter on 87238) ONLY as rungs. Not fixed in-session on purpose: the fix is in `flatten_odds`'s grouping, which is the exact code where the B24 Under/Over swap lived, and that is not surgery to do at the end of a long session. |
 
-### The default band returns nothing on a real board — a design question, not a bug
+### The default band returned nothing on a real board — RESOLVED 2026-11-03, ceiling raised to +600
 
 Two live events now, both yielding **zero candidates at the documented
 +300/+450 band**. On 87238 every one of 1,248 distinct combinations priced
@@ -372,10 +372,23 @@ rate, which is what Dustin actually asked for ("regular hits beat occasional
 big ones"). A +575 slip at ~12% true probability cashes about half as often
 as a +363 one at ~21%.
 
-**This is a decision for Dustin, not a fix.** Options: raise `CEILING` and
-accept a lower hit rate; drop to 2-leg slips where the boost allows; or
-source legs from alternate lines and milestone rungs, which carry real
-prices away from even money — and which B49 currently blocks.
+**Dustin's call, taken 2026-11-03: raise `CEILING` to 600.** The reasoning
+that decided it: the real comparison is not +575 against +363, because the
++363 slip does not exist on a main-line board — it is +575 against no bet.
+The ceiling buys hit rate, not EV, and 600 rather than 700+ keeps as much
+hit rate as the boards allow while still returning candidates.
+
+The two rejected options, and why:
+
+- **2-leg slips** land near +300 and preserve the hit rate, but most boosts
+  require 3+ legs, so it only applies sometimes. Worth revisiting per offer.
+- **Alternate lines and milestone rungs** are the genuinely better fix —
+  they let you PICK a 60% leg instead of taking whatever the main line
+  offers, which is exactly what the original band assumed. Blocked twice
+  over: B49 raises on rungs, and **Pinnacle offers no alternates on props
+  at all**, so alternates would anchor off Kalshi contracts carrying a
+  dollar or two — the exact input B46 exists to reject. Revisit if either
+  changes.
 
 ### The same-game hold band may be biased pessimistic — a hypothesis, NOT a finding
 

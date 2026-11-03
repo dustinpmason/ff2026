@@ -733,6 +733,40 @@ print(report([c], "30% boost"))
 recall.** The module uses them to decide whether legs correlate, so a wrong
 team silently changes a slip's structure and therefore its hold band.
 
+### The band is +300 to +600, and the ceiling is NOT what decides a bet
+
+Raised from +450 on 2026-11-03 after two live events produced **zero
+candidates** at the old band. Main-line props do not price near −150: the
+book moves the POINT until the price is near even money, so lines cluster
+at −110 to −115 and three of them multiply to roughly **+575**. On event
+87238 all 1,248 distinct combinations priced above +450 and not one below
++300.
+
+The ceiling was never protecting EV — minimum boost for +EV is 25%
+cross-game at +575 against 26% at +450. It protects HIT RATE: ~12.5% at
++575 against ~21.6% at +363, about 2 cashes a season instead of 3.5, each
+worth $84.75 rather than $57.19 on $10 at a 30% boost.
+
+**What decides whether to play is the boost percentage and the STRUCTURE,
+not the price.** For a single-game slip — which is what every TNF/SNF/MNF
+boost is, and roughly half of all use:
+
+| boost | single-game slip at +575 |
+|---|---|
+| 20% | clearly negative |
+| 30% | **−8.5% to +2.0% — a coin flip on being break-even** |
+| 40–50% | +3.9% to +15.8%, worth playing |
+
+So on a standalone-game boost, say plainly that **30% is marginal at best
+and 20% is a pass**, and do it after pricing the shortlist rather than
+instead of pricing it. Cross-game is far more forgiving: 30% there is
++3.9% to +6.7%.
+
+**Be straight about the scale.** At a $10 stake a 30% cross-game boost is
+roughly $7–11 of expected profit across a full season; 50% is $30–36. The
+edge is real and measured, and it is an edge on pocket change. Do not let
+a +8.2% EV figure read like a windfall.
+
 ### `playable` is structural; `outlook` is advisory; the verdict comes after pricing
 
 - **`sl.playable`** answers "is there anything here to price at all" — are

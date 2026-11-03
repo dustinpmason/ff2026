@@ -110,11 +110,39 @@ from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
                          SGP_HOLD_SAME_GAME)
 from ff_guillotine import normalize_name
 
-# The documented target band. +300 is the boost's own requirement; +450 is
-# where EV stops improving materially (~2.5 points up to +700) while the hit
-# rate nearly halves — and the stated objective is grinding regular wins.
+# +300 is the boost's own requirement and does not move.
+#
+# CEILING was 450, chosen on the theory that EV stops improving materially
+# above it while the hit rate halves. Raised to 600 on 2026-11-03 because
+# MEASUREMENT contradicted the leg shape the old band assumed.
+#
+# The band was calibrated to "three legs near -150 each", which multiply to
+# +363. A -150 prop main line is rare to nonexistent: the book moves the
+# POINT until the price is near even money, so main lines cluster at -110
+# to -115 and three of them multiply to roughly +575. Two live events were
+# tested and BOTH produced zero candidates in +300..+450 — on event 87238,
+# all 1,248 distinct combinations priced above the ceiling (min +558.8,
+# median +569.8, max +592.8) and not one below the floor.
+#
+# So the real comparison is not +575 against +363. The +363 slip does not
+# exist on a main-line board; the comparison is +575 against no bet.
+#
+# And the ceiling was never protecting EV. Minimum boost for +EV barely
+# moves with price — 25% cross-game at +575 against 26% at +450. What it
+# protects is HIT RATE: ~12.5% at +575 against ~21.6% at +363, i.e. about
+# 2 cashes a season instead of 3.5, with each worth $84.75 rather than
+# $57.19 on $10 at a 30% boost. That is a preference, not a finding, and
+# Dustin's stated preference is regular hits — hence 600 rather than 700+,
+# which buys almost no extra EV for a materially worse hit rate.
+#
+# The better fix is alternate lines and milestone rungs, which let you PICK
+# a 60% leg instead of taking whatever the main line offers. Blocked twice
+# over: B49 (flatten_odds raises on rungs) and anchor quality — Pinnacle
+# offers NO alternates on props at all, so alternates would anchor off
+# Kalshi contracts carrying a dollar or two, which is the exact input B46
+# exists to reject. Revisit if either changes.
 FLOOR = 300
-CEILING = 450
+CEILING = 600
 
 # Re-exported, NOT redefined. The Sunday re-measurement updates ff_backtest
 # and this module follows it; a second copy here would drift silently.
