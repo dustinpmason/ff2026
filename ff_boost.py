@@ -101,12 +101,14 @@ its face rather than leaving a clean-looking number to be quoted elsewhere.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from itertools import combinations, product
 
 from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
                          expected_roi, roi_band, SGP_HOLD_CROSS_GAME,
                          SGP_HOLD_SAME_GAME)
+from ff_guillotine import normalize_name
 
 # The documented target band. +300 is the boost's own requirement; +450 is
 # where EV stops improving materially (~2.5 points up to +700) while the hit
@@ -120,6 +122,25 @@ HOLD_CROSS = SGP_HOLD_CROSS_GAME
 HOLD_SAME = SGP_HOLD_SAME_GAME
 
 MODES = ("cross-game", "single-game")
+
+# Pinnacle's minimum limit tier, measured 2026-11-03 on live get_odds:
+# every yardage line on an opening board ~68 hours out carried
+# `liquidity: 250`, and 18 of 20 were priced -114/-114 flat.
+#
+# That flatness is NOT corruption — an isolation run confirmed PropLine is
+# not degrading Pinnacle on this tier (its player_receptions lines vary
+# richly in the SAME response). It is the half-yard grid: on a continuous
+# stat the book moves the POINT until -114/-114 is fair, so the price stays
+# flat and only tilts when the grid cannot absorb the value.
+#
+# But a fair_prob of exactly 0.5000 at minimum limits is the book's PRIOR,
+# not its posterior — "I set the point at my estimate and have taken no
+# money yet". Measured: at the final pre-kickoff snapshot only 2 of 22
+# lines are exactly 0.5000, and on a second event inside the last six hours
+# it is 0 of 16. An EV built on an opening anchor is an EV against an
+# opening number, and that has to be said out loud rather than printed to a
+# decimal place it has not earned.
+OPENING_LIQUIDITY = 250
 
 # Measured over 43,228 same-game pairs, 2025-26. Everything absent is ~0.00,
 # INCLUDING WR x WR on the same team (+0.00 over 2,970 pairs) — target
@@ -164,6 +185,46 @@ VERDICTS = {
 }
 
 
+_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def norm_player(name: str) -> str:
+    """Canonical key for joining a book's quote to its anchor line.
+
+    USE THIS FOR THE ODDS -> ANCHOR JOIN. It is the one join in the live
+    intake path that has to happen on a name, and it has already cost a
+    player his whole board.
+
+    D13 recorded that the HISTORICAL endpoints carry no player_id and said
+    "just live get_odds has the id". Measured 2026-11-02: live
+    get_event_ev has no player_id either — only `description` — while
+    get_odds does. So the anchor join is name-keyed on the live path too,
+    and the never-join-on-a-name rule has a second and larger hole than
+    D13 describes, at exactly the point boost intake needs it.
+
+    It bites inside one response. On event 87238 the EV payload carried
+    BOTH spellings at once:
+
+        Brian Thomas Jr.  reception_yds  9.5   anchor kalshi
+        Brian Thomas      reception_yds  10.5  anchor pinnacle
+
+    DraftKings and FanDuel both priced him at 10.5, so a raw-name join
+    found only the kalshi 9.5 rows and his entire DK/FD board went
+    unanchored. normalize_name() — built for B1, the phantom-player bug —
+    already collapses both to "brian thomas". The intake path simply was
+    not using it.
+
+    Also strips a trailing parenthetical: Bovada writes
+    "Garrett Wilson (NYJ)" where DraftKings writes "Garrett Wilson".
+
+    What it does NOT fix, and must not be trusted to: first-name variants
+    such as Josh/Joshua Palmer, which are different strings all the way
+    down. Resolve those through propline_search_players on an exact
+    known_names match, as the instructions require.
+    """
+    return normalize_name(_PAREN.sub("", str(name).strip()))
+
+
 def american(decimal: float) -> float:
     """Decimal -> American. Inverse of ff_backtest.to_decimal."""
     return (decimal - 1.0) * 100.0 if decimal >= 2.0 else -100.0 / (decimal - 1.0)
@@ -202,6 +263,11 @@ class BoostLeg:
     verdict_reasons: tuple[str, ...] = ()
     team: str | None = None
     pos: str | None = None
+    # Liquidity on the ANCHOR's line, not on the book you are betting. It
+    # is what says whether fair_prob is a settled number or an opening one.
+    # Present on live get_odds (Pinnacle 250 on an opening board, rising to
+    # 5,000-10,000 by kickoff); absent on Bovada, which returns null.
+    anchor_liquidity: float | None = None
 
     def __post_init__(self):
         if not (0.0 < float(self.fair_prob) < 1.0):
@@ -209,9 +275,45 @@ class BoostLeg:
                 f"fair_prob must be strictly between 0 and 1, got "
                 f"{self.fair_prob!r} for {self.player}. A 0 or 1 makes the "
                 f"EV infinite rather than wrong, which is harder to notice.")
+        # Refused at construction, not just at intake. A leg whose fair line
+        # came from the book being bet is that book's opinion of itself, and
+        # a live test noted that such a leg "built and inspected directly
+        # looks valid" when the only rejection was downstream. Intake checks
+        # it again, because fair_source can be reassigned afterwards.
+        if self.circular:
+            raise ValueError(
+                f"fair_source {self.fair_source!r} names {self.book!r}, the "
+                f"book being bet. De-vigging a book against itself measures "
+                f"it against its own no-vig opinion, which is circular — "
+                f"take the fair line from a sharp anchor instead.")
         if self.verdict not in ("CLEAR", "CAUTION", "VETO", "UNSCREENED"):
             raise ValueError(f"unknown leg verdict {self.verdict!r}")
         self.verdict_reasons = tuple(self.verdict_reasons)
+
+    @property
+    def anchor_immature(self) -> bool:
+        """The anchor has not taken enough money to carry a price opinion.
+
+        An exact 0.5000 is the signal on its own — by kickoff only ~9% of
+        lines sit there — and low liquidity confirms it where the book
+        reports any.
+        """
+        if abs(float(self.fair_prob) - 0.5) > 1e-9:
+            return False
+        return (self.anchor_liquidity is None
+                or self.anchor_liquidity <= OPENING_LIQUIDITY)
+
+    @property
+    def anchor_note(self) -> str | None:
+        if not self.anchor_immature:
+            return None
+        lq = (f"liquidity {self.anchor_liquidity:g}"
+              if self.anchor_liquidity is not None
+              else "liquidity not reported by this book")
+        return (f"{self.player}: fair_prob is exactly 0.5000 at {lq} — this "
+                f"is the anchor's OPENING number, its prior rather than its "
+                f"posterior. Re-pull closer to kickoff; by then only ~9% of "
+                f"lines still sit at exactly 0.5000.")
 
     @property
     def circular(self) -> bool:
@@ -578,18 +680,48 @@ class Shortlist:
 
     @property
     def playable(self) -> bool:
-        """Something here is worth pricing.
+        """Is there anything here to price at all?
 
-        UNPRICEABLE counts: the measured same-game hold was measured on
-        independent legs and does not rule out a stack. NEGATIVE does not.
+        This is now a structural question — are there legs, do any
+        combinations land in the floor band — NOT a judgement on EV.
+
+        It used to be the hard verdict, refusing whenever the boost failed
+        to cover the pessimistic end of the measured hold band. Measured
+        2026-11-02: that band said 23.1-37.2% and the slip it refused
+        actually held 19.2% and priced at **+1.4%**. The pessimistic end of
+        a 14-point band is too harsh a gate when the shortlist caps at 8
+        and pricing all of them costs 8 calls. The hard verdict now comes
+        from Candidate.verdict AFTER a real quote, where the number is real.
         """
-        return any(c.verdict in ("PLAY", "UNPRICEABLE") for c in self.candidates)
+        return bool(self.candidates)
+
+    @property
+    def outlook(self) -> str:
+        """What to expect BEFORE pricing. Advisory, not a verdict."""
+        if not self.candidates:
+            return "NONE"
+        v = {c.verdict for c in self.candidates}
+        if "PLAY" in v:
+            return "LIKELY PLAYABLE"
+        if "UNPRICEABLE" in v:
+            return "UNPRICEABLE ONLY"
+        return "LIKELY NEGATIVE"
+
+    @property
+    def immature_anchors(self) -> list[str]:
+        return sorted({l.player for c in self.candidates for l in c.legs
+                       if l.anchor_immature})
 
     def describe(self) -> str:
-        if not self.playable:
-            return f"NOTHING PLAYABLE — {self.reason}"
-        return (f"{len(self.candidates)} candidate(s), "
-                f"{sum(c.verdict == 'PLAY' for c in self.candidates)} playable")
+        if not self.candidates:
+            return f"NOTHING TO PRICE — {self.reason}"
+        L = [f"{len(self.candidates)} candidate(s) — outlook {self.outlook}",
+             f"  {self.reason}"]
+        if self.immature_anchors:
+            L.append(f"  opening anchors (fair_prob exactly 0.5000) on: "
+                     f"{', '.join(self.immature_anchors)} — re-pull closer "
+                     f"to kickoff before trusting any EV built on them")
+        return "\n".join(L)
 
 
 def _intake(legs, mode: str, event_id: str | None) -> tuple[list, list]:
@@ -677,7 +809,28 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
     cands = cands[:limit]
 
     reason = ""
-    if not any(c.verdict in ("PLAY", "UNPRICEABLE") for c in cands):
+    if cands and any(c.verdict == "PLAY" for c in cands):
+        best = max(cands, key=lambda c: c.rank)
+        reason = (f"best anticipated ROI {best.ev_band[0]:+.1%} to "
+                  f"{best.ev_band[1]:+.1%} across the measured hold band — "
+                  f"ADVISORY. Price the shortlist with price_sgp; the real "
+                  f"quote decides.")
+    elif cands:
+        band = cands[0].hold_band
+        best = max((c for c in cands if c.ev_band is not None),
+                   key=lambda c: c.rank, default=None)
+        got = (f"Best anticipated is {best.ev_band[0]:+.1%} at the "
+               f"pessimistic end. " if best is not None else
+               "No candidate here can be priced at all. ")
+        reason = (f"a {boost_pct:.0%} boost is unlikely to cover the "
+                  f"measured hold for this structure "
+                  f"({band[0]:.1%}-{band[1]:.1%}). {got}Measured minimum is "
+                  f"~28% cross-game and ~50% same-game at +300. This is an "
+                  f"ADVISORY read on an unpriced product price — the band "
+                  f"is 14 points wide and a real quote has come in better "
+                  f"than its pessimistic end before, so price the shortlist "
+                  f"before writing the slip off.")
+    else:
         if not kept:
             reason = "every leg was dropped at intake"
         elif not cands:
@@ -778,6 +931,9 @@ def report(cands, boost_label: str = "") -> str:
                        "and this project cannot compute it.")
             out.append(f"  reference band  : not applicable. "
                        f"{c.hold_band_reason}")
+        for l in c.legs:
+            if l.anchor_note:
+                out.append(f"  ** OPENING ANCHOR ** {l.anchor_note}")
         for n in c.notes:
             out.append(f"  note: {n}")
         out.append("  The model's number is a GAP against a de-vigged line, "

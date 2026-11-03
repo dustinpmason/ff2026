@@ -1495,33 +1495,114 @@ chk("a MIXED slip gets the pessimistic same-game band, not cross-game",
     c.hold_band == ff_boost.HOLD_SAME, str(c.hold_band))
 
 # ---------------------------------------------------------------------------
-section("35. the measured boost policy is enforced, not advisory")
-# A 20% boost is negative everywhere measured; same-game needs ~50%.
-# Half of Dustin's use is single-game TNF/SNF/MNF boosts, so this path will
-# fire often and must state the measured reason rather than going quiet.
+section("35. the boost outlook is ADVISORY before pricing")
+# Changed 2026-11-03, driven by measurement. This used to be a hard gate:
+# playable went False whenever the boost failed to cover the PESSIMISTIC end
+# of the measured hold band. Live, that band said 23.1-37.2%, the slip it
+# refused actually held 19.2%, and it priced at +1.4% — a false negative on
+# the one thing the tool exists to find. The shortlist caps at 8, so pricing
+# every candidate costs 8 calls; the hard verdict belongs after a real quote.
+#
+# Half of Dustin's use is single-game TNF/SNF/MNF boosts, so this path fires
+# often and must still state the measured reason rather than going quiet.
 # ---------------------------------------------------------------------------
 sl = enumerate_candidates(CROSS, META, boost_pct=0.20, mode="cross-game")
-chk("a 20% boost returns nothing playable", not sl.playable, sl.reason)
-chk("the 20% refusal cites the measured hold", "hold" in sl.reason.lower()
-    or "%" in sl.reason, sl.reason)
+chk("a 20% boost still returns candidates to price", sl.playable, sl.reason)
+chk("a 20% boost reads LIKELY NEGATIVE", sl.outlook == "LIKELY NEGATIVE",
+    sl.outlook)
+chk("the 20% outlook cites the measured hold", "hold" in sl.reason.lower(),
+    sl.reason[:80])
+chk("the 20% outlook says it is advisory, not a verdict",
+    "advisory" in sl.reason.lower(), sl.reason[:80])
+chk("every 20% candidate is individually tagged NEGATIVE",
+    all(c.verdict == "NEGATIVE" for c in sl.candidates))
 
 sl = enumerate_candidates(SAME_INDEP, META, boost_pct=0.30, mode="single-game")
-chk("30% same-game-independent returns nothing playable", not sl.playable,
-    sl.reason)
+chk("30% same-game-independent reads LIKELY NEGATIVE",
+    sl.outlook == "LIKELY NEGATIVE", sl.outlook)
 sl = enumerate_candidates(CROSS, META, boost_pct=0.30, mode="cross-game")
-chk("30% cross-game IS playable", sl.playable, sl.reason)
+chk("30% cross-game reads LIKELY PLAYABLE", sl.outlook == "LIKELY PLAYABLE",
+    sl.outlook)
 sl = enumerate_candidates(SAME_INDEP, META, boost_pct=0.50, mode="single-game")
-chk("50% same-game-independent is playable", sl.playable, sl.reason)
+chk("50% same-game-independent reads LIKELY PLAYABLE",
+    sl.outlook == "LIKELY PLAYABLE", sl.outlook)
 
-# The unpriceable case must not be silently dropped by the same policy that
-# rejects the priceable one: the measured 30.2% was measured on INDEPENDENT
-# same-game legs, and the instructions forbid reading it as a verdict on a
-# correlated stack.
+# The false negative that caused this change, reproduced: a candidate the
+# pre-pricing read calls NEGATIVE flips to PLAY on a real quote that beat
+# the band's pessimistic end.
+c = enumerate_candidates(SAME_INDEP, META, boost_pct=0.30,
+                         mode="single-game").candidates[0]
+chk("unpriced, the pessimistic band reads NEGATIVE", c.verdict == "NEGATIVE")
+c2 = price_candidate(c, book_odds=420)
+chk("a real quote that beats the band flips it to PLAY",
+    c2.verdict == "PLAY", f"{c2.verdict} ev={c2.ev_pct:+.1%}")
+chk("the observed hold is below the band that refused it",
+    c2.slip_hold < ff_boost.HOLD_SAME[0],
+    f"observed {c2.slip_hold:.1%} vs band floor {ff_boost.HOLD_SAME[0]:.1%}")
+
+# The unpriceable case must not be swept up by a policy aimed at the
+# priceable one: the measured 30.2% was measured on INDEPENDENT same-game
+# legs and is not a verdict on a stack.
 sl = enumerate_candidates(SAME_STACK, META, boost_pct=0.30, mode="single-game")
 chk("a correlated stack is NOT rejected by the same-game hold figure",
     len(sl.candidates) > 0, sl.reason)
+chk("a stack-only shortlist reads UNPRICEABLE ONLY",
+    sl.outlook == "UNPRICEABLE ONLY", sl.outlook)
 chk("but it is returned without an EV",
     all(cc.ev_pct is None for cc in sl.candidates))
+
+# ---------------------------------------------------------------------------
+section("35b. an opening anchor is a prior, not a price")
+# Measured 2026-11-03: Pinnacle's yardage board 68 hours out was -114/-114
+# with liquidity 250 on every line, so 18 of 20 de-vigged to exactly 0.5000.
+# Not corruption — the isolation run proved the feed is clean — but the
+# book's prior. At the final pre-kickoff snapshot only 2 of 22 sit there.
+# ---------------------------------------------------------------------------
+opening = leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=250)
+chk("exactly 0.5000 at minimum limits is flagged immature",
+    opening.anchor_immature)
+chk("the flag says to re-pull closer to kickoff",
+    "kickoff" in (opening.anchor_note or "").lower(),
+    str(opening.anchor_note)[:70])
+chk("a settled anchor at the same liquidity is NOT flagged",
+    not leg("WR A1", EV1, fair_prob=0.5065,
+            anchor_liquidity=250).anchor_immature)
+chk("exactly 0.5000 at HIGH liquidity is not flagged",
+    not leg("WR A1", EV1, fair_prob=0.5,
+            anchor_liquidity=10000).anchor_immature)
+chk("exactly 0.5000 with liquidity unreported is still flagged",
+    leg("WR A1", EV1, fair_prob=0.5).anchor_immature,
+    "bovada returns null liquidity; the 0.5000 is the signal on its own")
+
+sl = enumerate_candidates(
+    [opening, leg("WR C1", EV2), leg("WR E1", EV3)], META,
+    boost_pct=0.50, mode="cross-game")
+chk("the shortlist names its opening anchors",
+    sl.immature_anchors == ["WR A1"], str(sl.immature_anchors))
+chk("describe() warns about them", "re-pull" in sl.describe(),
+    sl.describe()[-80:])
+_c = price_candidate(sl.candidates[0], book_odds=400)
+chk("the report flags an opening anchor on the slip itself",
+    "OPENING ANCHOR" in ff_boost.report([_c]))
+
+# ---------------------------------------------------------------------------
+section("35c. the odds -> anchor join is normalized")
+# get_event_ev carries `description` and NO player_id, so this join is
+# name-keyed on the live path. Event 87238 carried BOTH spellings of one
+# player in the SAME payload and his whole DK/FD board went unanchored.
+# ---------------------------------------------------------------------------
+chk("suffix split collapses (the live failure)",
+    ff_boost.norm_player("Brian Thomas Jr.")
+    == ff_boost.norm_player("Brian Thomas"))
+chk("a trailing team parenthetical is stripped",
+    ff_boost.norm_player("Garrett Wilson (NYJ)")
+    == ff_boost.norm_player("Garrett Wilson"))
+chk("different players still do not collide",
+    ff_boost.norm_player("Josh Allen") != ff_boost.norm_player("Keenan Allen"))
+chk("a first-name variant is NOT silently merged",
+    ff_boost.norm_player("Josh Palmer")
+    != ff_boost.norm_player("Joshua Palmer"),
+    "resolve these through search_players on exact known_names")
 
 # ---------------------------------------------------------------------------
 section("36. leg intake — nothing unbettable or circular reaches a slip")
@@ -1546,12 +1627,17 @@ chk("a CAUTION leg is surfaced on the slip, not silently treated as CLEAR",
 # Circularity: a fair line de-vigged from the same book you are betting is
 # that book's opinion of itself. The instructions forbid it on single props;
 # it is no more valid inside a slip.
-circ = leg("WR C1", EV2, book="draftkings", fair_source="draftkings (self)")
-chk("a fair line sourced from the book being bet is refused",
-    raises(classify, [circ], META) or
-    not enumerate_candidates([leg("WR A1", EV1), circ, leg("WR E1", EV3)],
-                             META, boost_pct=0.50,
-                             mode="cross-game").candidates)
+chk("a circular fair line is refused at CONSTRUCTION",
+    raises(leg, "WR C1", EV2, book="draftkings",
+           fair_source="draftkings (via get_event_ev)"))
+# fair_source is reassignable after construction, so intake checks again.
+circ = leg("WR C1", EV2, book="draftkings")
+circ.fair_source = "draftkings (self)"
+sl = enumerate_candidates([leg("WR A1", EV1), circ, leg("WR E1", EV3)],
+                          META, boost_pct=0.50, mode="cross-game")
+chk("a circular fair line set AFTER construction is caught at intake",
+    not sl.candidates and any("circular" in why or "own opinion" in why
+                              for _, why in sl.dropped), str(sl.dropped))
 
 chk("fair_prob of 0 is refused", raises(leg, "WR C1", EV2, fair_prob=0.0))
 chk("fair_prob of 1 is refused", raises(leg, "WR C1", EV2, fair_prob=1.0))

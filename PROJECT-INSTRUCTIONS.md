@@ -190,10 +190,27 @@ general terms** rather than quoting a number you know is wrong.
 
 **ALWAYS pass both `markets` and `bookmakers` on `propline_get_odds`.** An
 unfiltered call returns every market across all 37 books and runs to megabytes —
-it looks like a hang. One market across three books is already ~68KB.
+it looks like a hang. **Expect ~280KB for ONE market across four books**, and
+1.0MB for three markets — measured 2026-11-03, not the ~68KB an earlier note
+here claimed. Every full prop pull overflows to disk, so letting the harness
+save the response and reading it with Python is the NORMAL path for prop work,
+not a special case for slate-wide coverage calls.
 
 - My books that PropLine covers: `draftkings`, `fanduel`, `betmgm`. Plus
   `pinnacle` always, as the sharp reference line.
+- **Anchor scarcity is the binding constraint on prop work, not a detail.**
+  Measured 2026-11-03, `get_market_coverage(days=7)`, 15 events in window:
+  Pinnacle carried pass/rush/reception yards on **one event**; BetMGM
+  carried **none** of the three. Confirmed not to be a filter artifact —
+  dropping the `bookmakers` filter showed 17 books on an event Pinnacle is
+  simply not on. A cross-game slip needs three anchored events, so for most
+  of the week it cannot be built at all. Check coverage before planning the
+  work, and say so rather than substituting legs from one game.
+- **`redacted` does not exist on live `get_odds`** — not false, absent, at
+  every level. It is an outcome-level field on `get_odds_history` only, so
+  "check `redacted`" is not a usable guard on the live intake path. What
+  live `get_odds` does carry per outcome is `liquidity`, `depth`,
+  `player_id`, `payout_multiplier` and `last_change_at`.
 - **bet365 and Caesars are NOT covered.** I bet at both. Never imply a price is
   available at bet365 based on PropLine data.
 - NFL market keys: `player_pass_yds`, `player_rush_yds`, `player_reception_yds`,
@@ -392,8 +409,14 @@ case — the third unverified causal claim to reach these instructions, after
 P7 and P8. So `lines: []` means one of three different things:
 
 1. no anchor carries this market,
-2. nothing cleared `min_ev_pct`, or
-3. your books do not quote this market.
+2. nothing cleared `min_ev_pct`,
+3. your books do not quote this market, or
+4. **an anchor book DOES carry it, but one-sidedly, so no fair line can be
+   derived.** Measured 2026-11-03 on event 53173: Bovada carries
+   anytime-TD at prices identical to DraftKings, and `get_event_ev` still
+   returns `[]` — every outcome is `side: null` with no "No" counterpart.
+   Reading this as "no anchor carries this market" is approximately right
+   and sends you looking for the wrong fix.
 
 They are indistinguishable from the response. Diagnose by removing the
 `bookmakers` filter first, then lowering `min_ev_pct` to 0 — and only then
@@ -702,17 +725,70 @@ print(report([c], "30% boost"))
 recall.** The module uses them to decide whether legs correlate, so a wrong
 team silently changes a slip's structure and therefore its hold band.
 
-### What it will refuse, and why you should not argue with it
+### `playable` is structural; `outlook` is advisory; the verdict comes after pricing
 
-**`playable=False` is the answer.** It goes False when the boost does not
-cover the measured hold for that structure. Report `sl.reason` and stop —
-do not rebuild the slip a different way to get a yes. The individual
-candidates are still in `sl.candidates` with their numbers if Dustin asks.
+- **`sl.playable`** answers "is there anything here to price at all" — are
+  there legs, did any combination land in the floor band. False means stop.
+- **`sl.outlook`** is `LIKELY PLAYABLE` / `LIKELY NEGATIVE` /
+  `UNPRICEABLE ONLY`. It is a read on the *product* price against a
+  14-point-wide hold band. **Do not treat it as a verdict.**
+- **`Candidate.verdict` after `price_candidate()`** is the real answer,
+  because the hold is then observed rather than assumed.
 
-Expect this often in single-game mode: same-game at +300 is −16.2% at a 20%
-boost and −10.7% at 30%, and the measured minimum is ~50%. Stretching to
-+500 does not rescue it. **If the typical standalone-game offer is 20–30%,
-the honest answer on most of them is "don't play this."**
+This used to be a hard gate and it produced a false negative live: the band
+said 23.1–37.2%, the slip actually held **19.2%**, and it priced at
+**+1.4%** — refused by a read on a band it beat. The shortlist caps at 8, so
+pricing every candidate costs 8 calls. **Price the shortlist before writing
+a slip off.**
+
+Expect `LIKELY NEGATIVE` often in single-game mode: same-game at +300 is
+−16.2% at a 20% boost and −10.7% at 30%, and the measured minimum is ~50%.
+Stretching to +500 does not rescue it. **If the typical standalone-game
+offer is 20–30%, the honest answer on most of them is still "don't play
+this"** — but say so after pricing, not instead of it.
+
+### An exact 0.5000 anchor is the book's PRIOR, not its price
+
+Measured 2026-11-03. Pinnacle's yardage board ~68 hours out was −114/−114
+with `liquidity: 250` on every line, so 18 of 20 de-vigged to exactly
+0.5000. **This is not corruption** — an isolation run confirmed the feed is
+clean, since Pinnacle's `player_receptions` lines vary richly in the *same
+response*. It is the half-yard grid: on a continuous stat the book moves the
+POINT until −114/−114 is fair, so the price carries nothing.
+
+But it means the anchor has taken no money yet. At the final pre-kickoff
+snapshot only **2 of 22** lines are still exactly 0.5000, and on a second
+event inside the last six hours it is **0 of 16**.
+
+**Pass `anchor_liquidity=` on every BoostLeg.** `ff_boost` flags an exact
+0.5000 at minimum limits and the report prints `** OPENING ANCHOR **`. An
+EV built on one is an EV against an opening number — re-pull closer to
+kickoff before trusting it.
+
+**Do not switch the anchor to Kalshi** on the strength of it varying more.
+Kalshi is an order-driven exchange and most alternate contracts carry under
+$5 — Derrick Henry rec 9.5 at 113/−223 with `liquidity: 0.94` is noise
+wearing a precise-looking number, and it is the worst possible input to
+`fair_over`. Pinnacle stays the default. The rule is a **timing** rule.
+
+### Joining a book's quote to its anchor — use `ff_boost.norm_player()`
+
+**`get_event_ev` carries no `player_id`** — only `description`. D13 recorded
+this for the *historical* endpoints and said "just live `get_odds` has the
+id"; the live EV endpoint does not have it either. So the anchor join is
+name-keyed on the live path too, and the never-join-on-a-name rule has a
+second and larger hole than D13 describes, at exactly the point boost intake
+needs it.
+
+It bites inside a single response. Event 87238 carried both spellings at
+once — `Brian Thomas Jr.` at 9.5 (kalshi) and `Brian Thomas` at 10.5
+(pinnacle) — while DK and FD both priced him at **10.5**. A raw-name join
+found only the kalshi rows and his entire DK/FD board went unanchored.
+
+`norm_player()` strips suffixes and a trailing team parenthetical
+(`Garrett Wilson (NYJ)` → `Garrett Wilson`). It does **not** fix first-name
+variants (Josh/Joshua Palmer) — resolve those through
+`propline_search_players` on an exact `known_names` match.
 
 ### The three structures, and the one that gets no EV
 

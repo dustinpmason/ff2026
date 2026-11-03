@@ -309,6 +309,23 @@ where most alternate contracts carry under $5 — Derrick Henry rec 9.5 at
 and it is the worst possible input to `fair_over`. Pinnacle stays default.
 The rule is a **timing** rule, not a book rule.
 
+### Batch two — intake hardening (2026-11-03)
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| **B42** | `liquidity` was discarded, so an opening anchor read as a settled price | DONE | `BoostLeg.anchor_liquidity`, `anchor_immature`, `anchor_note`; the report prints `** OPENING ANCHOR **` and `Shortlist.immature_anchors` names them. An exact 0.5000 is the signal on its own — by kickoff only ~9% of lines sit there — and liquidity at or below Pinnacle's 250 minimum confirms it. Bovada reports null liquidity, so the 0.5000 has to stand alone there. **This is P2's shape exactly:** a field carrying real information, present in the payload, silently discarded. |
+| **B43** | The pre-pricing read was a hard gate and produced a false negative | DONE | `playable` went False whenever the boost failed to cover the PESSIMISTIC end of the hold band. Live: the band said 23.1–37.2%, the slip it refused actually held **19.2%**, and it priced at **+1.4%**. A false negative on the one thing the tool exists to find, from a 14-point-wide band used as a gate. `playable` is now structural (is there anything to price), `outlook` is advisory, and `Candidate.verdict` after `price_candidate()` is the verdict — where the hold is observed rather than assumed. The shortlist caps at 8, so pricing everything costs 8 calls. Also dissolves the live finding that `sl.playable=False` sat next to a candidate reading PLAY: only one of them is a verdict now. |
+| **B44** | The odds → anchor join was raw-name keyed | DONE | `get_event_ev` carries `description` and **no `player_id`**, so the live intake path joins on a name — D13 recorded this for the historical endpoints and said "just live `get_odds` has the id", which is wrong about the EV endpoint. Event 87238 carried `Brian Thomas Jr.` (9.5, kalshi) and `Brian Thomas` (10.5, pinnacle) in the SAME payload while DK/FD both priced 10.5, so a raw join lost his entire board. `ff_boost.norm_player()` wraps `normalize_name` (built for B1) and strips a trailing team parenthetical for Bovada's `Garrett Wilson (NYJ)`. Deliberately does NOT merge Josh/Joshua Palmer — those go through `search_players` on exact `known_names`. |
+| **B45** | A circular leg constructed cleanly and was only caught downstream | DONE | Now refused in `__post_init__`. Intake still checks, because `fair_source` is reassignable afterwards. |
+| **D15** | Four instruction corrections from live contact | DONE | (a) `lines: []` has a **fourth** meaning — an anchor book carries the market one-sidedly so no fair line can be derived, measured on 53173 with Bovada at prices identical to DK. (b) `redacted` is **absent** from live `get_odds` at every level, not false; it is outcome-level on `get_odds_history` only, so it is not a usable live guard. (c) One market across four books is **~280KB**, not the ~68KB claimed — disk is the normal path for prop pulls. (d) Anchor scarcity recorded as a binding constraint, not a detail. |
+
+**Deliberately NOT built:** an adapter that joins `get_odds` rows to
+`get_event_ev` lines end to end. Writing one now means guessing the EV
+response's exact shape, and B24 shipped because 135 checks were blind to a
+price swap behind fixtures in a shape PropLine never returns. `norm_player()`
+is shape-independent and fixes the part that actually failed. Build the
+adapter from a saved live payload, not from a guess.
+
 ### Structural constraint, bigger than any code bug
 
 `get_market_coverage(days=7)`, 15 events in window: **Pinnacle carries
