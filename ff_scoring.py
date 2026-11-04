@@ -77,9 +77,15 @@ class League:
     fg_miss: float = 0.0                   # penalty per miss; 0 = none
 
     # --- team DST scoring ---
-    # Recorded for reference and for reasoning about streaming decisions.
-    # NOT yet computed — see score_dst() for why.
+    # Computed by score_dst() off team_defense_weeks(), but ONLY for a league
+    # whose dict includes a pts_allowed ladder. Where the ladder was never
+    # recorded, score_dst raises rather than scoring the events alone.
     dst: dict = field(default_factory=dict)
+    # Which points count against a DST. "opponent_total" = the opponent's
+    # final game score. The alternative charges only points the DST's own
+    # unit was on the field for. Yahoo's exact treatment is unconfirmed for
+    # these leagues; named here rather than assumed silently.
+    pts_allowed_scope: str = "opponent_total"
 
     # roster
     starters: dict[str, int] = field(default_factory=dict)
@@ -136,6 +142,15 @@ LEAGUES: dict[str, League] = {
         ],
         pat=1.0, fg_miss=0.0,
         fg_tiers=[(0, 19, 1), (20, 29, 2), (30, 39, 3), (40, 49, 4), (50, 99, 5)],
+        # Event values are synced and confirmed. The POINTS-ALLOWED LADDER is
+        # deliberately absent: the connector's copy skips the 21-27 band
+        # entirely (0 / 1-6 / 7-13 / 14-20 / [gap] / 28-34 / 35+) and the
+        # tier VALUES were never recorded anywhere. score_dst() therefore
+        # raises for this league and names what to go get. Do not fill these
+        # in from another league's ladder — Holmdel's pays 5/3/1 where the
+        # connector's generic preset pays 4/1/0, so they are not transferable.
+        dst={"sack": 1, "int": 2, "fum_rec": 2, "td": 6, "safety": 2,
+             "block_kick": 2, "return_td": 6},
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=6, ir=2,
         playoff_weeks="4-team playoffs, Weeks 15-16",
@@ -156,6 +171,13 @@ LEAGUES: dict[str, League] = {
             ("receiving_yards", 100, 5.0),
         ],
         pat=1.0, fg_yards_per_point=10.0, fg_miss=0.0,
+        # As recorded in LEAGUE-CONFIG. Note fum_rec is NOT listed for this
+        # league where it IS for Cameron Wood — that is how the settings were
+        # written down, not a judgement that it pays nothing, so it is left
+        # out rather than assumed. The points-allowed ladder was never
+        # recorded at all, so score_dst() raises here too.
+        dst={"sack": 1, "int": 2, "td": 6, "safety": 2,
+             "block_kick": 2, "return_td": 6},
         starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1},
         bench=6, ir=0,
         playoff_weeks="6-team playoffs, Weeks 14-16",
@@ -309,23 +331,143 @@ def score_kicker(df: pd.DataFrame, lg: League) -> pd.Series:
     return p.astype(float)
 
 
-def score_dst(df: pd.DataFrame, lg: League):
-    """NOT IMPLEMENTED — raises rather than returning zeros.
+_ST_PLAYS = ("punt", "kickoff")
 
-    Team DST scoring needs two things the weekly PLAYER file does not contain:
-    points allowed (which lives in game/schedule data) and team-level
-    aggregation of individual defensive lines. Holmdel's also scores 4th-down
-    stops, which needs play-by-play.
 
-    The rules are recorded in League.dst so streaming decisions can reason
-    about them. Returning zeros here would be silently wrong — the exact
-    failure mode this module exists to prevent.
+def team_defense_weeks(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Build one row per (season, week, team) of team DEFENSE/ST counting stats.
+
+    E4. The weekly PLAYER file has no team-defense row, which is why
+    `score_dst` raised for so long. Play-by-play has everything, and
+    `refresh.py` already loads it every bootstrap — nothing new is fetched.
+
+    Columns out: season, week, season_type, team, opponent, points_allowed,
+    sacks, interceptions, fumble_recoveries, safeties, def_tds, return_tds,
+    blocked_kicks, fourth_down_stops, xp_returned.
+
+    POINTS ALLOWED is the opponent's FINAL GAME SCORE. That is one of two
+    defensible definitions — the other charges a DST only for points its own
+    unit was on the field for, excluding what the opponent's defense or
+    special teams scored against your offense. Platforms differ and Yahoo's
+    exact treatment is unconfirmed for these leagues, so the definition is
+    named here and switchable via `League.pts_allowed_scope` rather than
+    buried. Same reasoning as `fumble_scope`.
+
+    A pick-six is counted ONCE, as a def_td. `return_touchdown` in nflverse
+    covers interception and fumble returns as well as punts and kickoffs, so
+    paying both `td` and `return_td` off that column would double-credit the
+    same play. Punt and kickoff returns go to return_tds; everything else the
+    defending team takes to the house goes to def_tds.
     """
-    raise NotImplementedError(
-        f"DST scoring is not built. {lg.name}'s real rules are in its .dst "
-        f"dict. If you fall back to a connector DST projection, SAY SO — its "
-        f"sack value and points-allowed tiers are wrong for this league."
-    )
+    need = {"game_id", "season", "week", "home_team", "away_team",
+            "home_score", "away_score", "defteam", "posteam"}
+    missing = need - set(pbp.columns)
+    if missing:
+        raise ValueError(
+            f"play-by-play is missing {sorted(missing)} — team_defense_weeks "
+            f"needs the full pbp frame from load_pbp(), not a trimmed one.")
+
+    games = (pbp.groupby("game_id", as_index=False)
+                .agg(season=("season", "first"), week=("week", "first"),
+                     season_type=("season_type", "first"),
+                     home_team=("home_team", "first"),
+                     away_team=("away_team", "first"),
+                     home_score=("home_score", "first"),
+                     away_score=("away_score", "first")))
+    rows = []
+    for side, opp in (("home", "away"), ("away", "home")):
+        rows.append(games.assign(
+            team=games[f"{side}_team"], opponent=games[f"{opp}_team"],
+            points_allowed=games[f"{opp}_score"].astype(float))
+            [["game_id", "season", "week", "season_type", "team",
+              "opponent", "points_allowed"]])
+    out = pd.concat(rows, ignore_index=True)
+
+    def _flag(mask, team_col="defteam"):
+        m = pbp[mask.fillna(False)]
+        if m.empty:
+            return pd.Series(dtype=float)
+        return m.groupby(["game_id", team_col]).size()
+
+    is_st = pbp.get("play_type", pd.Series(index=pbp.index, dtype=object)) \
+               .isin(_ST_PLAYS)
+    td_by_def = (pbp["touchdown"] == 1) & (pbp["td_team"] == pbp["defteam"])
+
+    counts = {
+        "sacks": _flag(pbp["sack"] == 1),
+        "interceptions": _flag(pbp["interception"] == 1),
+        "fumble_recoveries": _flag(pbp["fumble_lost"] == 1,
+                                   "fumble_recovery_1_team"),
+        "safeties": _flag(pbp["safety"] == 1),
+        "def_tds": _flag(td_by_def & ~is_st),
+        "return_tds": _flag(td_by_def & is_st),
+        "blocked_kicks": _flag((pbp["punt_blocked"] == 1)
+                               | (pbp["field_goal_result"] == "blocked")
+                               | (pbp["extra_point_result"] == "blocked")),
+        "fourth_down_stops": _flag(pbp["fourth_down_failed"] == 1),
+        "xp_returned": _flag((pbp.get("defensive_extra_point_conv", 0) == 1)
+                             | (pbp.get("defensive_two_point_conv", 0) == 1)),
+    }
+    idx = pd.MultiIndex.from_frame(out[["game_id", "team"]])
+    for name, s in counts.items():
+        out[name] = (s.reindex(idx).to_numpy() if len(s)
+                     else 0.0)
+        out[name] = pd.Series(out[name]).fillna(0.0).astype(float)
+    return out
+
+
+def score_dst(df: pd.DataFrame, lg: League) -> pd.Series:
+    """Score team defenses under a league's real rules.
+
+    `df` is the output of `team_defense_weeks()`. Returns one points value per
+    row, aligned to df.index.
+
+    RAISES rather than scoring partially. A league whose `dst` dict is empty,
+    or whose points-allowed ladder was never recorded, cannot be scored — and
+    returning the event points alone would be a number that looks complete and
+    is systematically low by the single largest component. That is the failure
+    this module exists to prevent, so the gap is an exception, not a default.
+    """
+    if not lg.dst:
+        raise NotImplementedError(
+            f"{lg.name} has no DST rules recorded. "
+            f"{'This league has no DST slot.' if not lg.uses_k_dst else ''} "
+            f"If you fall back to a connector DST projection, SAY SO.")
+
+    ladder = lg.dst.get("pts_allowed")
+    if not ladder:
+        raise NotImplementedError(
+            f"{lg.name}'s DST event scoring is recorded but its POINTS-ALLOWED "
+            f"ladder is not, and points allowed is the largest component of a "
+            f"DST week. Recorded: {sorted(k for k in lg.dst if k != 'pts_allowed')}. "
+            f"Get the tier values off the league settings screen and add them "
+            f"as dst['pts_allowed'] = [(low, high, points), ...]. Scoring the "
+            f"events alone would be wrong low and look complete.")
+
+    if lg.pts_allowed_scope != "opponent_total":
+        raise NotImplementedError(
+            f"pts_allowed_scope={lg.pts_allowed_scope!r} is not implemented; "
+            f"only 'opponent_total' is derived today.")
+
+    pts = pd.Series(0.0, index=df.index)
+    for stat, key in (("sacks", "sack"), ("interceptions", "int"),
+                      ("fumble_recoveries", "fum_rec"), ("safeties", "safety"),
+                      ("def_tds", "td"), ("return_tds", "return_td"),
+                      ("blocked_kicks", "block_kick"),
+                      ("fourth_down_stops", "fourth_down_stop"),
+                      ("xp_returned", "xp_returned")):
+        if lg.dst.get(key):
+            pts = pts + _col(df, stat) * lg.dst[key]
+
+    pa = _col(df, "points_allowed")
+    tier = pd.Series(float("nan"), index=df.index)
+    for low, high, val in ladder:
+        tier = tier.mask((pa >= low) & (pa <= high), float(val))
+
+    # A ladder with a hole in it is a RECORDED gap, not a scoring error:
+    # Cameron Wood's synced tiers skip 21-27 entirely. Those rows come back
+    # NaN so they propagate visibly instead of being paid zero.
+    return (pts + tier).astype(float)
 
 
 def score_all(df: pd.DataFrame) -> pd.DataFrame:

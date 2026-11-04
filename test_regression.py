@@ -975,6 +975,82 @@ chk("rung_threshold refuses unknown grammar rather than guessing",
     and rung_threshold("Ameer Abdullah") is None
     and rung_threshold("175+ Passing Yards") == 175.0)
 
+section("25c. team DST scoring is computed, not guessed (E4)")
+from ff_scoring import team_defense_weeks, score_dst
+import copy as _copy
+# E4 was parked in Tier 5 on the grounds that points allowed "lives in game
+# data rather than the player file". True of the weekly file, false of the
+# play-by-play refresh.py already loads every bootstrap. The whole of a DST
+# week is derivable from it, so the only thing that was ever missing is below.
+_e4 = team_defense_weeks(load_pbp([2026]))
+chk("one row per team per game", len(_e4) == _e4.game_id.nunique() * 2,
+    f"{len(_e4)} rows over {_e4.game_id.nunique()} games")
+# The hard validation: points allowed must reconcile EXACTLY to points scored.
+_g = load_pbp([2026]).groupby("game_id").agg(h=("home_score", "first"),
+                                             a=("away_score", "first"))
+chk("points allowed reconciles to every point scored",
+    float(_e4.points_allowed.sum()) == float((_g.h + _g.a).sum()),
+    f"{_e4.points_allowed.sum()} vs {(_g.h + _g.a).sum()}")
+_pbp26 = load_pbp([2026])
+for _lbl, _col_name, _mask in (("sacks", "sacks", _pbp26.sack == 1),
+                               ("interceptions", "interceptions",
+                                _pbp26.interception == 1)):
+    chk(f"every {_lbl[:-1]} is credited to exactly one defense",
+        float(_e4[_col_name].sum()) == float(_mask.sum()),
+        f"{_e4[_col_name].sum()} vs {_mask.sum()}")
+# A pick-six is ONE touchdown. nflverse's return_touchdown covers interception
+# and fumble returns as well as punts and kickoffs, so splitting on play_type
+# is what stops `td` and `return_td` both paying for the same play.
+chk("defensive and return TDs do not double-count",
+    float((_e4.def_tds + _e4.return_tds).sum())
+    == float(((_pbp26.touchdown == 1)
+              & (_pbp26.td_team == _pbp26.defteam)).sum()))
+
+_h = score_dst(_e4, LEAGUES["holmdels"])
+chk("Holmdel's DST scores every week", _h.notna().all() and len(_h) == len(_e4))
+chk("a DST week lands in a plausible range",
+    4.0 < float(_h.mean()) < 11.0 and float(_h.min()) >= -4.0,
+    f"mean {_h.mean():.2f}, min {_h.min()}, max {_h.max()}")
+# Holmdel's pays 5/3/1 at 7-13/14-20/21-27 where the connector pays 4/1/0.
+# A shutout with nothing else is the ladder's top rung and nothing more.
+_shut = pd.DataFrame([{"points_allowed": 0.0, "sacks": 0.0, "interceptions": 0.0,
+                       "fumble_recoveries": 0.0, "safeties": 0.0, "def_tds": 0.0,
+                       "return_tds": 0.0, "blocked_kicks": 0.0,
+                       "fourth_down_stops": 0.0, "xp_returned": 0.0}])
+chk("the points-allowed ladder is the league's own, not the connector's",
+    float(score_dst(_shut, LEAGUES["holmdels"]).iloc[0]) == 10.0)
+chk("a 17-point game pays 3 here, where the connector would pay 1",
+    float(score_dst(_shut.assign(points_allowed=17.0),
+                    LEAGUES["holmdels"]).iloc[0]) == 3.0)
+chk("4th-down stops are paid, and only this league has them",
+    float(score_dst(_shut.assign(fourth_down_stops=2.0),
+                    LEAGUES["holmdels"]).iloc[0]) == 11.0
+    and "fourth_down_stop" not in LEAGUES["cameron_wood"].dst)
+
+# The refusals. These matter more than the arithmetic: a league whose ladder
+# was never written down must NOT come back with event points only, which
+# would look complete and be wrong low by the largest component.
+for _k in ("cameron_wood", "gridiron_grail"):
+    try:
+        score_dst(_e4, LEAGUES[_k])
+        _raised = False
+    except NotImplementedError as _e:
+        _raised = "pts_allowed" in str(_e).lower() or "points-allowed" in str(_e).lower()
+    chk(f"{_k}: refuses to score without a points-allowed ladder", _raised)
+chk("the guillotine refuses outright — it has no DST slot",
+    LEAGUES["guillotine"].dst == {} and not LEAGUES["guillotine"].uses_k_dst)
+# Cameron Wood's synced ladder has a hole at 21-27. A hole must propagate as
+# NaN, never as a zero that reads like "the defence earned nothing".
+_gapped = _copy.deepcopy(LEAGUES["holmdels"])
+_gapped.dst = dict(_gapped.dst,
+                   pts_allowed=[(0, 0, 10), (1, 6, 7), (7, 13, 5), (14, 20, 3),
+                                (28, 34, -1), (35, 99, -4)])
+_gap = score_dst(_e4, _gapped)
+chk("a hole in the ladder returns NaN, not zero",
+    int(_gap.isna().sum()) == int(((_e4.points_allowed >= 21)
+                                   & (_e4.points_allowed <= 27)).sum())
+    and int(_gap.isna().sum()) > 0, f"{_gap.isna().sum()} NaN")
+
 section("26. model abstains on low-event binary stats (B32)")
 # Live: Rome Odunze came back at 1.0% against a 25.2% Pinnacle fair line on
 # 0-for-7. The threshold model cannot estimate a TD rate from that, and a
