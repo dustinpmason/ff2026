@@ -424,6 +424,15 @@ class UsageTrend:
     share_ratio: float = 1.0
     team_volume_ratio: float = 1.0
     has_share: bool = False
+    # B88/A4. `team_volume_ratio` is 0.0 when the share column is present but
+    # the team-total column is not, and `role_trend` HARDCODES it to 1.0 and
+    # never measures it at all. The B84 conflict message printed it as a
+    # measurement either way, so a reader saw "team volume 0%" (a team that
+    # ran no plays) or "team volume 100%" directly before "he is a bigger
+    # part of a smaller pie" — which 100% contradicts. This flag says whether
+    # the number was measured, so the messages can leave it out when it
+    # wasn't rather than asserting it.
+    has_team_volume: bool = False
 
     @property
     def flagged(self) -> bool:
@@ -455,11 +464,53 @@ class UsageTrend:
         disagreements and costs nothing correct. `team_volume_ratio` on the
         conflicting set runs 0.42 to 1.98, confirming the divergence is
         team-volume driven rather than noise.
+
+        **Re-derive these numbers with
+        `measurements/b84_direction_conflict.py`.** They were originally
+        written here as prose with nothing in the repo able to reproduce
+        them, which is D16's shape — a measurement recorded as a standing
+        claim. The script is the artefact; if it stops reproducing these
+        figures, this docstring is what is wrong.
         """
         if not self.flagged or not self.has_share:
             return False
         return ((self.share_ratio > 1.0 and self.ratio < 1.0)
                 or (self.share_ratio < 1.0 and self.ratio > 1.0))
+
+    @property
+    def share_measured(self) -> bool:
+        """Was `share_ratio` measured, or forced to 1.0?
+
+        B88/A6. `usage_trend` sets `share_ratio = 1.0` both when `has_share`
+        is False and when `has_share` is True but `share_baseline` is 0 —
+        reachable when the share merge leaves NaN baseline weeks that
+        `fillna(0)` turns into zeros. The role-change messages printed it
+        regardless, so a reader saw `"COLLAPSED, share 100%"`, which is
+        self-contradictory against SHARE_COLLAPSE = 0.65 and reads as
+        exactly the GAME_SCRIPT diagnosis ("count fell, share held") this
+        mechanism exists to distinguish from a real collapse.
+        """
+        return bool(self.has_share and self.share_baseline > 0)
+
+    @property
+    def count_flat(self) -> bool:
+        """Opportunity COUNT did not move, so there is no staleness in it.
+
+        B88/A5. `direction_conflict` used strict inequalities, so a count
+        ratio of EXACTLY 1.0 was neither above nor below and reported no
+        conflict — and `supports()` then answered confidently off the share
+        verdict. Measured on an integer log (baseline targets [8,4,6,5,7]
+        mean 6.0, recent [5,7] mean 6.0, team targets doubling): ratio 1.0,
+        share_ratio 0.496, verdict COLLAPSED, `supports("UNDER")` -> True,
+        while `expected_now` equals the sample mean EXACTLY. By B84's own
+        principle — production follows opportunity count — there is no
+        staleness in either direction, so a confident answer is wrong. At
+        ratio 1.0001 the same state already returned None, and this module
+        retired LONGSHOT_P for precisely that kind of discontinuity.
+        """
+        if not self.flagged or not self.has_share:
+            return False
+        return self.ratio == 1.0
 
     def supports(self, side: str | None) -> bool | None:
         """Does this role change run WITH the side being bet, or against it?
@@ -477,7 +528,7 @@ class UsageTrend:
           * `direction_conflict` — share and count disagree (B84)
 
         **B80: this lived as a duplicated two-line expression in
-        `price_edge` and `boost_verdict`, and the second copy had been
+        `prop_edge` and `boost_verdict`, and the second copy had been
         written WITHOUT the direction test at all** — it vetoed every role
         change and asserted the direction in prose. It cost the best-priced
         leg on a live board, a Justice Hill over whose targets had gone
@@ -486,7 +537,7 @@ class UsageTrend:
         """
         if side not in ("OVER", "UNDER") or not self.flagged:
             return None
-        if self.direction_conflict:
+        if self.direction_conflict or self.count_flat:
             return None
         return ((self.verdict == "COLLAPSED" and side == "UNDER")
                 or (self.verdict == "EXPANDED" and side == "OVER"))
@@ -502,10 +553,31 @@ class UsageTrend:
                  "GAME_SCRIPT": "DOWN", "STABLE": "stable"}[self.verdict]
         s = (f"  usage      : {self.column} {self.baseline:.1f} -> {self.recent:.1f} "
              f"over last {self.window} ({self.ratio:.0%}, {arrow})")
-        if self.has_share:
+        # B88/A6+A4. Print share only when it was MEASURED, and team volume
+        # only when it was measured — both are forced to 1.0 in states this
+        # class cannot distinguish from a real reading, and printing them
+        # regardless produced "COLLAPSED, share 100%" and "team volume 0%".
+        if self.share_measured:
             s += (f"\n  share      : {self.share_baseline:.1%} -> {self.share_recent:.1%} "
-                  f"({self.share_ratio:.0%} of baseline); team volume at "
-                  f"{self.team_volume_ratio:.0%}")
+                  f"({self.share_ratio:.0%} of baseline)")
+            s += (f"; team volume at {self.team_volume_ratio:.0%}"
+                  if self.has_team_volume else
+                  "; team volume not measured")
+        elif self.has_share:
+            s += ("\n  share      : baseline is zero, so no share ratio could "
+                  "be computed — the verdict below is count-derived")
+        if self.flagged and (self.direction_conflict or self.count_flat):
+            # B88/A8. describe() asserted "the sample describes a role this
+            # player no longer has" for every flagged trend, including the
+            # states supports() refuses to answer — so report() printed a
+            # confident role-change narrative over an undetermined one.
+            # NOTE this function builds with `s +=`, not a list; a first cut
+            # of this patch used L.append() and would have raised NameError
+            # on exactly the state it was added for, which no test covered.
+            s += ("\n  ! which SIDE this helps is NOT established: "
+                  + ("the opportunity count did not move"
+                     if self.count_flat else
+                     "share and count point opposite ways"))
         if self.verdict == "GAME_SCRIPT":
             s += ("\n  ~ GAME SCRIPT, not a role change. The raw count fell but his "
                   "SHARE of the offense held up — the team ran fewer plays. Team "
@@ -588,6 +660,7 @@ def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
     # running fewer plays, not the player losing his role.
     shr = share_column(stat)
     has_share = bool(shr) and shr in log.columns and log[shr].notna().any()
+    has_tv = False
     s_base = s_rec = s_ratio = tv_ratio = 0.0
     if has_share:
         sv = pd.to_numeric(log[shr], errors="coerce").fillna(0).values.astype(float)
@@ -598,6 +671,10 @@ def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
         if tcol and tcol in log.columns:
             tvv = pd.to_numeric(log[tcol], errors="coerce").fillna(0).values.astype(float)
             tb = float(tvv[:-window].mean())
+            # B88/A4. tb <= 0 also means unmeasured, not "volume held at
+            # 100%" — a fabricated 1.0 is what let the conflict message
+            # assert a team-volume figure nobody read.
+            has_tv = tb > 0
             tv_ratio = float(tvv[-window:].mean()) / tb if tb > 0 else 1.0
 
     # SHARE is the primary signal when available; the count only decides
@@ -625,6 +702,7 @@ def usage_trend(log: pd.DataFrame, stat: str) -> UsageTrend:
                       share_baseline=s_base, share_recent=s_rec,
                       share_ratio=s_ratio if has_share else 1.0,
                       team_volume_ratio=tv_ratio if has_share else 1.0,
+                      has_team_volume=bool(has_share and has_tv),
                       has_share=has_share)
 
 
@@ -746,19 +824,39 @@ MUTUALLY_EXCLUSIVE_MARKETS = {"player_1st_td", "player_last_td",
 NO_SCORER_NAMES = {"no touchdown scorer", "no td scorer", "no scorer",
                    "none", "no touchdown"}
 
-# B85. Above this, a mutually exclusive field's booksum is evidence of EXTRA
-# outcomes rather than a fat margin, and the incomplete-field refusal must
-# say so instead of calling the number "too low".
+# Overround bounds for a mutually exclusive field. Measured on live First TD
+# boards, 2026-11-05: complete fields ran DraftKings 1.5421 (54.2%) and
+# bovada 1.5655 (56.6%); short fields ran BetMGM 1.4124 (41.2%, 23 outcomes)
+# and Kalshi 1.3501 (35.0%, 28). So a real field — complete or short —
+# topped out near 57%. A dict keyed on player name alone, which pulls
+# milestone rungs into the field, produced 2.9756 (198%).
 #
-# Measured on live First TD boards, 2026-11-05: complete fields ran
-# DraftKings 1.5421 (54.2%) and bovada 1.5655 (56.6%); short fields ran
-# BetMGM 1.4124 (41.2%, 23 outcomes) and Kalshi 1.3501 (35.0%, 28). So a
-# real field — complete or short — topped out near 57%. A dict keyed on
-# player name alone, which pulled milestone rungs into the field, produced
-# 2.9756 (198%). 100% sits well clear of both, and it is a DIAGNOSTIC
-# threshold: it decides which sentence the refusal prints, never whether the
-# field is refused.
-MAX_PLAUSIBLE_OVERROUND = 1.00
+# B88. These were ONE constant doing TWO jobs, and that is why both halves
+# were wrong. `MAX_PLAUSIBLE_OVERROUND = 1.00` was documented as "a
+# DIAGNOSTIC threshold: it decides which sentence the refusal prints, never
+# whether the field is refused" — and it was only ever consulted INSIDE the
+# `not has_no_scorer` branch. So:
+#   * A polluted field that DOES carry a no-scorer row had no upper bound at
+#     all. Measured: the real DraftKings First TD board plus rung pollution
+#     gives booksum 3.0326 over 14 outcomes, and devig_field RETURNED it,
+#     tagged `method: shin, complete: True`, turning a 55.6% implied scorer
+#     into 24.4% "fair". Every player divided by about three, which is
+#     verbatim the failure this module's own docstring warns about. The real
+#     board carries "No Touchdown Scorer", so this is the LIKELY path, not an
+#     edge case.
+#   * The diagnosis fired at booksum > 2.0 while its own comment claimed the
+#     threshold was 1.0, leaving the 1.0-2.0 band — where a lightly polluted
+#     field actually lands — telling the caller a booksum of 1.7151 was "too
+#     low by whatever is missing" when 71% overround is well above anything
+#     measured.
+# Split into a refusal line and a diagnostic ceiling, which is what the two
+# jobs needed all along.
+MAX_OBSERVED_OVERROUND = 0.57     # diagnosis only: above this, suspect extra
+                                  # outcomes rather than a fat margin
+BOOKSUM_REFUSE_ABOVE = 2.00       # refusal: no book charges 100% margin on a
+                                  # mutually exclusive field, so this can only
+                                  # be crossed by pollution
+MAX_PLAUSIBLE_OVERROUND = MAX_OBSERVED_OVERROUND   # back-compat alias
 
 
 def devig_field(prices: dict, *, market: str, method: str = "shin",
@@ -838,6 +936,28 @@ def devig_field(prices: dict, *, market: str, method: str = "shin",
             + (" including a no-scorer entry, which is why the name check "
                "alone passed it" if has_no_scorer else "")
             + ". Pull the complete field before quoting anything from it.")
+    # B88. The UPPER bound, and it is deliberately outside the name check.
+    # The lower bound above and the diagnosis below were both gated on
+    # whether a no-scorer row was PRESENT, so a polluted field carrying one
+    # — which the real DraftKings board does — had no ceiling at all and was
+    # returned as fair probabilities. `require_complete` does not gate this
+    # either: it governs whether an INCOMPLETE field may be inspected, and a
+    # booksum this high is not incompleteness, it is extra outcomes. There is
+    # no inspecting your way out of that.
+    if booksum > BOOKSUM_REFUSE_ABOVE:
+        raise ValueError(
+            f"this field's prices sum to {booksum:.4f} over {len(clean)} "
+            f"outcomes, above the {BOOKSUM_REFUSE_ABOVE:.2f} ceiling. No book "
+            f"charges {BOOKSUM_REFUSE_ABOVE - 1:.0%} margin on a mutually "
+            f"exclusive field — real boards measured 1.35 to 1.57 — so this "
+            f"is EXTRA OUTCOMES, not a wide market, and de-vigging it would "
+            f"divide every probability by roughly {booksum:.1f}. The usual "
+            f"cause is a dict keyed on player name alone, so alternate lines "
+            f"and milestone rungs ('100+ Rushing Yards') joined the main "
+            f"field; rebuild it from flatten_odds with the LINE in the key."
+            + (" Note a no-scorer row is present, so neither the name check "
+               "nor require_complete would have caught this."
+               if has_no_scorer else ""))
     if require_complete and not has_no_scorer:
         # B85. This used to assert the booksum "is too low by whatever is
         # missing" unconditionally. That is the right diagnosis for the case
@@ -848,13 +968,20 @@ def devig_field(prices: dict, *, market: str, method: str = "shin",
         # alone pulled milestone rungs into the field, giving 13 outcomes at
         # booksum 2.9756, and the refusal called 2.98 "too low". The caller
         # is already confused at that point; the message must not add to it.
-        # The threshold is 1.0 because a mutually exclusive field sums to 1
-        # before margin, so anything above it is margin plus extra outcomes.
-        if booksum > 1.0 + MAX_PLAUSIBLE_OVERROUND:
-            diag = (f"and its booksum ({booksum:.4f}) is far TOO HIGH for a "
+        # B88/A2. This compared against `1.0 + MAX_PLAUSIBLE_OVERROUND`,
+        # i.e. a booksum of 2.0, while this very comment claimed the
+        # threshold was 1.0. So the whole 1.0-2.0 band — where a LIGHTLY
+        # polluted field actually lands — still got the "too low" sentence:
+        # a booksum of 1.7151 is 71% overround against the 57% maximum ever
+        # measured, and the refusal called it too low. One constant was
+        # serving as both a refusal line and a diagnostic ceiling, and that
+        # conflation produced both halves of the bug. The ceiling is the
+        # measured one; the refusal line lives above, outside the name check.
+        if booksum > 1.0 + MAX_OBSERVED_OVERROUND:
+            diag = (f"and its booksum ({booksum:.4f}) is TOO HIGH for a "
                     f"field of {len(clean)} outcomes — above the "
-                    f"{MAX_PLAUSIBLE_OVERROUND:.0%} margin any real book "
-                    f"charges, which means extra outcomes are in here, not "
+                    f"{MAX_OBSERVED_OVERROUND:.0%} margin ever measured on a "
+                    f"real board, which means extra outcomes are in here, not "
                     f"that outcomes are missing. The usual cause is a dict "
                     f"keyed on name alone, so alternate lines and milestone "
                     f"rungs ('100+ Rushing Yards') joined the main field. "
@@ -1126,8 +1253,11 @@ def prop_edge(est: Estimate,
             if supported is None:
                 why = (f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
                        f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) "
-                       f"while share went {u.share_ratio:.0%} and team volume "
-                       f"{u.team_volume_ratio:.0%}. Share and count point "
+                       f"while share went {u.share_ratio:.0%}"
+                       + (f" and team volume {u.team_volume_ratio:.0%}"
+                          if u.has_team_volume else
+                          " (team volume not measured for this series)")
+                       + f". Share and count point "
                        f"opposite ways, so the verdict ({u.verdict}) does not "
                        f"fix which side the staleness helps: he is a bigger "
                        f"part of a smaller pie, or the reverse. PASS because "
@@ -1267,7 +1397,25 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
 
     if est.role_changed:
         u = est.usage
-        side = edge.side if edge is not None else None
+        # B88/A3. `side = edge.side if edge is not None else None` then
+        # tested `side is None` as a proxy for "no edge supplied". But
+        # `Edge.side` is an unvalidated str and this file uses lowercase
+        # "over"/"under" in several places, so `Edge(side="over")` was not
+        # None, `supports()` returned None because the string is not
+        # canonical, and the call fell through to the CONFLICT branch —
+        # printing "the COUNT moved the other way" on a trend whose count
+        # moved 3.2 -> 8.0, the SAME way. A fabricated divergence, and it
+        # re-vetoed exactly the Justice Hill expansion B80 exists to
+        # un-veto, reached by letter case. Normalise, and keep "no edge" and
+        # "unusable side" as separate states.
+        raw_side = edge.side if edge is not None else None
+        side = (raw_side.strip().upper()
+                if isinstance(raw_side, str) and raw_side.strip() else None)
+        if side not in ("OVER", "UNDER"):
+            side = None
+        tv = (f" and team volume {u.team_volume_ratio:.0%}"
+              if u.has_team_volume else
+              " (team volume not measured for this series)")
         # B80. This used to veto on ANY role change and then assert "it runs
         # against {side}" in the message WITHOUT EVER CHECKING THE
         # DIRECTION. Measured live 2026-11-05: Justice Hill was the
@@ -1276,18 +1424,27 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
         # the Over being bet — while the message claimed the opposite. He
         # was swapped out for a worse leg.
         #
-        # `price_edge` already had this right, 150 lines up, with a comment
+        # `prop_edge` already had this right, 150 lines up, with a comment
         # saying blanket-blocking both sides "was wrong and would have
         # refused a genuinely attractive under on a player whose targets had
         # halved". So the same file held the fix and an un-fixed restatement
         # of the same reasoning — B68's shape applied to logic instead of a
         # constant. The expression below is deliberately IDENTICAL to
-        # price_edge's, so the two cannot drift.
+        # prop_edge's, so the two cannot drift.
         #
         # `flagged` is exactly verdict in (COLLAPSED, EXPANDED), so these
-        # two cases are exhaustive for anything reaching here.
+        # cases below are exhaustive for anything reaching here. NOTE this
+        # conditional has grown to five branches (unrecognised side, no
+        # side, conflict/flat, supported, opposed) — re-read all of them
+        # before adding a sixth.
         supported = u.supports(side)
-        if side is None:
+        if side is None and edge is not None and raw_side is not None:
+            veto(f"ROLE CHANGE, SIDE NOT RECOGNISED — {u.column} "
+                 f"{u.baseline:.1f} -> {u.recent:.1f} ({u.verdict}). The "
+                 f"Edge carries side={raw_side!r}, which is not OVER or "
+                 f"UNDER, so the direction cannot be compared against it. "
+                 f"This is a caller bug, not a finding about the player.")
+        elif side is None:
             # No edge means no side, so the direction cannot be determined.
             # Refusing is right, but the REASON has to be the missing side
             # rather than a direction nobody measured.
@@ -1305,8 +1462,8 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
             # through a new None.
             veto(f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
                  f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) while "
-                 f"share went {u.share_ratio:.0%} and team volume "
-                 f"{u.team_volume_ratio:.0%}. The verdict is {u.verdict} off "
+                 f"share went {u.share_ratio:.0%}{tv}. "
+                 f"The verdict is {u.verdict} off "
                  f"SHARE, but the COUNT moved the other way, and a threshold "
                  f"prop is priced on count. He is a bigger part of a smaller "
                  f"pie, or the reverse — which side the staleness helps is "
@@ -1314,7 +1471,7 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
                  f"as against the {side}.")
         elif supported:
             # Still not CLEAR: the direction helps, the magnitude is not
-            # trustworthy. Matches price_edge, which costs a supportive
+            # trustworthy. Matches prop_edge, which costs a supportive
             # role change one tier rather than rewarding it.
             caution(f"ROLE CHANGE SUPPORTS THIS SIDE — {u.column} "
                     f"{u.baseline:.1f} -> {u.recent:.1f} ({u.verdict}, share "

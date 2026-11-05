@@ -2556,7 +2556,7 @@ section("42. the role-change veto measures the direction it claims (B80)")
 # It used to veto on ANY role change and then assert "it runs against
 # {side}" without checking. Live on the TNF board, Justice Hill was the
 # best-priced leg and was dropped for an EXPANSION (targets 2.2 -> 6.0)
-# that SUPPORTS the Over being bet. `price_edge` had this right 150 lines
+# that SUPPORTS the Over being bet. `prop_edge` had this right 150 lines
 # up; boost_verdict restated the reasoning without the direction test, so
 # the same file carried the fix and the un-fixed copy. 488 checks passed
 # over the blanket veto, so nothing pinned it.
@@ -2634,12 +2634,124 @@ for _side in ("OVER", "UNDER"):
     chk(f"and never claims it runs against the {_side}",
         not any(f"AGAINST THE {_side}" in x for x in _r9), str(_r9))
 chk("the conflict reason reports count, share AND team volume",
-    all(t in " ".join(_r9) for t in ("share", "team volume")), str(_r9))
-# price_edge shares the helper and must not fold None into "against you".
+    # B88. Named for three things and checked two: the count was never
+    # asserted. Lesson 4, inside a check written to enforce lesson 4.
+    all(t in " ".join(_r9) for t in (_conf_x.column, "share", "team volume")),
+    str(_r9))
+# prop_edge shares the helper and must not fold None into "against you".
 _pe = prop_edge(_replace(_e2, usage=_conf_x), -115, -105)
-chk("price_edge PASSes a conflict without claiming a direction",
+chk("prop_edge PASSes a conflict without claiming a direction",
     _pe.tier == "PASS" and "NOT ESTABLISHED" in _pe.reasoning
     and "AGAINST YOU" not in _pe.reasoning, _pe.reasoning[:110])
+
+# B88/A3. `Edge.side` is an unvalidated str and this file uses lowercase
+# "over"/"under" in several places. `side is None` was the proxy for "no
+# edge supplied", so a lowercase side was not None, `supports()` returned
+# None because the string is not canonical, and the call fell through to the
+# CONFLICT branch — printing "the COUNT moved the other way" on a trend
+# whose count moved the SAME way, and re-vetoing the Justice Hill case B80
+# exists to un-veto. Reached by letter case.
+_clean_x = _utx("EXPANDED", 2.14, 2.50)      # share AND count up: no conflict
+chk("the clean expansion fixture really has no conflict",
+    not _clean_x.direction_conflict and not _clean_x.count_flat)
+for _s in ("OVER", "over", "Over", " over "):
+    _va, _ra = boost_verdict(_replace(_e2, usage=_clean_x),
+                             _replace(_ed2, side=_s), screen_quotes(_cleanq))
+    chk(f"side={_s!r} is read as OVER and SUPPORTS the leg", _va == "CAUTION"
+        and any("SUPPORTS THIS SIDE" in x for x in _ra), f"{_va}: {_ra}")
+    chk(f"side={_s!r} never claims a divergence that did not happen",
+        not any("NOT ESTABLISHED" in x for x in _ra), str(_ra))
+# An unusable side is a CALLER bug and must say so, not be reported as a
+# finding about the player and not be confused with "no edge supplied".
+_vb, _rb = boost_verdict(_replace(_e2, usage=_clean_x),
+                         _replace(_ed2, side="yes"), screen_quotes(_cleanq))
+chk("an unrecognised side vetoes as a caller bug", _vb == "VETO"
+    and any("SIDE NOT RECOGNISED" in x for x in _rb), f"{_vb}: {_rb}")
+chk("and it quotes the offending value", any("'yes'" in x for x in _rb),
+    str(_rb))
+chk("and does not say an Edge was missing when one was passed",
+    not any("No edge was supplied" in x for x in _rb), str(_rb))
+
+# B88/A4. team_volume_ratio is 0.0 when unmeasured and HARDCODED to 1.0 by
+# role_trend, and the conflict message printed it as a measurement either
+# way — "team volume 0%" reads as a team that ran no plays, and 100%
+# directly contradicts "a bigger part of a smaller pie".
+_conf_nv = ff_props.UsageTrend(
+    column="targets", window=3, recent=3.0, baseline=7.0, ratio=0.43,
+    verdict="EXPANDED", per_opportunity=9.0, expected_now=27.0,
+    share_baseline=0.14, share_recent=0.24, share_ratio=1.72,
+    team_volume_ratio=0.0, has_share=True, has_team_volume=False)
+_vc, _rc = boost_verdict(_replace(_e2, usage=_conf_nv),
+                         _replace(_ed2, side="OVER"), screen_quotes(_cleanq))
+chk("an unmeasured team volume is not printed as a figure",
+    "team volume 0%" not in " ".join(_rc)
+    and "not measured" in " ".join(_rc), str(_rc))
+chk("a MEASURED team volume still appears",
+    "team volume 57%" in " ".join(boost_verdict(
+        _replace(_e2, usage=_replace(_conf_nv, team_volume_ratio=0.57,
+                                     has_team_volume=True)),
+        _replace(_ed2, side="OVER"), screen_quotes(_cleanq))[1]))
+chk("usage_trend reports team volume as measured",
+    ff_props.usage_trend(_jsn_log, "receiving_yards").has_team_volume
+    if "_jsn_log" in dir() else True)
+chk("role_trend does NOT, because it hardcodes 1.0",
+    not ff_props.role_trend(wk[wk.season_type == "REG"],
+                            "Jaxon Smith-Njigba").has_team_volume)
+
+# B88/A8. describe() narrated every flagged trend as "the sample describes a
+# role this player no longer has", including the states supports() refuses.
+# No test ran a conflicting trend through it, which is why a first cut of the
+# fix used L.append() in a function that builds with `s +=` and would have
+# raised NameError on exactly the state it was written for.
+for _u8, _want8 in ((_conf_x, "share and count point opposite ways"),
+                    (_utx("COLLAPSED", 0.496, 1.0),
+                     "the opportunity count did not move")):
+    _d8 = _u8.describe()
+    chk(f"describe() says the side is not established ({_want8[:28]})",
+        "NOT established" in _d8 and _want8 in _d8, _d8)
+chk("describe() still narrates an unambiguous role change",
+    "NOT established" not in _utx("EXPANDED", 1.95, 1.60).describe())
+# A6: share_ratio is forced to 1.0 when the baseline is zero, and printing it
+# gave "COLLAPSED, share 100%" — self-contradictory against SHARE_COLLAPSE.
+_nos = ff_props.UsageTrend(
+    column="targets", window=3, recent=2.0, baseline=9.0, ratio=0.22,
+    verdict="COLLAPSED", per_opportunity=9.0, expected_now=18.0,
+    share_baseline=0.0, share_recent=0.0, share_ratio=1.0, has_share=True)
+chk("a zero share baseline is not reported as a measured ratio",
+    not _nos.share_measured and "share 100%" not in _nos.describe()
+    and "baseline is zero" in _nos.describe(), _nos.describe())
+chk("a real share ratio is still reported",
+    _conf_x.share_measured and "of baseline" in _conf_x.describe())
+chk("and an unmeasured team volume says so in describe() too",
+    "team volume not measured" in _conf_x.describe()
+    if not _conf_x.has_team_volume else True, _conf_x.describe())
+
+# B88/A5. A count ratio of EXACTLY 1.0 is no movement, so there is no
+# staleness in either direction — but strict inequalities meant it was not a
+# "conflict" and supports() answered confidently off the share verdict. At
+# ratio 1.0001 the same state already returned None.
+_flat = _utx("COLLAPSED", 0.496, 1.0)
+chk("a flat count is flagged as such", _flat.count_flat
+    and not _flat.direction_conflict)
+chk("and yields None rather than a confident direction",
+    _flat.supports("UNDER") is None and _flat.supports("OVER") is None)
+# Just above 1.0 the count has turned UP against a falling share, which is
+# a genuine conflict; just below, both point down and agree. So the answer
+# legitimately changes at 1.0 — what was wrong was 1.0 ITSELF answering
+# confidently while 1.0001 returned None.
+chk("just above 1.0 is a conflict (count up, share down)",
+    _utx("COLLAPSED", 0.496, 1.0001).supports("UNDER") is None)
+chk("just below 1.0 they agree, so a direction IS established",
+    _utx("COLLAPSED", 0.496, 0.9999).supports("UNDER") is True)
+# B89 (open): a count ratio of 0.9999 leaves expected_now within a whisker
+# of the sample mean, so "the model overstates him" is technically true and
+# practically empty. A tolerance band around 1.0 is the fuller fix and needs
+# a MEASURED tolerance — picking one by eye is the error this project keeps
+# repeating, so it is filed rather than guessed.
+_vd, _rd = boost_verdict(_replace(_e2, usage=_flat),
+                         _replace(_ed2, side="UNDER"), screen_quotes(_cleanq))
+chk("a flat count vetoes as undetermined", _vd == "VETO"
+    and any("NOT ESTABLISHED" in x for x in _rd), f"{_vd}: {_rd}")
 
 chk("the direction test is not re-inlined anywhere (B80)",
     _psrc.count('self.verdict == "COLLAPSED"') == 1
@@ -2758,21 +2870,66 @@ chk("and reports shin, because z did not collapse",
 # alone pulled milestone rungs into a First TD field, giving 13 outcomes at
 # booksum 2.98 — and the refusal called 2.98 "too low". The caller is already
 # confused at that point; the message must not add to it.
+# Pre-bound so that if a guard regresses and the call RETURNS, the later
+# checks fail on the empty string instead of crashing the suite on a
+# NameError — lesson 14: a crash stops every later section and prints
+# "0 failed" over a partial count.
+_m = _mns = _mb = _m2 = ""
 _pol = {f"P{i}": v for i, v in enumerate(
     [-125, -105, 150, 200, 250, 300, 450, 600, 800, 1000, 1400, 2000, 2500])}
 try:
     ff_props.devig_field(_pol, market="player_1st_td")
-    chk("a polluted field is still refused", False, "it de-vigged")
+    chk("a polluted field is refused", False, "it de-vigged")
 except ValueError as _ex:
     _m = str(_ex)
-    chk("a polluted field is still refused", True)
-chk("and the refusal says TOO HIGH, never 'too low'",
-    "TOO HIGH" in _m and "too low" not in _m, _m[:150])
+    chk("a polluted field is refused", True)
+chk("the refusal names the ceiling it crossed",
+    "2.00 ceiling" in _m and "EXTRA OUTCOMES" in _m, _m[:150])
+chk("and never calls a 3.0 booksum 'too low'", "too low" not in _m, _m[:150])
 chk("and it names the cause the caller can act on",
-    "keyed on name alone" in _m and "flatten_odds" in _m, _m[:200])
-# A genuinely short field must still get the ORIGINAL diagnosis.
+    "keyed on player name alone" in _m and "flatten_odds" in _m, _m[:220])
+
+# B88/A1. THE DANGEROUS ONE. Both the lower bound and the diagnosis were
+# gated on whether a no-scorer row was PRESENT, so a polluted field carrying
+# one had no ceiling at all — and the real DraftKings board carries
+# "No Touchdown Scorer", so that is the likely path, not an edge case.
+# Measured before the fix: booksum 3.0326 over 14 outcomes RETURNED, tagged
+# method='shin', complete=True, turning a 55.6% implied scorer into 24.4%.
+_pol_ns = dict(_pol); _pol_ns["No Touchdown Scorer"] = 6000
+try:
+    _bad = ff_props.devig_field(_pol_ns, market="player_1st_td")
+    chk("a polluted field WITH a no-scorer row is still refused", False,
+        f"RETURNED booksum {_bad['booksum']:.4f} as {_bad['method']!r}, "
+        f"complete={_bad['complete']}")
+except ValueError as _ex:
+    _mns = str(_ex)
+    chk("a polluted field WITH a no-scorer row is still refused", True)
+chk("and the refusal says the name check could not have caught it",
+    "no-scorer row is present" in _mns, _mns[-170:])
+# require_complete must not be an escape hatch from the ceiling: it governs
+# inspecting an INCOMPLETE field, and this field is not incomplete.
+try:
+    ff_props.devig_field(_pol_ns, market="player_1st_td",
+                         require_complete=False)
+    chk("require_complete=False does not bypass the ceiling", False,
+        "it de-vigged")
+except ValueError:
+    chk("require_complete=False does not bypass the ceiling", True)
+
+# B88/A2. The diagnosis compared against 1.0 + 1.00 = a booksum of 2.0 while
+# its own comment claimed 1.0, leaving the whole 1.0-2.0 band — where a
+# LIGHTLY polluted field lands — reading "too low".
+_band = {f"P{i}": v for i, v in enumerate([300] * 3 + [800] * 5 + [2000] * 6)}
+try:
+    ff_props.devig_field(_band, market="player_1st_td")
+    chk("a booksum in the 1.57-2.00 band is refused", False, "it de-vigged")
+except ValueError as _ex:
+    _mb = str(_ex)
+chk("a booksum above the MEASURED ceiling reads TOO HIGH, not too low",
+    "TOO HIGH" in _mb and "too low" not in _mb, _mb[:170])
+# And a genuinely short field must still get the original diagnosis.
 _shrt = {f"P{i}": v for i, v in enumerate(
-    [400, 425, 600, 650, 1000, 1400, 1600, 2000, 2500, 3000, 4000, 5000])}
+    [400, 425, 600, 650, 1000, 1400, 1600, 2000, 2500, 3000])}
 try:
     ff_props.devig_field(_shrt, market="player_1st_td")
     chk("a short field is refused as too low", False, "it de-vigged")
@@ -2780,13 +2937,18 @@ except ValueError as _ex:
     _m2 = str(_ex)
 chk("a short field is refused as too low", "too low" in _m2
     and "TOO HIGH" not in _m2, _m2[:150])
-# The threshold is DIAGNOSTIC: it must not decide whether to refuse.
-chk("the overround threshold clears every measured real board",
-    all(bs - 1.0 < ff_props.MAX_PLAUSIBLE_OVERROUND
+# The two constants have DIFFERENT jobs; one doing both is what broke it.
+chk("the diagnostic ceiling clears every measured real board",
+    all(bs - 1.0 <= ff_props.MAX_OBSERVED_OVERROUND
         for bs in (1.5421, 1.5655, 1.4124, 1.3501)),
-    str(ff_props.MAX_PLAUSIBLE_OVERROUND))
-chk("and sits below the polluted booksum that motivated it",
-    2.9756 - 1.0 > ff_props.MAX_PLAUSIBLE_OVERROUND)
+    str(ff_props.MAX_OBSERVED_OVERROUND))
+chk("the diagnostic ceiling is TIGHT to the measurements, not 3x loose",
+    ff_props.MAX_OBSERVED_OVERROUND < 0.60,
+    str(ff_props.MAX_OBSERVED_OVERROUND))
+chk("the refusal line sits above the diagnostic ceiling",
+    ff_props.BOOKSUM_REFUSE_ABOVE > 1.0 + ff_props.MAX_OBSERVED_OVERROUND)
+chk("and below the polluted booksum that motivated it",
+    ff_props.BOOKSUM_REFUSE_ABOVE < 2.9756)
 
 # B72. The detector's own control coming back empty was the one failure it
 # could not survive: `eligible` derives from that same payload, so it went

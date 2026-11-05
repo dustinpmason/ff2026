@@ -367,3 +367,36 @@ reality.
     wrong way. Encouraging prose in the wrong direction is the more
     expensive failure and the harder one to notice, because nothing looks
     broken.
+22. **Reinforcing one side of a door is not closing it.** B71 added a LOWER
+    bound to `devig_field` and B85 corrected the diagnosis — both inside the
+    `not has_no_scorer` branch. A polluted field that DOES carry a no-scorer
+    row therefore had no upper bound at all, and the real DraftKings board
+    carries one. Booksum 3.0326 was returned as `method: shin,
+    complete: True`. **When adding a guard inside a branch, ask what the
+    other branch now lacks.**
+23. **One constant doing two jobs will be wrong at both.**
+    `MAX_PLAUSIBLE_OVERROUND` was documented as purely diagnostic and was
+    also the only ceiling — so it was too loose to refuse pollution and
+    mis-placed for the diagnosis, and its own comment described a threshold
+    the code did not apply. Split a refusal line from a diagnostic ceiling
+    the moment one value is asked to answer "is this allowed?" and "what do
+    I say about it?".
+24. **An unvalidated string is a branch you did not write.** `Edge.side` is
+    a bare `str` and this codebase uses both "OVER" and "over".
+    `Edge(side="over")` slipped past a `side is None` check, returned None
+    from `supports()`, and landed in the conflict branch — asserting a
+    divergence that had not happened and re-vetoing the leg B80 exists to
+    un-veto. Normalise at the boundary, and keep "absent" distinct from
+    "unusable".
+25. **Do not print a field your decision never read.** The conflict message
+    quoted `team_volume_ratio` while `direction_conflict` ignores it — and
+    that field is 0.0 when unmeasured and hardcoded to 1.0 by
+    `role_trend`, so the message asserted "team volume 0%" and "100%" as
+    measurements. Carry a `has_*` flag for any value that has a fabricated
+    default, and omit rather than assert.
+26. **My own measurements need an artefact, not a docstring.** B84's
+    264/21/243 figures were prose with nothing in the repo able to
+    re-derive them — D16's shape, committed inside a fix for D16. They now
+    live in `measurements/b84_direction_conflict.py`. **If a number is
+    worth putting in a docstring, it is worth a script that reproduces
+    it.**

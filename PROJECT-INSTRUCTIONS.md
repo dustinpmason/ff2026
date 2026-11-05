@@ -1358,6 +1358,21 @@ Three refusals it will throw at you, all earned on live data:
 - **Anytime TD passed as a field is refused outright.** Normalising a
   non-exclusive market to 1 divides every probability by roughly three
   and looks entirely plausible doing it.
+- **A booksum ABOVE 2.00 is refused outright (B88).** No book charges 100%
+  margin on a mutually exclusive field — real boards measured 1.35 to 1.57 —
+  so a booksum above 2.0 means EXTRA OUTCOMES are in the dict, not that the
+  market is wide. The usual cause is a field keyed on player name alone, so
+  alternate lines and milestone rungs ("100+ Rushing Yards") joined the main
+  field. **Rebuild it from `flatten_odds` with the LINE in the key.** This
+  refusal is deliberately outside both the no-scorer name check and
+  `require_complete`, because until 2026-11-05 a polluted field that carried
+  a no-scorer row had no ceiling at all: the DraftKings board plus rung
+  pollution returned booksum 3.0326 tagged `method: shin, complete: True`,
+  turning a 55.6% implied scorer into 24.4% "fair". `require_complete=False`
+  does not bypass it.
+- **A booksum above 1.57 but below 2.00 is still refused when the field has
+  no no-scorer row, and the message now says TOO HIGH rather than "too
+  low".** 57% is the largest overround measured on a real board.
 - **A booksum BELOW 1.0 is refused, even with a no-scorer entry (B71).**
   A mutually exclusive field sums to 1 before any margin, so under 1.0 is
   arithmetic proof that outcomes are missing. The old guard checked only
