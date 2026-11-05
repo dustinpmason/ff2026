@@ -1865,7 +1865,8 @@ chk("a first-name variant is NOT silently merged",
 # ---------------------------------------------------------------------------
 section("35d. a token's minimum applies to the PRICE, not the product (B55)")
 from dataclasses import replace
-from ff_boost import stake_back_ev, stake_back_band, OBSERVED_SGP_FACTORS
+from ff_boost import (stake_back_ev, stake_back_band,
+                      OBSERVED_SGP_FACTORS, SGP_FACTORS_OBSERVED)
 # A boost token's "minimum total odds" is checked by the book against the
 # correlated SGP quote, which is always below the product of the legs.
 # Measured at BetMGM on event 87238, 2026-11-05: product +516 -> quote +400
@@ -1891,9 +1892,26 @@ chk("the unpriced note spans every factor yet observed",
     str(_b55.token_note)[-90:])
 chk("and tells you to price it rather than decide on the estimate",
     "price_sgp" in (_b55.token_note or ""))
+# The first version of this check asserted only that the range was >=0.15
+# wide and that both ends appeared in the note. That is not enough: a
+# controlled run then measured 0.7705, BELOW the recorded floor of 0.81,
+# and nothing here would have objected. A range must be checked against
+# the MEASUREMENTS it claims to cover, not against its own width.
+chk("the range covers every factor actually observed",
+    OBSERVED_SGP_FACTORS[0] <= min(SGP_FACTORS_OBSERVED)
+    and OBSERVED_SGP_FACTORS[1] >= max(SGP_FACTORS_OBSERVED),
+    f"range {OBSERVED_SGP_FACTORS} vs observed "
+    f"{min(SGP_FACTORS_OBSERVED):.4f}-{max(SGP_FACTORS_OBSERVED):.4f}")
 chk("the observed-factor range is kept wide on purpose",
     OBSERVED_SGP_FACTORS[1] - OBSERVED_SGP_FACTORS[0] >= 0.15,
     f"{OBSERVED_SGP_FACTORS} — narrowing this to the last measurement is the bug")
+# The controlled run: SAME three BAL players, same side, market varied.
+# Receptions came in BELOW yards, which is the reverse of the composition
+# story this constant originally shipped with.
+chk("the same players at a longer product get a LOWER factor",
+    0.7705 < 0.7933 < 0.8355,
+    "mixed +614 < receptions +562 < yards +528 — ordering is by product, "
+    "not by market type")
 # The case the bug produced: product clears, price does not.
 _void = price_candidate(_b55, book_odds=360.0)
 chk("a product that clears but a price that does not VOIDS the token",
@@ -1931,14 +1949,35 @@ chk("the refund is the whole story, not a rounding adjustment",
 chk("the defaults are the measured ones, not the guessed ones",
     abs(stake_back_ev(900)["market_hold"] - 0.39) < 1e-9
     and abs(stake_back_ev(900)["bonus_value"] - 0.65) < 1e-9)
-# THE REFRAME: picking a longer leg is worth about a fifth of getting the
-# bonus value right, so that is where the care belongs.
-_flat = stake_back_ev(6600)["ev"] - stake_back_ev(900)["ev"]
+# The raw bet's EV is INDEPENDENT OF THE ODDS: substituting
+# p = 1/(d*(1+h)) collapses the first term to S*(1/(1+h) - 1), with no d.
+# That is an identity, not a measurement, and it bounds the whole question.
+_bases = {o: stake_back_ev(o)["base_ev"] for o in (-200, 100, 400, 900, 6600, 20000)}
+chk("the raw bet's EV does not depend on the odds — it is S*(1/(1+h)-1)",
+    max(_bases.values()) - min(_bases.values()) < 1e-9
+    and abs(list(_bases.values())[0] - 10.0 * (1 / 1.39 - 1)) < 1e-9,
+    f"{min(_bases.values()):.6f} at every price tested")
+# So all odds-dependence is in the refund, and the most that lengthening
+# past a price can ever add is S*v*p_true there.
+chk("the headroom left above a price is exactly S*v*p_true",
+    abs((stake_back_ev(20000)["ev"] - stake_back_ev(900)["ev"])
+        - (10.0 * 0.65 * stake_back_ev(900)["p_true"]
+           - 10.0 * 0.65 * stake_back_ev(20000)["p_true"])) < 1e-9)
+# THE REFRAME, corrected. The first version measured +900 upward and called
+# odds choice a fifth of the v assumption. The board starts at +400, and
+# +400->+900 alone is worth more than all of +900->+6600.
+_short_leg = stake_back_ev(900)["ev"] - stake_back_ev(400)["ev"]
+_long_leg = stake_back_ev(6600)["ev"] - stake_back_ev(900)["ev"]
 _vswing = (stake_back_ev(2800, bonus_value=0.71)["ev"]
            - stake_back_ev(2800, bonus_value=0.58)["ev"])
-chk("the odds gradient is real but much smaller than the v assumption",
-    0 < _flat < _vswing / 2,
-    f"7x odds buys ${_flat:+.2f}; the v band moves ${_vswing:+.2f}")
+chk("the steepest part of the board is its SHORT end",
+    _short_leg > _long_leg,
+    f"+400->+900 ${_short_leg:+.2f} vs +900->+6600 ${_long_leg:+.2f}")
+chk("odds choice across the real board is ~two-thirds of the v band",
+    0.5 < (_short_leg + _long_leg) / _vswing < 0.85,
+    f"board ${_short_leg + _long_leg:+.2f} vs v band ${_vswing:+.2f}")
+chk("but reaching past +2800 buys under a dime",
+    stake_back_ev(20000)["ev"] - stake_back_ev(2800)["ev"] < 0.20)
 chk("the raw bet underneath is still negative — the token is the edge",
     all(d["base_ev"] < 0 for d in _sb.values()))
 chk("components are returned, not just a total",

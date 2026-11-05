@@ -324,21 +324,33 @@ different 3-leg receiving slips:
 | +541 | **+450** | 0.8583 |
 | +590 | **+475** | 0.8335 |
 
-**There is no single safe product, because the factor depends on what the
-legs ARE.** Two sittings on the same event at the same book, hours apart:
-receiving-YARDS slips quoted at factors 0.81-0.86, while receptions and
-Over/Under mixes quoted at **0.87-0.99** — barely haircut at all. On the
-first set a +400 token needed a product near +520; on the second a **+405
-product cleared a +400 token**. Yardage legs on one team share a play
-count and get charged for it; receptions and mixes do not.
+**`correlation_factor` is not a property of a slip.** It is
+`quote / product`, and the quote snaps to a coarse grid — observed points
++210, +230, +400, +425, +450, +475, roughly 0.25 apart in decimal. Hold
+the quote near fixed, lengthen the product, and the ratio falls
+mechanically. That is all the factor measures.
 
-So treat ~+520 as the conservative target when the legs are same-team
-yardage, know it runs up to 115 points too conservative on other shapes,
-and **price the slip rather than deciding from the product.** The module
-cannot see any of this — it floors on the product. `token_note` on an
-unpriced candidate deliberately spans the whole 0.81-0.99 range for the
-same reason: it is wide because the honest answer is wide, and it exists
-to say "price it", not to answer the question.
+An earlier reading here claimed the factor tracked leg COMPOSITION —
+yardage haircut hard, receptions barely at all. **A controlled run
+disproved it:** the same three Baltimore players, same event, same side,
+switching yards -> receptions -> mixed gave 0.8355 -> 0.7933 -> 0.7705,
+the opposite order, while products ran +528 -> +562 -> +614. Factor
+against log(product) across those slips is r = -0.989, and the spread
+between two RECEPTIONS slips (0.189) is 4.5x the spread between markets
+at a matched product (0.042).
+
+Composition looked causal because **main-line yards cannot produce a
+short product**: the book moves the POINT until yards sit near -110/-120,
+so three yards legs are always ~+520 or longer, while receptions carry
+real price spread and can be either. The two were perfectly confounded.
+
+Practically: there is no safe product to aim for, because the mapping is
+a grid rather than a multiplier. **Price the slip.** `token_note` on an
+unpriced candidate spans the whole 0.77-0.99 range for exactly this
+reason — it is wide because the honest answer is wide, and it exists to
+say "price it", not to answer the question. Predicting the quote from the
+product against the grid is the real fix and needs far more than thirteen
+observations at one book on one event — B61.
 
 **Re-pull and re-price before placing.** The quote is a live number and
 the anchors underneath it are less stable than they look (see the
@@ -1028,13 +1040,29 @@ quoted here. Still far more than the four-token boost inventory, which
 priced NEGATIVE — the conclusion held, the magnitude did not. When Dustin
 holds both kinds, say plainly which is worth more.
 
-**Where the care belongs, which is not where the first version put it.**
-From +900 to +6600 — a 7x range of odds — EV moves about **$0.43**, while
-the v assumption moves it **~$1.27**. "Take the longest shot" is
-directionally right and worth roughly a fifth of getting v right.
-Reaching past a sensible longshot for a longer one buys almost nothing;
-thinking about where the refund gets spent buys three times as much. And
-re-measure the booksum on the night rather than inheriting 0.39 — D16.
+**The raw bet's EV does not depend on the odds at all**, which settles
+where the care belongs without needing another measurement. Substituting
+`p = 1/(d*(1+h))` collapses the first term to `S * (1/(1+h) - 1)` — no `d`
+in it. Verified at every price from -200 to +20000: -$2.81 for a $10
+stake at a 39% hold. So **all** odds-dependence sits in the refund, and
+the most that lengthening past any price can add is exactly `S*v*p_true`
+there: **$0.94 at +400, $0.47 at +900, $0.16 at +2800, $0.07 at +6600.**
+
+That corrects the first version of this note in both directions:
+
+- **Do not put a stake-back on a short price.** +400 to +900 alone is
+  worth $0.47 — more than the entire +900-to-+6600 stretch above it. The
+  original "$0.43 across a 7x range" was right for the sub-range it
+  named and missed the steepest part of the board by starting at +900.
+- **Reaching past a sensible longshot buys almost nothing.** Past +2800
+  there is under a dime left on a $10 token.
+- Across prices actually on a First TD board (+400 to +6600) odds choice
+  is worth ~$0.86, against ~$1.2 for the v band and ~$1.35 across the
+  plausible hold range. So it is about **two-thirds** of v, not the
+  one-fifth first recorded — but v and the hold still dominate, and where
+  the refund gets spent is still the thing to think about.
+
+Re-measure the booksum on the night rather than inheriting 0.39 — D16.
 
 Two things to check rather than assume: whether the book allows a
 stake-back and a boost on the same slip (usually one promo per slip), and

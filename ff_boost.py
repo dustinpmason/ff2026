@@ -190,26 +190,49 @@ MODES = ("cross-game", "single-game")
 # pull — instead of hardcoding it. Filed as B59; this is the stopgap.
 OPENING_LIQUIDITY = 500
 
-# The range of correlation factors (sgp_price_decimal / independent_decimal)
-# ever observed, for ESTIMATING an unpriced slip's quote. Both ends measured
-# at BetMGM on event 87238:
-#   2026-11-05 early, receiving-YARDS slips:     0.81, 0.83, 0.84, 0.86
-#   2026-11-05 later, receptions / mixed O-U:    0.87, 0.91, 0.98, 0.99
-# The first pass hardcoded 0.81-0.86 into `token_note` from the first of
-# those two sittings, and hours later the second sitting put the true quote
-# 27-55 points outside it. That is B54/B59's stale-constant pattern one
-# layer up, committed the same day it was written down twice.
+# Every correlation factor (sgp_price_decimal / independent_decimal) yet
+# observed, all BetMGM on event 87238 across three sittings. Kept as the
+# raw list so the range below is DERIVED from measurements rather than
+# remembered — narrowing it now fails a test instead of silently shipping.
+SGP_FACTORS_OBSERVED = (
+    # 2026-11-05 early, 3-leg receiving YARDS
+    0.8114, 0.8300, 0.8405, 0.8583,
+    # 2026-11-05 later, receptions and Over/Under mixes
+    0.8654, 0.9093, 0.9766, 0.9900,
+    # 2026-11-05 controlled: SAME three BAL players, market varied
+    0.8355,   # 3-leg yards,       product +528 -> quote +425
+    0.7933,   # 3-leg receptions,  product +562 -> quote +425
+    0.7705,   # 3-leg mixed O/U,   product +614 -> quote +450
+    0.9821,   # 3-leg receptions on favourites, product +236 -> quote +230
+    0.9044,   # 2-leg yards,       product +243 -> quote +210
+)
+
+# **The factor is not a property of a slip. It is quote / product, and the
+# quote snaps to a coarse grid.** Observed grid points: +210, +230, +400,
+# +425, +450, +475 — roughly 0.25 apart in decimal. Hold the quote near
+# fixed and lengthen the product and this ratio falls mechanically, which
+# is all the "factor" is measuring.
 #
-# **The spread is not noise — the factor depends on what the legs ARE.**
-# Yardage legs on one team share a play count and get haircut hard;
-# receptions and Over/Under mixes barely get haircut at all. So no single
-# range is right, and a tight one is worse than a wide one because it reads
-# as precision. This stays wide ON PURPOSE: it exists to say "price it",
-# not to answer the question.
+# That kills the explanation this constant originally shipped with. The
+# first pass said the factor depends on what the legs ARE — yardage haircut
+# hard, receptions barely at all. A controlled run disproved it: the SAME
+# three Baltimore players, same event, same side, switching yards ->
+# receptions -> mixed gave 0.8355 -> 0.7933 -> 0.7705, the opposite order,
+# while products ran +528 -> +562 -> +614. Across those slips factor vs
+# log(product) is r = -0.989. The within-market spread (0.189 between two
+# receptions slips) is 4.5x the between-market spread (0.042 at matched
+# product).
 #
-# Widen it when a factor outside it is observed; never narrow it to the
-# last thing measured.
-OBSERVED_SGP_FACTORS = (0.81, 0.99)
+# Why the earlier sitting looked like composition: **main-line yards cannot
+# produce a short product.** The book moves the POINT until yards sit near
+# -110/-120, so three yards legs are always ~+520 or longer, while
+# receptions carry real price spread (+170 to -235) and can be either.
+# Composition and product length were perfectly confounded.
+#
+# So this stays wide ON PURPOSE and the right fix is not a tighter range —
+# it is to predict the quote from the product against the grid, which needs
+# more than thirteen points at one book on one event. B61.
+OBSERVED_SGP_FACTORS = (0.77, 0.99)
 
 # A SEPARATE problem from an opening line, and the first version of this
 # module could not see it. `anchor_immature` tested fair_prob == 0.5 FIRST
@@ -703,9 +726,10 @@ class Candidate:
                     f"{self.independent_odds:+.0f}; across every correlation "
                     f"factor yet observed ({lo:.2f}-{hi:.2f}) that quotes "
                     f"anywhere from {est_lo:+.0f} to {est_hi:+.0f}. That "
-                    f"range is too wide to decide a token on, deliberately — "
-                    f"the factor depends on what the legs ARE, not just how "
-                    f"long they are. Call price_sgp.")
+                    f"range is too wide to decide a token on, deliberately: "
+                    f"the quote snaps to a coarse grid, so the factor falls "
+                    f"as the product lengthens and is not a property of the "
+                    f"slip. Call price_sgp.")
         if self.token_minimum:
             return (f"token minimum {self.token_min_odds:+.0f} cleared by "
                     f"the real quote {self.book_odds:+.0f} "
@@ -1094,15 +1118,32 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
     the truth only at its bottom edge. Honest EV on a $10 token is **$2-4**,
     not the $4-5 first quoted.
 
-    Two consequences worth stating, since they move the advice:
+    **The raw bet's EV does not depend on the odds at all.** Substituting
+    p = 1/(d*(1+h)) into the first term collapses it:
 
-    - **The gradient is nearly flat.** From +900 to +6600 — a 7x range of
-      odds — EV moves about $0.43, while the `v` assumption moves it ~$1.30
-      and the hold assumption ~$1.40. "Take the longest shot" is right, and
-      it is worth roughly a fifth of getting `v` right. Spend the care on
-      where the REFUND goes, not on reaching for a longer leg.
-    - Both numbers are one book, one market, one night. Re-measure the
-      booksum rather than inheriting 0.39 — D16.
+        base = S * (1/(1 + h) - 1)
+
+    — no `d` anywhere. Verified across every price from -200 to +20000:
+    -$2.8058 at all of them, for S=10, h=0.39. So **all** odds-dependence
+    lives in the refund, `(1-p)*S*v`, and the most EV still available by
+    lengthening past any price is exactly `S*v*p_true` there: $0.94 at
+    +400, $0.47 at +900, $0.16 at +2800, $0.07 at +6600.
+
+    That bounds the question permanently rather than measuring it once, and
+    it sharpens the advice in both directions:
+
+    - **Do not put a stake-back on a short price.** +400 to +900 alone is
+      worth $0.47 — more than the whole +900 to +6600 stretch above it.
+    - **Reaching past a sensible longshot is worth almost nothing.** Past
+      +2800 there is under a dime left on a $10 token.
+    - Across prices actually on a First TD board (+400 to +6600) the odds
+      choice is worth ~$0.86, against ~$1.2 for the `v` band and ~$1.35
+      across the plausible hold range. So odds choice is about two-thirds
+      of `v`, not the one-fifth first recorded here — that figure measured
+      +900 upward and missed the steepest part of the board.
+
+    Both the hold and v are one book, one market, one night. Re-measure the
+    booksum rather than inheriting 0.39 — D16.
 
     Returns the components rather than one number, because the headline is
     almost entirely the refund and that should be visible, not buried.

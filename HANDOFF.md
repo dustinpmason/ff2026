@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "387 checks run, 387 passed, 0 failed"
+python3 test_regression.py        # expect: "393 checks run, 393 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md**, **PROJECT-INSTRUCTIONS.md** and **LEAGUE-CONFIG.md**
@@ -34,7 +34,7 @@ context.
 
 ## Current state
 
-- **387 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **393 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
