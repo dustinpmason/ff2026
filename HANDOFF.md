@@ -107,9 +107,15 @@ assess a leg is not the leg being broken.
    slate it is the weaker of the two numbers. It is also the number that
    will be rejecting most of his standalone-game boosts, so it had better be
    right.
-2. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
-   that works at a $10 stake.
-3. Tiers 3–5 as listed in BACKLOG.md.
+2. **B53 — `_pair_r` reports unmeasured pairs as independent.** Fix this
+   before anything else gets priced; every structure call the module makes
+   runs through it, and it already reached a live recommendation. See
+   BACKLOG. B54 (`anchor_opening` can never fire) is the same shape and
+   nearly as cheap.
+3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
+   that works at a $10 stake. **First check B58** — the Drive log folder
+   returned zero files and nobody established why.
+4. Tiers 3–5 as listed in BACKLOG.md.
 
 **Two separate scarcity problems live near each other — do not merge them.**
 An earlier edit of this file did, and wrongly reported item 1 as blocked.

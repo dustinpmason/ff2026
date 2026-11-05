@@ -295,6 +295,58 @@ probabilities to price a parlay; that invents an edge that does not exist.
   Say which, explicitly.
 - Some books quote milestone formats ("264+ Passing Yards") rather than an
   over/under. That is a different outcome shape, not a mismatch.
+- **BetMGM prices SGPs even though the tool's own docs do not list it.**
+  The `bookmaker` parameter documents fanduel / draftkings / betonlineag /
+  lowvig. `bookmaker: "betmgm"` nonetheless returns `quoted: true` with a
+  real `sgp_price` — verified three times on event 87238, 2026-11-05.
+  This is undocumented behaviour, so confirm `quoted: true` before using a
+  number rather than assuming the book is supported. It matters because
+  **BetMGM is where Dustin's boost tokens are**, and without it a token
+  can only be evaluated on a product, never on the price he would be
+  offered. betrivers and unibet also appear under `bookmaker: "all"`.
+  **bet365 and Fanatics are NOT in PropLine at all** — no legs, no SGP
+  quote. A token at either is unpriceable; say so rather than reasoning
+  from another book's prices.
+
+### Floor the PRODUCT, but a token's minimum applies to the REAL PRICE
+
+These are different numbers and the gap is large enough to void a token.
+`ff_boost`'s FLOOR/CEILING are checked against `independent_odds` — the
+product of the legs. A boost token's "minimum total odds" is checked by
+the book against the correlated SGP price, which is always lower.
+
+Measured at BetMGM on event 87238, 2026-11-05, three structurally
+different 3-leg receiving slips:
+
+| product | real SGP quote | correlation_factor |
+|---|---|---|
+| +516 | **+400** | 0.8114 |
+| +541 | **+450** | 0.8583 |
+| +590 | **+475** | 0.8335 |
+
+**Rule of thumb: a token with a +400 minimum needs a product of roughly
++500.** A product of +450 would price near +375 and the token would
+void. The module cannot see this — it floors on the product — so check
+the real quote against the token's minimum yourself before recommending
+a slip.
+
+Two things that follow:
+
+- **The quote grid is coarse (~0.25 in decimal), not continuous.** Within
+  one step, a slip with a higher true joint probability pays the same as
+  one with a lower one, so prefer the higher. ACROSS steps it is a
+  trade-off, not free — a higher true joint generally means a shorter
+  product and a lower payout. A 2026-11-04 session reported four slips
+  all quoting +450 and concluded the payout was pinned and that
+  maximising true joint was worth "a free 12 points of hold". It is not
+  pinned: those four products spanned only 6.408-6.673, one grid step.
+  Re-measured the next day across a wider range the quotes were +400,
+  +450 and +475. Do not generalise a rung from slips that sit inside one.
+- **`correlation_factor` is derived, not an input** — it is exactly
+  `sgp_price_decimal / independent_price_decimal`. It tells you what the
+  book charged after the fact; it does not predict the next quote. The
+  factor moved 0.81 to 0.86 across the three slips above and was not
+  monotonic in the product.
 
 **`propline_grade_clv` — the honest scorecard.** Closing line value is the only
 durable measure of whether this project has edge; win/loss record is swamped by
@@ -816,6 +868,20 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
 - **`anchor_opening`** — fair_prob exactly 0.5000 at or below Pinnacle's
   250 minimum tier. The book set a point and has taken no money. Re-pull
   closer to kickoff.
+  **BROKEN AS WRITTEN — B54, do not rely on this flag.** The 250 is
+  Pinnacle's minimum tier, not a constant. Measured on event 87238:
+  liquidity 250 on every outcome on 2026-11-03, and **500 on every
+  outcome on 2026-11-05**, roughly a day out. Pinnacle raises the tier as
+  the event approaches. So the flag now tests a threshold the lines have
+  already passed, and it cannot fire on the case it was written for — on
+  that same 2026-11-05 pull, 7 of 14 receiving lines were priced
+  −112/−112, which de-vigs to **exactly 0.5000**, and every one carried
+  liquidity 500. A 2026-11-04 session ran with 31 of 60 Pinnacle anchors
+  at exactly 0.5000 and no flag raised.
+  **Until it is fixed, treat an exact 0.5000 as an opening anchor on the
+  0.5000 alone, whatever the liquidity**, which is what B42 says is
+  sufficient. Do not read an unraised `anchor_opening` as evidence the
+  anchor has taken money.
 - **`anchor_thin`** — liquidity at or under 25, *whatever* the fair_prob
   says. A Kalshi contract with $0.98 resting on it produces a
   precise-looking 0.5052 that is pure noise, and it is the worst input you
@@ -896,6 +962,41 @@ cross-game does not make a slip cross-game — two legs in one event make it
 - **P(cash) inherits the anchor.** It is a product of de-vigged market
   probabilities and will look precise. Read `fair_source` off the line being
   priced; the anchor is per-LINE, not per-book.
+
+## Stake-back tokens are NOT boosts — do not run them through `ff_boost`
+
+A "bet reset", "safety net" or "second chance" token refunds the stake as
+a BONUS BET when the bet loses. `ff_boost` has no model for this and must
+not be used on one. The arithmetic runs the opposite way to a boost: a
+boost pays more when you WIN, so it rewards a high win probability; a
+stake-back pays when you LOSE, so its value rises as win probability
+falls. **The right bet for a stake-back token is the longest shot that
+qualifies**, which is why Dustin uses them on First TD Scorer.
+
+    EV = p*(d-1)*S  -  (1-p)*S*(1-v)
+
+`v` is the cash value of $1 of bonus-bet FACE, and it is the assumption
+that decides the answer — always state it. A bonus bet returns profit
+only, not the stake, so at fair odds it is worth `1 - 1/d` of face: 0.50
+at even money, 0.80 at +400, 0.90 at +900. Haircut that for the market's
+vig. A long First TD leg lands around **v = 0.70**, a -110 single around
+**0.46**, so the token is worth materially more if the refund is itself
+spent on a longshot. Quote a range (0.60 / 0.70 / 0.80), not a point.
+
+Measured on the 2026-11-05 inventory: two $10 stake-back tokens were
+worth roughly **$4-5 each** on a long First TD, against an entire
+four-token boost inventory that priced NEGATIVE. When Dustin holds both
+kinds, say plainly which is worth more. Do not let a boost token's
+greater complexity make it look like the better play.
+
+Two things to check rather than assume: whether the book allows a
+stake-back and a boost on the same slip (usually one promo per slip), and
+the token's minimum-odds floor, which a long First TD clears easily but a
+heavy favourite may not.
+
+**This is unmodelled in code.** If a session computes it by hand, show
+the formula, `v`, and the assumed market hold, and label the result as an
+estimate rather than an engine number.
 
 ## Backtesting — `ff_backtest.py`, and what it can and cannot answer
 
