@@ -235,6 +235,18 @@ SGP_FACTORS_OBSERVED = (
 # more than thirteen points at one book on one event. B61.
 OBSERVED_SGP_FACTORS = (0.77, 0.99)
 
+# B74. `stake_back_band` carried these three as inline literals, and the
+# check guarding them compared a retyped 0.71 against 0.71 — it would have
+# caught a regression to the unreachable v=0.80 the first version shipped,
+# but its NAME claimed to test reachability, which it never measured. Named
+# here for the same reason SGP_FACTORS_OBSERVED is: the numbers are a
+# measurement off a real First TD board (see `stake_back_ev`), so they get
+# provenance and one home rather than being retyped at each use. The top
+# end is what a leg can actually realise; the first version's 0.80 could
+# not be reached on that board at any price.
+STAKE_BACK_V_OBSERVED = (0.58, 0.65, 0.71)
+STAKE_BACK_V_LABELS = ("pessimistic", "central", "optimistic")
+
 # B59. Below this many liquidity readings, a derived tier is not a
 # measurement and the module constant is used instead. A "modal" value
 # from one or two lines is just that line.
@@ -652,6 +664,24 @@ class Structure:
         return "same-game band 23.1-37.2% — all legs in one event"
 
 
+def _clean(v) -> str:
+    """Normalise a meta field to a string, treating NaN and blanks as absent.
+
+    B73. `team` and `pos` both come from `build_meta()`, which aggregates a
+    pandas frame with agg("last"), so an absent field arrives as
+    float('nan') rather than None. NaN is TRUTHY, so `if not a.team` passed
+    it, and `(recv.pos or "")` passed it too and then raised on `.upper()`.
+    Whitespace-only values from the same join behaved the same way. Both
+    fields are checked against "is this known" in `_pair_r`, and that
+    question has to mean the same thing for both of them.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, float) and v != v:          # NaN
+        return ""
+    return str(v).strip()
+
+
 def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
     """Measured correlation for one pair, and why.
 
@@ -666,8 +696,19 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
 
     # Same event: team decides same-side vs opposing, so an unknown team
     # makes the pair unmeasurable rather than independent.
-    if not a.team or not b.team:
-        missing = a.player if not a.team else b.player
+    #
+    # B73. `if not a.team` tested truthiness, which NaN defeats: `build_meta`
+    # aggregates with agg("last") over a pandas frame, so an absent field
+    # arrives as float('nan'), and NaN is truthy. A NaN team therefore
+    # passed this guard, then failed `a.team == b.team`, and the pair was
+    # routed to the OPPOSING branch — two same-team rushing legs came back
+    # at -0.14 labelled "opposing rushing in one event". Not just a missed
+    # refusal: a confident wrong SIGN on a pair whose team is simply
+    # unknown. Whitespace did the same thing. `_clean` normalises both this
+    # field and `pos` below, since they come from the same join.
+    ta, tb = _clean(a.team), _clean(b.team)
+    if not ta or not tb:
+        missing = a.player if not ta else b.player
         return None, (f"no team known for {missing}, and these legs share "
                       f"an event — cannot tell a teammate from an opponent")
 
@@ -678,10 +719,16 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
                       f"(which was built on passing/rushing/receiving "
                       f"YARDS), and these legs share an event")
 
-    if a.team == b.team:
+    if ta == tb:
         if {sa, sb} == {"PASS", "RECV"}:
             recv = a if sa == "RECV" else b
-            pos = (recv.pos or "").upper()
+            # B73: `(recv.pos or "")` let a whitespace-only position through
+            # to the `elif pos:` branch, which returned +0.31 labelled
+            # "(   with a receiving prop, scored as WR)" — a blank where the
+            # category should be, on the largest of the three coefficients.
+            # Worse than the "(receiver)" label B69 removed. A NaN position
+            # raised AttributeError out of classify() instead.
+            pos = _clean(recv.pos).upper()
             # Three receiving pairs, not two. Asking only "is it a TE?" sent
             # every RB catching passes to the WR value — see the note on
             # SAME_TEAM_CORR_PROVISIONAL.
@@ -1388,8 +1435,7 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
     """
     return {lab: stake_back_ev(odds, stake=stake, bonus_value=v,
                                market_hold=market_hold)
-            for lab, v in (("pessimistic", 0.58), ("central", 0.65),
-                           ("optimistic", 0.71))}
+            for lab, v in zip(STAKE_BACK_V_LABELS, STAKE_BACK_V_OBSERVED)}
 
 
 # ---------------------------------------------------------------------------

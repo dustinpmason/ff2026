@@ -160,6 +160,67 @@ review gate — a broken file cannot reach the repo without passing through
 Dustin. Pushing directly removes that, so the suite must pass before any push,
 and anything beyond a small fix should be described before it goes.
 
+## SHIP GATE — run this before saying "done", every time
+
+**Why this section exists, stated plainly because it is the whole point.**
+Dustin observed on 2026-11-05 that almost every follow-up he asks produces a
+new self-caught error, and asked how to trust the first output instead. The
+diagnosis is not that the lessons below were missing. **Lesson 6 — "when a
+code path can guess, make it refuse instead" — was already written in this
+file when B69 shipped that morning, and B69 is exactly a code path guessing
+instead of refusing.** A retrospective list of failures, read at the START of
+a session, does not fire at the moment of shipping. It has to be a gate.
+
+The deeper reason self-testing does not catch these: **the fix and its tests
+get written in one pass, so the tests inherit the fix's blind spot.** B67's
+checks covered all three branches of the conditional and passed; they were
+blind to the fourth STATE (position missing) because the author was thinking
+in branches. The same model produced both. That is why item 6 below is not
+optional — an independent reader is the only step that does not share the
+blind spot.
+
+Counted over this session: roughly **8 defects were catchable before
+shipping with information already in hand**, against **6 that genuinely
+required live payloads** (Pinnacle dropout, SGP factor confound, real
+`token_note` range, `stake_back_ev` ceiling, F4's falsification, B43's false
+negative). The second group is the cost of building against an API whose
+behaviour cannot be fully observed. The first group is what this gate exists
+to drive to near-zero. **Do not use this gate to claim the second group
+away.**
+
+Before shipping ANY code change:
+
+1. **Grep every constant, table and function name you touched across the
+   whole repo** — not just the file you edited. B68: `SAME_TEAM_CORR` had a
+   second literal copy in `ff_guillotine.py` and B67 was fixed in one of
+   them.
+2. **Re-read the ENTIRE function you edited, especially the `else` and any
+   `.get(k, default)` / `or ""` / bare `return 0.0`.** B69: a new third
+   branch was added to a conditional and its fall-through — which handed out
+   the largest of three values for a MISSING input — was never re-read.
+3. **Enumerate input STATES, not code branches.** Write them down. For
+   `_pair_r`'s receiving pair the states are TE / RB / WR / present-but-odd /
+   **missing** — five, where the code had three branches and an `else`. The
+   missing state is the one that gets skipped, every time.
+4. **For every new number: where did it come from, and is it one
+   observation?** `token_note`'s 0.81–0.86 and `stake_back_ev`'s defaults
+   both shipped from a single sitting and were materially wrong.
+5. **Try to make each new check FAIL.** Break the code deliberately, confirm
+   the check fires by name, restore. A check that cannot fail is worse than
+   no check (lesson 4) and two have shipped.
+6. **Send the diff to an independent reviewer before shipping the files.**
+   Give it the code and the failure-pattern list below as QUESTIONS. Do NOT
+   give it your reasoning or your conclusions — a reviewer handed the
+   author's hypothesis returns it confirmed. This is the only step that does
+   not share the author's blind spot, and it is cheaper than a wasted test
+   round, which costs Dustin a paste into another thread, a run, and a trip
+   back.
+
+**"The suite passes" is not the stopping signal.** The suite only covers what
+was already understood, so a pass mostly confirms nothing previously
+understood got broken. The stopping signal is: suite passes AND items 1–5 ran
+AND the reviewer came back.
+
 ## Standing lessons — these are the failure patterns, not trivia
 
 Eight rounds of testing produced a consistent signal: **not one defect was
@@ -226,3 +287,32 @@ reality.
     A named check from 2026-11-02 caught it. "Missing" and "present but
     unmeasured" are different states. Second time the suite has caught me
     asserting something broader than the actual defect — see B53.
+12. **A parameter's DEFAULT is a code path, and an argument every caller
+    passes is an argument no test omits.** `devig_field`'s
+    mutual-exclusivity refusal — the one its docstring spends a paragraph
+    on — was `if market and market not in ...` with `market=None` by
+    default. 464 checks never exercised it because all six callers passed
+    `market=` explicitly. Omitting one keyword returned an anytime-TD board
+    normalised to 1, a 58% scorer quoted at 27%. **Grep the callers of
+    anything you add a default to; if none omit it, write the test that
+    does.**
+13. **A detector must be able to report that it could not measure.** Three
+    states, not two: healthy / fault found / **I had nothing to look at.**
+    `anchor_coverage` derived `eligible` from the control payload, so a
+    failed control gave it nothing to iterate and `healthy` returned True,
+    printing "every book live to anchor did" about books never observed.
+    The function whose entire job is to be the paired control could not
+    survive its own control failing.
+14. **Counting FAIL lines misses a CRASH, and a crash is worse.** Verifying
+    B73 by reverting it and counting `^  FAIL` reported zero — because the
+    revert made the suite raise, which stops every later section and prints
+    "0 failed" over a partial count. The suite's own crash banner said so
+    and the harness ignored it. **When probing whether a check bites, read
+    the crash line and the check count, not just the failure count** — and
+    write the check to fail rather than explode.
+15. **The reviewer found four betting-path defects in code that had just
+    passed 464 checks.** That is the measurement that settles whether step 6
+    of the ship gate earns its cost. Two of the four were in the guard
+    clauses of fixes shipped the same morning, which is the part
+    self-review structurally cannot catch: the same model wrote the fix,
+    the comment explaining the fix, and the test blessing it.

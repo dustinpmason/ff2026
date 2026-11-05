@@ -606,6 +606,17 @@ And `anchor_opening` / `anchor_thin` key on liquidity, which
 same moment and names any book that anchored nothing while live. Say the
 counts out loud in any write-up that quotes an EV.
 
+**It has THREE verdicts, not two (B72).** If the `get_odds` control comes
+back empty or failed, `.describe()` prints **NO USABLE CONTROL** and
+`healthy` is False — nothing was measured about which books were live.
+That is **not** a clean bill of health and **not** "no market": re-pull
+`get_odds` for that event and market before quoting any EV. Until
+2026-11-05 this case returned `healthy=True` and printed *"no silent
+dropouts: every book live to anchor did"* about books it had never seen,
+because `eligible` is derived from the control payload and so went quiet
+in exactly the case that needed flagging. If you see NO USABLE CONTROL,
+report it rather than treating the pull as clean.
+
 It flags a book in `ANCHOR_CHAIN` (pinnacle, polymarket, kalshi, bovada,
 smarkets — **nothing else can ever anchor**, so a live DraftKings
 anchoring nothing means nothing) that carries two-sided unsuspended lines
@@ -1254,7 +1265,15 @@ best-price comparison, never "the model likes him".
 Pass `{name: american}` from ONE book. It Shin-de-vigs the field to 1 and
 returns `fair`, `booksum`, `overround`, `z`.
 
-Two refusals it will throw at you, both earned on live data:
+**`market=` is REQUIRED as of 2026-11-05 (B70).** Calling
+`devig_field(prices)` now raises `TypeError` rather than skipping the
+exclusivity check. It used to default to `None`, which silently disabled the
+first refusal below — an anytime-TD board passed with no market argument
+de-vigged to 1 and returned a 58% implied scorer at 27% fair, tagged
+`method: shin, complete: True`, with no warning. If you get that TypeError,
+name the market; do not reach for `market=None`, which is refused too.
+
+Three refusals it will throw at you, all earned on live data:
 
 - **A field with no no-scorer outcome is INCOMPLETE and is refused.**
   Measured on event 87238: DraftKings listed 32 outcomes including "No
@@ -1268,6 +1287,19 @@ Two refusals it will throw at you, both earned on live data:
 - **Anytime TD passed as a field is refused outright.** Normalising a
   non-exclusive market to 1 divides every probability by roughly three
   and looks entirely plausible doing it.
+- **A booksum BELOW 1.0 is refused, even with a no-scorer entry (B71).**
+  A mutually exclusive field sums to 1 before any margin, so under 1.0 is
+  arithmetic proof that outcomes are missing. The old guard checked only
+  whether a no-scorer NAME was present, so a short field carrying one
+  reported `complete: True`; de-vigging it scales every price **UP** and
+  manufactures edge. If you see this, pull the complete field — do not
+  pass `require_complete=False` to get past it.
+
+**Read the `method` field, don't assume it (B71b).** When Shin's `z`
+collapses to 0 the result is plain proportional scaling, and it used to be
+labelled `"shin"` regardless. It now says
+`"multiplicative (shin z collapsed to 0)"`. If you see that, say so rather
+than describing the numbers as Shin-de-vigged.
 
 **Anytime TD — the documented two-sided path, unchanged.** Price from
 Dustin's book via `get_odds`; fair probability from `get_event_ev`

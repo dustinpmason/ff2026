@@ -1101,7 +1101,15 @@ chk("an EV with NO anchors beside a live chain book is not healthy",
     _blank.describe()[:80])
 chk("the blank case names itself rather than listing a per-book dropout",
     "NOTHING ANCHORED AT ALL" in _blank.describe()
-    and _blank.silent_dropouts == ["pinnacle"])
+    # B72b. This assertion used to require silent_dropouts == ["pinnacle"],
+    # which CONTRADICTED this check's own name: the blank finding is
+    # "nothing anchored at all", and naming the top chain book as a
+    # specific dropout is an accusation the measurement does not support.
+    # describe() suppressed it, so the wrong value was only visible to a
+    # caller reading the field directly. `blank` carries the finding and
+    # `healthy` already reads it, so the per-book list stays empty.
+    and _blank.silent_dropouts == []
+    and not _blank.healthy)
 chk("an empty EV with NO chain book live is NOT flagged — that is no market",
     anchor_coverage({"lines": []}, _mk_odds({"draftkings": 9})).healthy)
 # B63. min_markets=3 counted market ENTRIES, which mean different things per
@@ -2327,8 +2335,17 @@ chk("the observed-factor range is kept wide on purpose",
 # The controlled run: SAME three BAL players, same side, market varied.
 # Receptions came in BELOW yards, which is the reverse of the composition
 # story this constant originally shipped with.
+# B74. This compared three LITERALS (0.7705 < 0.7933 < 0.8355), so it could
+# not fail and tested no code at all. The controlled triple — the SAME three
+# BAL players priced on yards, then receptions, then a mixed O/U, with the
+# product rising each time — is recorded in SGP_FACTORS_OBSERVED, so read
+# the ordering out of the constant. Now an edit to that tuple fires this.
+_CONTROLLED = (0.8355, 0.7933, 0.7705)   # yards -> receptions -> mixed
+chk("the controlled triple is still present in the recorded measurements",
+    all(v in SGP_FACTORS_OBSERVED for v in _CONTROLLED),
+    f"{_CONTROLLED} vs {SGP_FACTORS_OBSERVED}")
 chk("the same players at a longer product get a LOWER factor",
-    0.7705 < 0.7933 < 0.8355,
+    all(a > b for a, b in zip(_CONTROLLED, _CONTROLLED[1:])),
     "mixed +614 < receptions +562 < yards +528 — ordering is by product, "
     "not by market type")
 # The case the bug produced: product clears, price does not.
@@ -2407,9 +2424,25 @@ chk("the band is ordered and wide enough to change the decision",
     _band["pessimistic"]["ev"] < _band["central"]["ev"] < _band["optimistic"]["ev"]
     and _band["optimistic"]["ev"] - _band["pessimistic"]["ev"] > 1.0,
     f'{_band["pessimistic"]["ev"]:+.2f} to {_band["optimistic"]["ev"]:+.2f}')
-chk("the band's top is reachable in a real First TD market",
-    stake_back_band(900)["optimistic"]["bonus_value"] <= 0.71,
-    "v=0.80 was in the first version and this market cannot reach it")
+# B74. This asserted 0.71 <= 0.71 against a hardcoded literal, so its name
+# ("reachable in a real First TD market") claimed something it never
+# measured. Reachability means the optimistic v is achievable by SOME real
+# leg, so check it against the band the module derives rather than a number
+# retyped from it, and pin that it is strictly below the v=0.80 the first
+# version shipped.
+_opt_v = stake_back_band(900)["optimistic"]["bonus_value"]
+chk("the band's top comes from the recorded measurements, not a literal",
+    _opt_v == max(ff_boost.STAKE_BACK_V_OBSERVED),
+    f"band top {_opt_v} vs observed max "
+    f"{max(ff_boost.STAKE_BACK_V_OBSERVED)}")
+chk("and it is strictly below the unreachable v=0.80 first shipped",
+    _opt_v < 0.80, f"optimistic v={_opt_v}")
+chk("all three band points are distinct and ordered",
+    [stake_back_band(900)[l]["bonus_value"]
+     for l in ff_boost.STAKE_BACK_V_LABELS]
+    == sorted(set(ff_boost.STAKE_BACK_V_OBSERVED)),
+    str([stake_back_band(900)[l]["bonus_value"]
+         for l in ff_boost.STAKE_BACK_V_LABELS]))
 chk("a worthless bonus bet collapses it to the raw bet",
     abs(stake_back_ev(900, bonus_value=0.0)["ev"]
         - stake_back_ev(900)["base_ev"]) < 1e-9)
@@ -2518,6 +2551,113 @@ chk("an unpriceable slip says so in the report",
     "no ev" in txt.lower() or "cannot" in txt.lower(), txt[:120])
 chk("the report never prints a P(cash) for a correlated slip",
     "P(cash)" not in txt or "—" in txt)
+
+section("41. a refusal reachable by OMITTING an argument (B70-B73)")
+# Every finding in this section came from an independent review of a diff
+# that had already passed 464 checks. The shared shape: the suite tested the
+# path the author was thinking about, and the defect was in the path nobody
+# wrote a call for. **A parameter's DEFAULT is a code path.** Every caller of
+# devig_field in the repo passed `market=` explicitly, so the None default
+# — which disabled the mutual-exclusivity refusal entirely — was never once
+# exercised.
+# ---------------------------------------------------------------------------
+_atd = {"Derrick Henry": -140, "Zay Flowers": 120, "Mark Andrews": 150,
+        "Travis Etienne": 180, "Brian Thomas Jr.": 200, "Bhayshul Tuten": 400,
+        "Rashod Bateman": 450, "Lamar Jackson": 500, "Trevor Lawrence": 900,
+        "Keaton Mitchell": 1200, "No Touchdown Scorer": 6000}
+try:
+    ff_props.devig_field(_atd)
+    chk("devig_field cannot be called without naming the market", False,
+        "an anytime-TD board de-vigged with no market argument")
+except TypeError:
+    chk("devig_field cannot be called without naming the market", True)
+try:
+    ff_props.devig_field(_atd, market=None)
+    chk("an explicit market=None is refused, not treated as 'any field'",
+        False, "returned a normalized field")
+except ValueError as _ex:
+    _msg = str(_ex)
+    chk("an explicit market=None is refused, not treated as 'any field'",
+        "not a mutually exclusive field" in _msg, _msg[:70])
+chk("the refusal names the fields that ARE exclusive",
+    "player_1st_td" in _msg)
+
+# B71. The completeness guard checked a NAME. A booksum below 1.0 is
+# arithmetic PROOF of a short field whatever it is called, and de-vigging it
+# scales every price UP — the direction that manufactures edge.
+try:
+    ff_props.devig_field({"A": 400, "B": 400, "No Touchdown Scorer": 300},
+                         market="player_1st_td")
+    chk("a booksum below 1.0 is refused even WITH a no-scorer entry", False,
+        "a 0.65 booksum was de-vigged")
+except ValueError as _ex:
+    _msg2 = str(_ex)
+    chk("a booksum below 1.0 is refused even WITH a no-scorer entry",
+        "BELOW 1.0" in _msg2, _msg2[:70])
+chk("and the refusal says the name check is what let it through",
+    "name check" in _msg2, _msg2[:120])
+# The guard must not fire on a legitimately complete field.
+_ok = ff_props.devig_field(_DK1, market="player_1st_td")
+chk("a real complete board still de-vigs", _ok["booksum"] > 1.0
+    and abs(sum(_ok["fair"].values()) - 1.0) < 1e-9)
+chk("and reports shin, because z did not collapse",
+    _ok["method"] == "shin", _ok["method"])
+
+# B72. The detector's own control coming back empty was the one failure it
+# could not survive: `eligible` derives from that same payload, so it went
+# quiet exactly when it mattered and `healthy` returned True.
+for _ctl, _lbl in (({}, "empty dict"), ({"bookmakers": []}, "no bookmakers"),
+                   ({"error": "HTTP 503"}, "error payload")):
+    _c = anchor_coverage(_EV_LIVE if "_EV_LIVE" in dir() else
+                         {"lines": [{"fair_source": "kalshi"}]}, _ctl)
+    chk(f"an unusable control ({_lbl}) is NOT reported healthy",
+        not _c.healthy and not _c.control_usable, _c.describe()[:70])
+    chk(f"and it says the control failed rather than clearing the books "
+        f"({_lbl})", "NO USABLE CONTROL" in _c.describe(),
+        _c.describe()[:90])
+chk("anchor_coverage({}, {}) does not claim a clean bill of health",
+    not anchor_coverage({}, {}).healthy)
+chk("a usable control is still reported usable",
+    anchor_coverage({"lines": [{"fair_source": "pinnacle"}]},
+                    _mk_odds({"pinnacle": 14})).control_usable)
+
+# B73. team and pos both come from build_meta()'s agg("last"), so an absent
+# field arrives as NaN — which is TRUTHY. Both guards tested truthiness.
+def _pleg(player, market, team, pos):
+    return BoostLeg(event_id=EV1, book="draftkings", market=market,
+                    player=player, side="OVER", odds=-150, fair_prob=0.6,
+                    fair_source="pinnacle", devig_method="shin",
+                    verdict="CLEAR", team=team, pos=pos)
+_nan = float("nan")
+for _bad, _lbl in ((_nan, "NaN"), ("   ", "whitespace"), ("", "empty")):
+    # Caught rather than allowed to propagate. A NaN position used to raise
+    # AttributeError out of classify(), which CRASHED the suite instead of
+    # failing a check — and that matters beyond tidiness: a crash stops
+    # every later section, so the run prints "0 failed" over a partial
+    # count. Verifying this very fix by counting FAIL lines reported zero
+    # for exactly that reason. A check must FAIL, not explode.
+    try:
+        s = classify([_pleg("QB A", "player_pass_yds", "AAA", "QB"),
+                      _pleg("Ghost", "player_reception_yds", "AAA", _bad)])
+        chk(f"a {_lbl} position is unmeasured, not the WR coefficient",
+            not s.pairs and bool(s.unmeasured), f"pairs={s.pairs}")
+    except Exception as _exc:
+        chk(f"a {_lbl} position is unmeasured, not the WR coefficient",
+            False, f"raised {type(_exc).__name__}: {_exc}")
+# The sign error: a NaN team passed the truthiness guard, then failed the
+# equality test, and two SAME-team rushing legs were scored as OPPOSING.
+s = classify([_pleg("R1", "player_rush_yds", _nan, "RB"),
+              _pleg("R2", "player_rush_yds", "BBB", "RB")])
+chk("a NaN team never reaches the opposing-rusher branch",
+    not any(abs(p[2] + 0.14) < 1e-9 for p in s.pairs), f"pairs={s.pairs}")
+chk("it is refused for the reason the team guard already gave",
+    s.unmeasured and "no team known" in str(s.unmeasured),
+    str(s.unmeasured)[:90])
+# And the known-good paths are untouched.
+s = classify([_pleg("QB A", "player_pass_yds", "AAA", "QB"),
+              _pleg("RB A1", "player_reception_yds", "AAA", " rb ")])
+chk("a position with stray whitespace still RESOLVES once stripped",
+    any(abs(p[2] - 0.20) < 1e-9 for p in s.pairs), f"pairs={s.pairs}")
 
 section("40. the duplicate correlation table cannot diverge unnoticed (B68)")
 # ff_guillotine keeps its OWN literal copy of both correlation tables rather

@@ -688,8 +688,7 @@ NO_SCORER_NAMES = {"no touchdown scorer", "no td scorer", "no scorer",
                    "none", "no touchdown"}
 
 
-def devig_field(prices: dict, *, method: str = "shin",
-                market: str | None = None,
+def devig_field(prices: dict, *, market: str, method: str = "shin",
                 require_complete: bool = True) -> dict:
     """De-vig a whole MUTUALLY EXCLUSIVE field at once (first TD scorer).
 
@@ -718,13 +717,25 @@ def devig_field(prices: dict, *, method: str = "shin",
     `require_complete=False` only to inspect one deliberately, and never
     quote the result as a probability.
     """
-    if market and market not in MUTUALLY_EXCLUSIVE_MARKETS:
+    # B70. `market` was keyword-OPTIONAL and defaulted to None, so this
+    # refusal — the one the docstring above spends a paragraph on — was
+    # opt-in. `devig_field(anytime_td_board)` with no market argument ran
+    # the full Shin normalisation and returned a 58% implied scorer at 27%
+    # fair, tagged `method: shin, complete: True`, no warning. Exactly the
+    # "divide every probability by roughly three and look entirely
+    # plausible doing it" failure described above, reachable by OMITTING an
+    # argument. Every caller in the repo passed `market` explicitly, which
+    # is precisely why 464 checks never exercised the default: a
+    # parameter's default is a code path, and no test omitted it.
+    # `market` is now required.
+    if market not in MUTUALLY_EXCLUSIVE_MARKETS:
         raise ValueError(
-            f"{market} is not a mutually exclusive field, so its prices do "
+            f"{market!r} is not a mutually exclusive field, so its prices do "
             f"not sum to 1 and cannot be de-vigged as one. Anytime TD is "
             f"the usual mistake: several players score, so the field sums "
             f"to the expected NUMBER of scorers. Use a two-sided fair "
-            f"line per player instead (get_event_ev, unfiltered, shin).")
+            f"line per player instead (get_event_ev, unfiltered, shin). "
+            f"Mutually exclusive fields: {sorted(MUTUALLY_EXCLUSIVE_MARKETS)}")
     clean = {k: _num(v) for k, v in (prices or {}).items()}
     clean = {k: v for k, v in clean.items() if v is not None}
     if len(clean) < 2:
@@ -734,6 +745,26 @@ def devig_field(prices: dict, *, method: str = "shin",
     booksum = sum(r.values())
     has_no_scorer = any(str(k).strip().lower() in NO_SCORER_NAMES
                         for k in clean)
+    # B71. The completeness guard below checks a NAME and never the
+    # arithmetic, so a field carrying "No Touchdown Scorer" was reported
+    # `complete: True` however short it was. A booksum BELOW 1.0 is
+    # arithmetic proof of incompleteness on a mutually exclusive field — the
+    # true outcomes sum to 1 before any margin, so a book quoting less than
+    # 1.0 is missing outcomes no matter what it is named. Unchecked, Shin's
+    # bisection collapses to z=0 and the field is scaled UP: three prices
+    # summing to 0.65 returned a 20% outcome at 30.8%, i.e. manufactured
+    # edge, while reporting `method: shin, complete: True`. That is the
+    # flattering direction, which is the one that costs money.
+    if booksum < 1.0:
+        raise ValueError(
+            f"this field's prices sum to {booksum:.4f}, BELOW 1.0. A "
+            f"mutually exclusive field sums to 1 before any margin, so a "
+            f"booksum under 1 is proof that outcomes are missing — "
+            f"de-vigging it would scale every price UP and manufacture "
+            f"edge. Got {len(clean)} outcomes"
+            + (" including a no-scorer entry, which is why the name check "
+               "alone passed it" if has_no_scorer else "")
+            + ". Pull the complete field before quoting anything from it.")
     if require_complete and not has_no_scorer:
         raise ValueError(
             f"this field has {len(clean)} outcomes and no no-scorer entry, "
@@ -771,9 +802,17 @@ def devig_field(prices: dict, *, method: str = "shin",
     z = (lo + hi) / 2.0
     fair = fair_at(z)
     s = sum(fair.values())
+    # B71b. `fair_at` falls back to plain proportional scaling when z
+    # collapses, so reporting "shin" there names a method that did not run.
+    # The booksum guard above now catches the case that drove z to 0, but
+    # the label should state what was actually computed either way — a
+    # downstream reader comparing methods must not be told shin when the
+    # numbers are multiplicative.
     return {"fair": {k: v / s for k, v in fair.items()}, "booksum": booksum,
             "overround": booksum - 1.0, "n": len(clean), "z": z,
-            "method": "shin", "complete": has_no_scorer}
+            "method": "shin" if z > 1e-12 else "multiplicative (shin z "
+                                               "collapsed to 0)",
+            "complete": has_no_scorer}
 
 
 def devig(over_odds: float, under_odds: float,
@@ -1400,15 +1439,36 @@ class AnchorCoverage:
     total_lines: int = 0
     blank: bool = False                 # nothing anchored at all (B62)
     eligible: list = field(default_factory=list)   # chain books live enough
+    # B72. The one failure this detector could not survive was its OWN
+    # control coming back empty. `eligible` derives entirely from the
+    # odds_response, so a failed or empty control gave `eligible == []`,
+    # which made `blank` False and left the per-book loop with nothing to
+    # iterate — and `healthy` then returned True, printing "every book live
+    # to anchor did" about books that were never observed. A positive claim
+    # from a measurement that did not happen: B46's shape, in the function
+    # whose entire purpose is to be the paired control.
+    control_usable: bool = True
 
     @property
     def healthy(self) -> bool:
+        if not self.control_usable:
+            return False
         return not self.silent_dropouts and not self.blank
 
     def describe(self) -> str:
         a = ", ".join(f"{b} {n}" for b, n in
                       sorted(self.anchored.items(), key=lambda kv: -kv[1])) or "none"
         L = [f"anchored {self.total_lines} line(s): {a}"]
+        if not self.control_usable:
+            L.append(
+                "  *** NO USABLE CONTROL. The get_odds pull carried no "
+                "bookmaker with any two-sided line, so NOTHING was "
+                "measured about which books were live. This is not a "
+                "clean bill of health and it is not 'no market' — it is "
+                "most likely a failed or empty control pull. Re-pull "
+                "get_odds for this event and this market before quoting "
+                "any EV; until then a dropout can neither be confirmed "
+                "nor ruled out.")
         if self.blank:
             L.append(
                 f"  *** NOTHING ANCHORED AT ALL, while "
@@ -1554,11 +1614,23 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     # instructions say only a paired `get_odds` control can diagnose. The
     # control reported it healthy. So a total blank is handled first and
     # separately, rather than falling through the per-book loop.
+    # B72. An empty control cannot clear anybody — see the note on
+    # `control_usable`. Measured BEFORE `eligible`, because `eligible` is
+    # derived from this same payload and so goes quiet in exactly the case
+    # that needs flagging.
+    control_usable = bool(live)
+
     eligible = [b for b in ANCHOR_CHAIN if live.get(b, 0) >= min_lines]
     blank = bool(eligible) and not anchored
     dropouts = []
     if blank:
-        dropouts = [eligible[0]]
+        # B72b. This used to be `[eligible[0]]`, which names the top chain
+        # book as a specific dropout when the measured finding is only
+        # "nothing anchored at all". `describe()` suppressed it, but
+        # `silent_dropouts` is a documented field and a caller reading it
+        # got an accusation the data does not support. `blank` already
+        # carries the finding; the per-book list stays empty.
+        dropouts = []
     else:
         for i, book in enumerate(ANCHOR_CHAIN):
             if anchored.get(book) or live.get(book, 0) < min_lines:
@@ -1567,7 +1639,7 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
                 dropouts.append(book)
     return AnchorCoverage(anchored=anchored, live=live,
                           silent_dropouts=dropouts, blank=blank,
-                          eligible=eligible,
+                          eligible=eligible, control_usable=control_usable,
                           total_lines=len(ev_response.get("lines") or []))
 
 
