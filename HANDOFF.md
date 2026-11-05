@@ -344,3 +344,26 @@ reality.
     adding a guard, grep for the concept, not the identifier** — and when
     two call sites need the same decision, give it one home rather than a
     comment promising they match.
+19. **A correct detection rule is not a correct DIRECTION rule.**
+    `usage_trend`'s verdict is decided on SHARE, deliberately and rightly:
+    a count drop that leaves share intact is the team running fewer plays.
+    But B80's `supports()` then read a BETTING direction off that verdict,
+    and a threshold prop is priced on opportunity COUNT. They diverge
+    whenever team volume moves — 21 of 264 flagged role changes, and the
+    direction was wrong on all 21. **When reusing a classifier's output for
+    a new decision, check that the quantity it was built on is the quantity
+    the new decision turns on.** It usually isn't.
+20. **Adding a third state to a two-state return re-opens the bug the
+    second state fixed.** `supports()` returned True/False/None, and B84
+    added a second reason for None. `elif supported:` treats None as False,
+    so the conflict case would have vetoed "AGAINST THE <side>" — exactly
+    B80's assert-a-direction-you-never-measured, re-entered through the new
+    value. **After widening a return type, grep every caller for truthiness
+    tests on it**, not just for the old values.
+21. **An over-permissive bug is worse than an over-conservative one, and
+    it reads better.** B80 dropped good legs, which is visible and
+    annoying. B84 admitted bad legs with the note "the model UNDERSTATES
+    this side, the true edge is likely larger than shown" pointing the
+    wrong way. Encouraging prose in the wrong direction is the more
+    expensive failure and the harder one to notice, because nothing looks
+    broken.

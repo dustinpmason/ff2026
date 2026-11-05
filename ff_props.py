@@ -432,6 +432,35 @@ class UsageTrend:
         reverts more readily than a depth-chart position does."""
         return self.verdict in ("COLLAPSED", "EXPANDED")
 
+    @property
+    def direction_conflict(self) -> bool:
+        """SHARE and COUNT point opposite ways, so the production direction
+        is not determined by the verdict.
+
+        B84. `verdict` is decided on SHARE — deliberately, because a count
+        drop that leaves share intact is the team running fewer plays, and
+        using count as primary misclassified Corum's real promotion. That is
+        right for "did his role change?". But a THRESHOLD PROP is priced on
+        production, and production follows OPPORTUNITY COUNT. When team
+        volume moves, the two diverge: a player can take a bigger slice of a
+        smaller pie (share up, count down) and the model built on his old
+        count then OVERSTATES him, supporting an under — while the verdict
+        says EXPANDED and the old mapping claimed the opposite.
+
+        Measured over 264 flagged role changes in the 2025-26 pool: **21
+        have share and count pointing opposite ways, and the verdict-derived
+        direction was wrong on all 21.** Of the 243 where they agree, only 2
+        disagreed, both at the boundary where `expected_now` sits within a
+        point of the sample mean. So this test fixes 21 of 23 known
+        disagreements and costs nothing correct. `team_volume_ratio` on the
+        conflicting set runs 0.42 to 1.98, confirming the divergence is
+        team-volume driven rather than noise.
+        """
+        if not self.flagged or not self.has_share:
+            return False
+        return ((self.share_ratio > 1.0 and self.ratio < 1.0)
+                or (self.share_ratio < 1.0 and self.ratio > 1.0))
+
     def supports(self, side: str | None) -> bool | None:
         """Does this role change run WITH the side being bet, or against it?
 
@@ -440,16 +469,24 @@ class UsageTrend:
         model says, supporting an under and refusing an over. An EXPANSION is
         the same logic reversed.
 
-        Returns None when `side` is unknown, because the direction is then
-        unknowable and a caller must not guess. **B80: this lived as a
-        duplicated two-line expression in `price_edge` and `boost_verdict`,
-        and the second copy had been written WITHOUT the direction test at
-        all** — it vetoed every role change and asserted the direction in
-        prose. It cost the best-priced leg on a live board, a Justice Hill
-        over whose targets had gone 2.2 -> 6.0, an EXPANSION that supported
-        the bet. One home, so the two readings cannot drift again.
+        Returns None when the direction cannot be established, and a caller
+        must not guess from it. THREE separate reasons it can be None, and a
+        caller that needs to explain itself must tell them apart:
+          * `side` is not OVER/UNDER — nothing to compare against
+          * not `flagged` — no role change, so no direction to have
+          * `direction_conflict` — share and count disagree (B84)
+
+        **B80: this lived as a duplicated two-line expression in
+        `price_edge` and `boost_verdict`, and the second copy had been
+        written WITHOUT the direction test at all** — it vetoed every role
+        change and asserted the direction in prose. It cost the best-priced
+        leg on a live board, a Justice Hill over whose targets had gone
+        2.2 -> 6.0, an EXPANSION that supported the bet. One home, so the two
+        readings cannot drift again.
         """
         if side not in ("OVER", "UNDER") or not self.flagged:
+            return None
+        if self.direction_conflict:
             return None
         return ((self.verdict == "COLLAPSED" and side == "UNDER")
                 or (self.verdict == "EXPANDED" and side == "OVER"))
@@ -709,6 +746,20 @@ MUTUALLY_EXCLUSIVE_MARKETS = {"player_1st_td", "player_last_td",
 NO_SCORER_NAMES = {"no touchdown scorer", "no td scorer", "no scorer",
                    "none", "no touchdown"}
 
+# B85. Above this, a mutually exclusive field's booksum is evidence of EXTRA
+# outcomes rather than a fat margin, and the incomplete-field refusal must
+# say so instead of calling the number "too low".
+#
+# Measured on live First TD boards, 2026-11-05: complete fields ran
+# DraftKings 1.5421 (54.2%) and bovada 1.5655 (56.6%); short fields ran
+# BetMGM 1.4124 (41.2%, 23 outcomes) and Kalshi 1.3501 (35.0%, 28). So a
+# real field — complete or short — topped out near 57%. A dict keyed on
+# player name alone, which pulled milestone rungs into the field, produced
+# 2.9756 (198%). 100% sits well clear of both, and it is a DIAGNOSTIC
+# threshold: it decides which sentence the refusal prints, never whether the
+# field is refused.
+MAX_PLAUSIBLE_OVERROUND = 1.00
+
 
 def devig_field(prices: dict, *, market: str, method: str = "shin",
                 require_complete: bool = True) -> dict:
@@ -788,13 +839,36 @@ def devig_field(prices: dict, *, market: str, method: str = "shin",
                "alone passed it" if has_no_scorer else "")
             + ". Pull the complete field before quoting anything from it.")
     if require_complete and not has_no_scorer:
+        # B85. This used to assert the booksum "is too low by whatever is
+        # missing" unconditionally. That is the right diagnosis for the case
+        # it was written for — a short First TD field, booksum ~1.4 against a
+        # complete ~1.55 — but the no-scorer check fires BEFORE anything
+        # reasons about direction, so the prose was printed over whatever
+        # number arrived. Observed live: a hand-built dict keyed on name
+        # alone pulled milestone rungs into the field, giving 13 outcomes at
+        # booksum 2.9756, and the refusal called 2.98 "too low". The caller
+        # is already confused at that point; the message must not add to it.
+        # The threshold is 1.0 because a mutually exclusive field sums to 1
+        # before margin, so anything above it is margin plus extra outcomes.
+        if booksum > 1.0 + MAX_PLAUSIBLE_OVERROUND:
+            diag = (f"and its booksum ({booksum:.4f}) is far TOO HIGH for a "
+                    f"field of {len(clean)} outcomes — above the "
+                    f"{MAX_PLAUSIBLE_OVERROUND:.0%} margin any real book "
+                    f"charges, which means extra outcomes are in here, not "
+                    f"that outcomes are missing. The usual cause is a dict "
+                    f"keyed on name alone, so alternate lines and milestone "
+                    f"rungs ('100+ Rushing Yards') joined the main field. "
+                    f"Rebuild it from flatten_odds with the line in the key")
+        else:
+            diag = (f"so it is INCOMPLETE and its booksum ({booksum:.4f}) is "
+                    f"too low by whatever is missing. De-vigging it would "
+                    f"inflate every outcome. Pull the book that carries the "
+                    f"full field (DraftKings listed 'No Touchdown Scorer' "
+                    f"where BetMGM listed nothing)")
         raise ValueError(
             f"this field has {len(clean)} outcomes and no no-scorer entry, "
-            f"so it is INCOMPLETE and its booksum ({booksum:.4f}) is too "
-            f"low by whatever is missing. De-vigging it would inflate every "
-            f"outcome. Pull the book that carries the full field (DraftKings "
-            f"listed 'No Touchdown Scorer' where BetMGM listed nothing), or "
-            f"pass require_complete=False to inspect it without quoting it.")
+            f"{diag}, or pass require_complete=False to inspect it without "
+            f"quoting it.")
 
     if method == "auto":
         method = "shin"
@@ -1043,16 +1117,32 @@ def prop_edge(est: Estimate,
         # Blanket-blocking both sides was wrong and would have refused a
         # genuinely attractive under on a player whose targets had halved.
         supported = u.supports(side)
-        if not supported:
+        if supported is not True:
+            # B84. `not supported` folded False and None together, so a
+            # conflicting role change — share up while count fell, or the
+            # reverse — was reported as "AGAINST YOU", naming a direction
+            # the data does not establish. The outcome is the same PASS
+            # either way; the REASON must not claim more than was measured.
+            if supported is None:
+                why = (f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
+                       f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) "
+                       f"while share went {u.share_ratio:.0%} and team volume "
+                       f"{u.team_volume_ratio:.0%}. Share and count point "
+                       f"opposite ways, so the verdict ({u.verdict}) does not "
+                       f"fix which side the staleness helps: he is a bigger "
+                       f"part of a smaller pie, or the reverse. PASS because "
+                       f"it is undetermined, not because it runs against you.")
+            else:
+                why = (f"ROLE CHANGE AGAINST YOU — {u.column} "
+                       f"{u.baseline:.1f} -> {u.recent:.1f} "
+                       f"({u.ratio:.0%}, share {u.share_ratio:.0%}). "
+                       f"The sample describes a role this player no "
+                       f"longer has, and the staleness runs in the "
+                       f"direction of the {side}. Refuse whatever "
+                       f"the edge looks like.")
             return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
                         ev_per_dollar=ev, hold=hold, kelly=0.0, tier="PASS",
-                        reasoning=(f"ROLE CHANGE AGAINST YOU — {u.column} "
-                                   f"{u.baseline:.1f} -> {u.recent:.1f} "
-                                   f"({u.ratio:.0%}, share {u.share_ratio:.0%}). "
-                                   f"The sample describes a role this player no "
-                                   f"longer has, and the staleness runs in the "
-                                   f"direction of the {side}. Refuse whatever "
-                                   f"the edge looks like."),
+                        reasoning=why,
                         fair_source=fair_source or ("de-vigged from the quoted "
                                                     "price — NOT a sharp reference"),
                         devig_method=used_devig)
@@ -1206,6 +1296,22 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
                  f"{u.share_ratio:.0%}). No edge was supplied, so there is "
                  f"no side to compare the change against. Pass the Edge to "
                  f"get a directional read.")
+        elif supported is None:
+            # B84. Share and count point opposite ways, so the verdict does
+            # not fix the production direction. This branch has to come
+            # before the truthiness test below: `elif supported:` treats
+            # None as False and would VETO "AGAINST THE {side}", asserting
+            # a direction again — the same mistake B80 fixed, re-entered
+            # through a new None.
+            veto(f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
+                 f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) while "
+                 f"share went {u.share_ratio:.0%} and team volume "
+                 f"{u.team_volume_ratio:.0%}. The verdict is {u.verdict} off "
+                 f"SHARE, but the COUNT moved the other way, and a threshold "
+                 f"prop is priced on count. He is a bigger part of a smaller "
+                 f"pie, or the reverse — which side the staleness helps is "
+                 f"undetermined, so this is refused as UNKNOWN rather than "
+                 f"as against the {side}.")
         elif supported:
             # Still not CLEAR: the direction helps, the magnitude is not
             # trustworthy. Matches price_edge, which costs a supportive

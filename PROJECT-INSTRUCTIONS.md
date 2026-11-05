@@ -959,6 +959,14 @@ an Over. What you will see now:
   it runs against.
 - **No edge supplied** → VETO for the **missing side**, not for a direction
   nobody measured. Pass the `Edge` to get a directional read.
+- **Share and count pointing opposite ways** → VETO as **DIRECTION NOT
+  ESTABLISHED** (B84). `verdict` is decided on SHARE, but a threshold prop
+  is priced on opportunity COUNT, and when team volume moves the two
+  diverge: a player can be a bigger slice of a smaller pie. Measured, the
+  verdict-derived direction was wrong on all 21 such cases out of 264.
+  **Report this as undetermined, not as running against the side** — and if
+  you see a row where the count fell while the verdict says EXPANDED, that
+  is this case, not a data error.
 
 So **a CAUTION on a role-change leg is not a soft veto** — report it as
 playable with the caveat, and say which way the change leans. If you see a

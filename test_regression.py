@@ -2593,6 +2593,54 @@ chk("an unflagged trend has no direction to support",
     _ut("STABLE", 5.0, 5.0).supports("OVER") is None
     and _ut("GAME_SCRIPT", 6.0, 4.0).supports("OVER") is None)
 _psrc = pathlib.Path(ff_props.__file__).read_text()
+# B84. `verdict` is decided on SHARE; a threshold prop is priced on COUNT.
+# When team volume moves they diverge, and the verdict-derived direction was
+# wrong on ALL 21 of the 264 flagged role changes in the 2025-26 pool where
+# they pointed opposite ways (2 of the 243 agreeing cases disagreed, both at
+# the boundary). So a conflict must return None, not a confident direction.
+_utx = lambda verdict, s_ratio, c_ratio, tv=1.0: ff_props.UsageTrend(
+    column="targets", window=3, recent=10.0 * c_ratio, baseline=10.0,
+    ratio=c_ratio, verdict=verdict, per_opportunity=5.0,
+    expected_now=50.0 * c_ratio, share_baseline=0.20,
+    share_recent=0.20 * s_ratio, share_ratio=s_ratio,
+    team_volume_ratio=tv, has_share=True)
+# bigger slice of a smaller pie: share UP, count DOWN
+_conf_x = _utx("EXPANDED", 1.95, 0.85, tv=0.57)
+# smaller slice of a bigger pie: share DOWN, count UP
+_conf_c = _utx("COLLAPSED", 0.63, 1.24, tv=1.97)
+chk("share up + count down is a direction conflict",
+    _conf_x.direction_conflict)
+chk("share down + count up is a direction conflict",
+    _conf_c.direction_conflict)
+chk("and a conflict yields None for BOTH sides, not a guess",
+    _conf_x.supports("OVER") is None and _conf_x.supports("UNDER") is None
+    and _conf_c.supports("OVER") is None
+    and _conf_c.supports("UNDER") is None)
+chk("share and count agreeing is NOT a conflict",
+    not _utx("EXPANDED", 1.95, 1.60).direction_conflict
+    and not _utx("COLLAPSED", 0.55, 0.70).direction_conflict)
+chk("an agreeing EXPANDED still supports the OVER",
+    _utx("EXPANDED", 1.95, 1.60).supports("OVER") is True)
+chk("an unflagged trend reports no conflict",
+    not _utx("STABLE", 1.10, 0.90).direction_conflict)
+# A conflict must VETO as UNDETERMINED, never "against the <side>" — that
+# would re-enter B80's mistake through the new None.
+for _side in ("OVER", "UNDER"):
+    _v9, _r9 = boost_verdict(_replace(_e2, usage=_conf_x),
+                             _replace(_ed2, side=_side),
+                             screen_quotes(_cleanq))
+    chk(f"a conflict on the {_side} vetoes as NOT ESTABLISHED", _v9 == "VETO"
+        and any("DIRECTION NOT ESTABLISHED" in x for x in _r9), f"{_v9}: {_r9}")
+    chk(f"and never claims it runs against the {_side}",
+        not any(f"AGAINST THE {_side}" in x for x in _r9), str(_r9))
+chk("the conflict reason reports count, share AND team volume",
+    all(t in " ".join(_r9) for t in ("share", "team volume")), str(_r9))
+# price_edge shares the helper and must not fold None into "against you".
+_pe = prop_edge(_replace(_e2, usage=_conf_x), -115, -105)
+chk("price_edge PASSes a conflict without claiming a direction",
+    _pe.tier == "PASS" and "NOT ESTABLISHED" in _pe.reasoning
+    and "AGAINST YOU" not in _pe.reasoning, _pe.reasoning[:110])
+
 chk("the direction test is not re-inlined anywhere (B80)",
     _psrc.count('self.verdict == "COLLAPSED"') == 1
     and _psrc.count('self.verdict == "EXPANDED"') == 1
@@ -2704,6 +2752,41 @@ chk("a real complete board still de-vigs", _ok["booksum"] > 1.0
     and abs(sum(_ok["fair"].values()) - 1.0) < 1e-9)
 chk("and reports shin, because z did not collapse",
     _ok["method"] == "shin", _ok["method"])
+
+# B85. The incomplete-field refusal printed "too low by whatever is missing"
+# over whatever booksum arrived. Observed live: a dict keyed on player name
+# alone pulled milestone rungs into a First TD field, giving 13 outcomes at
+# booksum 2.98 — and the refusal called 2.98 "too low". The caller is already
+# confused at that point; the message must not add to it.
+_pol = {f"P{i}": v for i, v in enumerate(
+    [-125, -105, 150, 200, 250, 300, 450, 600, 800, 1000, 1400, 2000, 2500])}
+try:
+    ff_props.devig_field(_pol, market="player_1st_td")
+    chk("a polluted field is still refused", False, "it de-vigged")
+except ValueError as _ex:
+    _m = str(_ex)
+    chk("a polluted field is still refused", True)
+chk("and the refusal says TOO HIGH, never 'too low'",
+    "TOO HIGH" in _m and "too low" not in _m, _m[:150])
+chk("and it names the cause the caller can act on",
+    "keyed on name alone" in _m and "flatten_odds" in _m, _m[:200])
+# A genuinely short field must still get the ORIGINAL diagnosis.
+_shrt = {f"P{i}": v for i, v in enumerate(
+    [400, 425, 600, 650, 1000, 1400, 1600, 2000, 2500, 3000, 4000, 5000])}
+try:
+    ff_props.devig_field(_shrt, market="player_1st_td")
+    chk("a short field is refused as too low", False, "it de-vigged")
+except ValueError as _ex:
+    _m2 = str(_ex)
+chk("a short field is refused as too low", "too low" in _m2
+    and "TOO HIGH" not in _m2, _m2[:150])
+# The threshold is DIAGNOSTIC: it must not decide whether to refuse.
+chk("the overround threshold clears every measured real board",
+    all(bs - 1.0 < ff_props.MAX_PLAUSIBLE_OVERROUND
+        for bs in (1.5421, 1.5655, 1.4124, 1.3501)),
+    str(ff_props.MAX_PLAUSIBLE_OVERROUND))
+chk("and sits below the polluted booksum that motivated it",
+    2.9756 - 1.0 > ff_props.MAX_PLAUSIBLE_OVERROUND)
 
 # B72. The detector's own control coming back empty was the one failure it
 # could not survive: `eligible` derives from that same payload, so it went
