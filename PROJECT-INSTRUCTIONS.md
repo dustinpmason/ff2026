@@ -324,14 +324,21 @@ different 3-leg receiving slips:
 | +541 | **+450** | 0.8583 |
 | +590 | **+475** | 0.8335 |
 
-**Rule of thumb: a token with a +400 minimum needs a product of roughly
-+500 — and +516 is the lowest product actually observed to clear it.**
-Across the measured factor range the requirement is +495 at a 0.84
-factor and +517 at 0.81, so treat ~+520 as the safe target rather than
-+500. A product of +450 prices to **+346 to +372** at those factors, so
-a +400 token voids by a wider margin than it looks. The module cannot
-see any of this — it floors on the product — so price the slip and check
-the real quote against the token's minimum before recommending it.
+**There is no single safe product, because the factor depends on what the
+legs ARE.** Two sittings on the same event at the same book, hours apart:
+receiving-YARDS slips quoted at factors 0.81-0.86, while receptions and
+Over/Under mixes quoted at **0.87-0.99** — barely haircut at all. On the
+first set a +400 token needed a product near +520; on the second a **+405
+product cleared a +400 token**. Yardage legs on one team share a play
+count and get charged for it; receptions and mixes do not.
+
+So treat ~+520 as the conservative target when the legs are same-team
+yardage, know it runs up to 115 points too conservative on other shapes,
+and **price the slip rather than deciding from the product.** The module
+cannot see any of this — it floors on the product. `token_note` on an
+unpriced candidate deliberately spans the whole 0.81-0.99 range for the
+same reason: it is wide because the honest answer is wide, and it exists
+to say "price it", not to answer the question.
 
 **Re-pull and re-price before placing.** The quote is a live number and
 the anchors underneath it are less stable than they look (see the
@@ -486,9 +493,24 @@ P7 and P8. So `lines: []` means one of three different things:
    Reading this as "no anchor carries this market" is approximately right
    and sends you looking for the wrong fix.
 
-They are indistinguishable from the response. Diagnose by removing the
-`bookmakers` filter first, then lowering `min_ev_pct` to 0 — and only then
-conclude anything about the anchor.
+5. **you filtered prices to the anchor book itself.** `bookmakers="pinnacle"`
+   together with `fair_source="pinnacle"` returns `[]` deterministically —
+   the endpoint will not price a book against its own fair line. Measured
+   2026-11-05. This looks exactly like anchor failure and is not.
+6. **the endpoint returned nothing while the odds feed was healthy.** See
+   B60: on 2026-11-05 the same call returned 14 lines at 02:55 and `[]` at
+   03:00, 03:02 and 03:03, while a control `get_odds` on Pinnacle at 02:58
+   showed 14 two-sided markets, `suspended_at: null`, liquidity 500, live
+   varied prices. The data was present the whole time the EV endpoint was
+   empty. **This one is not diagnosable from the EV response at all** —
+   only a paired `get_odds` control distinguishes it.
+
+They are indistinguishable from the response. Diagnose in this order:
+remove the `bookmakers` filter, check it is not the anchor book, lower
+`min_ev_pct` to 0 — and then pull `get_odds` on the anchor book as a
+control before concluding anything about the anchor. **An empty response
+is never evidence on its own**, and it is not stable: it recurs and
+clears within minutes on the same call.
 
 **Correction (third test): Pinnacle DOES carry anytime-TD.** 13/13 events,
 100 markets, and it anchors 8 of the 32 `get_event_ev` lines on DEN@KC
@@ -987,26 +1009,44 @@ qualifies**, which is why Dustin uses them on First TD Scorer.
 
 `v` is the cash value of $1 of bonus-bet FACE, and it is the assumption
 that decides the answer — always state it. A bonus bet returns profit
-only, not the stake, so at fair odds it is worth `1 - 1/d` of face: 0.50
-at even money, 0.80 at +400, 0.90 at +900. Haircut that for the market's
-vig. A long First TD leg lands around **v = 0.70**, a -110 single around
-**0.46**, so the token is worth materially more if the refund is itself
-spent on a longshot. Quote a range (0.60 / 0.70 / 0.80), not a point.
+only, not the stake, so at fair odds it is worth `1 - 1/d` of face.
+Haircut that for the vig of whatever market the REFUND is spent in.
 
-Measured on the 2026-11-05 inventory: two $10 stake-back tokens were
-worth roughly **$4-5 each** on a long First TD, against an entire
-four-token boost inventory that priced NEGATIVE. When Dustin holds both
-kinds, say plainly which is worth more. Do not let a boost token's
-greater complexity make it look like the better play.
+**Both numbers first written here were guessed, and both were wrong.
+Measured 2026-11-05 on BetMGM's First TD board for event 87238:** the
+booksum across its 23 selections was **1.3935, a 39.4% overround** — and
+that is a lower bound, since DraftKings listed 32 selections including No
+Touchdown Scorer at 54.9%. The original 0.22 hold was about half the real
+figure. Deriving v from that same board gives **0.65 at +900, 0.69 at
++2800, 0.71 at +6600**, falling to 0.58-0.64 at a 55% hold. **v = 0.80 is
+not attainable in this market**, so the original 0.60/0.70/0.80 band
+bracketed the truth only at its bottom edge. `stake_back_band` now uses
+0.58 / 0.65 / 0.71 and `stake_back_ev` defaults to hold 0.39, v 0.65.
+
+A $10 stake-back token is therefore worth **$2-4**, not the $4-5 first
+quoted here. Still far more than the four-token boost inventory, which
+priced NEGATIVE — the conclusion held, the magnitude did not. When Dustin
+holds both kinds, say plainly which is worth more.
+
+**Where the care belongs, which is not where the first version put it.**
+From +900 to +6600 — a 7x range of odds — EV moves about **$0.43**, while
+the v assumption moves it **~$1.27**. "Take the longest shot" is
+directionally right and worth roughly a fifth of getting v right.
+Reaching past a sensible longshot for a longer one buys almost nothing;
+thinking about where the refund gets spent buys three times as much. And
+re-measure the booksum on the night rather than inheriting 0.39 — D16.
 
 Two things to check rather than assume: whether the book allows a
 stake-back and a boost on the same slip (usually one promo per slip), and
 the token's minimum-odds floor, which a long First TD clears easily but a
 heavy favourite may not.
 
-**This is unmodelled in code.** If a session computes it by hand, show
-the formula, `v`, and the assumed market hold, and label the result as an
-estimate rather than an engine number.
+**Modelled in code as of 2026-11-05:** `stake_back_ev()` and
+`stake_back_band()` in `ff_boost`. They return the components, not one
+number, because the refund is essentially the whole edge — at +900 the
+raw bet is about -$2.81 and the refund +$6.03 — and burying that hides
+where the money comes from. Quote the band, never a point, and state the
+hold and v you used.
 
 ## Backtesting — `ff_backtest.py`, and what it can and cannot answer
 

@@ -190,6 +190,27 @@ MODES = ("cross-game", "single-game")
 # pull — instead of hardcoding it. Filed as B59; this is the stopgap.
 OPENING_LIQUIDITY = 500
 
+# The range of correlation factors (sgp_price_decimal / independent_decimal)
+# ever observed, for ESTIMATING an unpriced slip's quote. Both ends measured
+# at BetMGM on event 87238:
+#   2026-11-05 early, receiving-YARDS slips:     0.81, 0.83, 0.84, 0.86
+#   2026-11-05 later, receptions / mixed O-U:    0.87, 0.91, 0.98, 0.99
+# The first pass hardcoded 0.81-0.86 into `token_note` from the first of
+# those two sittings, and hours later the second sitting put the true quote
+# 27-55 points outside it. That is B54/B59's stale-constant pattern one
+# layer up, committed the same day it was written down twice.
+#
+# **The spread is not noise — the factor depends on what the legs ARE.**
+# Yardage legs on one team share a play count and get haircut hard;
+# receptions and Over/Under mixes barely get haircut at all. So no single
+# range is right, and a tight one is worse than a wide one because it reads
+# as precision. This stays wide ON PURPOSE: it exists to say "price it",
+# not to answer the question.
+#
+# Widen it when a factor outside it is observed; never narrow it to the
+# last thing measured.
+OBSERVED_SGP_FACTORS = (0.81, 0.99)
+
 # A SEPARATE problem from an opening line, and the first version of this
 # module could not see it. `anchor_immature` tested fair_prob == 0.5 FIRST
 # and returned False otherwise, so it never reached the liquidity check —
@@ -674,14 +695,17 @@ class Candidate:
         if self.token_min_odds is None:
             return None
         if not self.priced:
-            est_lo = american(to_decimal(self.independent_odds) * 0.81)
-            est_hi = american(to_decimal(self.independent_odds) * 0.86)
+            lo, hi = OBSERVED_SGP_FACTORS
+            est_lo = american(to_decimal(self.independent_odds) * lo)
+            est_hi = american(to_decimal(self.independent_odds) * hi)
             return (f"token needs {self.token_min_odds:+.0f} and this slip "
                     f"is UNPRICED. Its product is "
-                    f"{self.independent_odds:+.0f}, which at the measured "
-                    f"0.81-0.86 correlation factors would quote roughly "
-                    f"{est_lo:+.0f} to {est_hi:+.0f} — an ESTIMATE, not a "
-                    f"price. Call price_sgp before relying on the token.")
+                    f"{self.independent_odds:+.0f}; across every correlation "
+                    f"factor yet observed ({lo:.2f}-{hi:.2f}) that quotes "
+                    f"anywhere from {est_lo:+.0f} to {est_hi:+.0f}. That "
+                    f"range is too wide to decide a token on, deliberately — "
+                    f"the factor depends on what the legs ARE, not just how "
+                    f"long they are. Call price_sgp.")
         if self.token_minimum:
             return (f"token minimum {self.token_min_odds:+.0f} cleared by "
                     f"the real quote {self.book_odds:+.0f} "
@@ -1031,8 +1055,8 @@ def price_candidate(cand: Candidate, *, book_odds: float,
 
 
 def stake_back_ev(odds: float, *, stake: float = 10.0,
-                  bonus_value: float = 0.70,
-                  market_hold: float = 0.22) -> dict:
+                  bonus_value: float = 0.65,
+                  market_hold: float = 0.39) -> dict:
     """EV of a STAKE-BACK token (bet reset / safety net / second chance).
 
     B56. These are not boosts and must not go through the boost path. A
@@ -1053,9 +1077,32 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
     the REFUND goes matters nearly as much as where the bet goes.
 
     `market_hold` backs out the true probability from the offered price the
-    same way `expected_roi` does. First TD is one of the highest-hold
-    markets on the board, so the 0.22 default is a guess at a wide
-    distribution — pass the real one where it is known and quote a range.
+    same way `expected_roi` does.
+
+    **Both defaults were wrong on first release and are now measured.** The
+    first pass used hold 0.22 and v 0.70, both guessed. Measured 2026-11-05
+    on BetMGM's First TD board for event 87238: booksum across its 23
+    selections was **1.3935, a 39.4% overround**, and that is a LOWER bound
+    — DraftKings listed 32 selections including No Touchdown Scorer at
+    54.9%. So 0.22 was roughly half the real number.
+
+    `v` was worse, because it was not just imprecise but unreachable.
+    Deriving it from that same board as `p_true * (d-1)` for a refund spent
+    back into it gives 0.65 at +900, 0.69 at +2800 and 0.71 at +6600 under
+    a 39.4% hold, falling to 0.58-0.64 at 55%. **v = 0.80 is not attainable
+    in this market at all**, so the original 0.60/0.70/0.80 band bracketed
+    the truth only at its bottom edge. Honest EV on a $10 token is **$2-4**,
+    not the $4-5 first quoted.
+
+    Two consequences worth stating, since they move the advice:
+
+    - **The gradient is nearly flat.** From +900 to +6600 — a 7x range of
+      odds — EV moves about $0.43, while the `v` assumption moves it ~$1.30
+      and the hold assumption ~$1.40. "Take the longest shot" is right, and
+      it is worth roughly a fifth of getting `v` right. Spend the care on
+      where the REFUND goes, not on reaching for a longer leg.
+    - Both numbers are one book, one market, one night. Re-measure the
+      booksum rather than inheriting 0.39 — D16.
 
     Returns the components rather than one number, because the headline is
     almost entirely the refund and that should be visible, not buried.
@@ -1071,17 +1118,21 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
 
 
 def stake_back_band(odds: float, *, stake: float = 10.0,
-                    market_hold: float = 0.22) -> dict:
+                    market_hold: float = 0.39) -> dict:
     """`stake_back_ev` across a pessimistic/central/optimistic bonus value.
 
     Never quote a stake-back token as one number. `bonus_value` is an
-    assumption, not a measurement, and the spread it produces is wide enough
-    to matter.
+    assumption, not a measurement, and it moves the answer about three times
+    as much as picking a longer leg does.
+
+    The 0.58/0.65/0.71 band is derived from a real First TD board rather
+    than guessed — see `stake_back_ev`. The first version used
+    0.60/0.70/0.80, whose top end this market cannot reach.
     """
     return {lab: stake_back_ev(odds, stake=stake, bonus_value=v,
                                market_hold=market_hold)
-            for lab, v in (("pessimistic", 0.60), ("central", 0.70),
-                           ("optimistic", 0.80))}
+            for lab, v in (("pessimistic", 0.58), ("central", 0.65),
+                           ("optimistic", 0.71))}
 
 
 # ---------------------------------------------------------------------------

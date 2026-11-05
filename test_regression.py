@@ -1865,7 +1865,7 @@ chk("a first-name variant is NOT silently merged",
 # ---------------------------------------------------------------------------
 section("35d. a token's minimum applies to the PRICE, not the product (B55)")
 from dataclasses import replace
-from ff_boost import stake_back_ev, stake_back_band
+from ff_boost import stake_back_ev, stake_back_band, OBSERVED_SGP_FACTORS
 # A boost token's "minimum total odds" is checked by the book against the
 # correlated SGP quote, which is always below the product of the legs.
 # Measured at BetMGM on event 87238, 2026-11-05: product +516 -> quote +400
@@ -1880,9 +1880,20 @@ chk("an unpriced slip returns UNKNOWN, never a pass",
     _b55.token_minimum is None and not _b55.priced)
 chk("and says so loudly rather than implying it is fine",
     "UNPRICED" in (_b55.token_note or ""), str(_b55.token_note)[:70])
-chk("the unpriced note gives an estimate RANGE, labelled as an estimate",
-    "ESTIMATE" in (_b55.token_note or "")
-    and "+364" in (_b55.token_note or "") or "+37" in (_b55.token_note or ""))
+# The first version hardcoded 0.81-0.86 into this note from ONE sitting of
+# receiving-yards slips. Hours later, receptions and Over/Under mixes quoted
+# at factors 0.87-0.99 and put the real price 27-55 points outside the
+# printed range — B54/B59's stale-constant pattern one layer up, committed
+# the same day it was documented twice. The range is now deliberately WIDE,
+# because the factor depends on what the legs ARE, not how long they are.
+chk("the unpriced note spans every factor yet observed",
+    all(f"{x:.2f}" in (_b55.token_note or "") for x in OBSERVED_SGP_FACTORS),
+    str(_b55.token_note)[-90:])
+chk("and tells you to price it rather than decide on the estimate",
+    "price_sgp" in (_b55.token_note or ""))
+chk("the observed-factor range is kept wide on purpose",
+    OBSERVED_SGP_FACTORS[1] - OBSERVED_SGP_FACTORS[0] >= 0.15,
+    f"{OBSERVED_SGP_FACTORS} — narrowing this to the last measurement is the bug")
 # The case the bug produced: product clears, price does not.
 _void = price_candidate(_b55, book_odds=360.0)
 chk("a product that clears but a price that does not VOIDS the token",
@@ -1912,18 +1923,35 @@ chk("value RISES as win probability falls — the opposite of a boost",
         for a, b in zip([-150, 100, 400, 900], [100, 400, 900, 1500])),
     ", ".join(f'{o:+}:{d["ev"]:+.2f}' for o, d in _sb.items()))
 chk("the refund is the whole story, not a rounding adjustment",
-    _sb[900]["refund_ev"] > 3 * abs(_sb[900]["base_ev"]),
+    _sb[900]["refund_ev"] > 2 * abs(_sb[900]["base_ev"]),
     f'base {_sb[900]["base_ev"]:+.2f} vs refund {_sb[900]["refund_ev"]:+.2f}')
+# Measured 2026-11-05 on BetMGM's First TD board: 39.4% overround, and the
+# derived bonus value tops out near 0.71 — v=0.80 is not reachable here.
+# The defaults encode that rather than the 0.22/0.70 originally guessed.
+chk("the defaults are the measured ones, not the guessed ones",
+    abs(stake_back_ev(900)["market_hold"] - 0.39) < 1e-9
+    and abs(stake_back_ev(900)["bonus_value"] - 0.65) < 1e-9)
+# THE REFRAME: picking a longer leg is worth about a fifth of getting the
+# bonus value right, so that is where the care belongs.
+_flat = stake_back_ev(6600)["ev"] - stake_back_ev(900)["ev"]
+_vswing = (stake_back_ev(2800, bonus_value=0.71)["ev"]
+           - stake_back_ev(2800, bonus_value=0.58)["ev"])
+chk("the odds gradient is real but much smaller than the v assumption",
+    0 < _flat < _vswing / 2,
+    f"7x odds buys ${_flat:+.2f}; the v band moves ${_vswing:+.2f}")
 chk("the raw bet underneath is still negative — the token is the edge",
     all(d["base_ev"] < 0 for d in _sb.values()))
 chk("components are returned, not just a total",
     {"base_ev", "refund_ev", "ev", "roi", "p_true"} <= set(_sb[900]))
 # bonus_value is an assumption and the spread is wide enough to matter.
 _band = stake_back_band(900)
-chk("the band is ordered and genuinely wide",
+chk("the band is ordered and wide enough to change the decision",
     _band["pessimistic"]["ev"] < _band["central"]["ev"] < _band["optimistic"]["ev"]
-    and _band["optimistic"]["ev"] - _band["pessimistic"]["ev"] > 1.5,
+    and _band["optimistic"]["ev"] - _band["pessimistic"]["ev"] > 1.0,
     f'{_band["pessimistic"]["ev"]:+.2f} to {_band["optimistic"]["ev"]:+.2f}')
+chk("the band's top is reachable in a real First TD market",
+    stake_back_band(900)["optimistic"]["bonus_value"] <= 0.71,
+    "v=0.80 was in the first version and this market cannot reach it")
 chk("a worthless bonus bet collapses it to the raw bet",
     abs(stake_back_ev(900, bonus_value=0.0)["ev"]
         - stake_back_ev(900)["base_ev"]) < 1e-9)
