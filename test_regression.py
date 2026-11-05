@@ -1718,6 +1718,33 @@ chk("cross-game has no correlated pairs", s.pairs == [], str(s.pairs))
 s = classify(SAME_INDEP, META)
 chk("same-team WR x WR is NOT correlated (measured +0.00)",
     s.kind == "same-game-independent", s.kind)
+# The receiving side has THREE pairs, not two. `_pair_r` asked only "is it a
+# TE?", so every RB catching passes was scored at the WR value of +0.31 —
+# Derrick Henry receiving beside Lawrence passing at double its real
+# correlation. Measured 2026-11-05: QB passing x RB receiving is +0.157
+# against +0.243 for WR on the same filter, a ratio of 0.65.
+from ff_boost import _pair_r as _pr, SAME_TEAM_CORR as _STC, \
+    SAME_TEAM_CORR_PROVISIONAL as _STP
+def _rleg(name, market, pos):
+    _l = ff_boost.BoostLeg(event_id="E1", book="dk", market=market, player=name,
+                           side="over", odds=-110, fair_prob=0.5,
+                           fair_source="pinnacle", devig_method="shin", line=1.5)
+    _l.team, _l.pos = "JAX", pos
+    return _l
+_qb = _rleg("QB A", "player_pass_yds", "QB")
+for _pos, _want in (("WR", _STC[("QB", "WR")]), ("TE", _STC[("QB", "TE")]),
+                    ("RB", _STP[("QB", "RB_RECV")])):
+    _r, _why = _pr(_qb, _rleg(f"{_pos} A", "player_reception_yds", _pos))
+    chk(f"QB passing x {_pos} receiving uses its own value, not the WR one",
+        abs(_r - _want) < 1e-9, f"{_r:+.3f} ({_why})")
+chk("an RB RECEIVING is no longer scored as a WR",
+    _pr(_qb, _rleg("RB A", "player_reception_yds", "RB"))[0]
+    < _STC[("QB", "WR")])
+chk("and RB RUSHING is untouched — a different pair entirely",
+    abs(_pr(_qb, _rleg("RB A", "player_rush_yds", "RB"))[0]
+        - _STC[("QB", "RB")]) < 1e-9)
+chk("the provisional value is flagged as provisional where it is reported",
+    "PROVISIONAL" in _pr(_qb, _rleg("RB A", "player_reception_yds", "RB"))[1])
 chk("same-game-independent is priceable", s.priceable is True)
 
 s = classify(SAME_STACK, META)

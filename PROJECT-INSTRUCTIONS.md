@@ -1427,6 +1427,26 @@ team (+0.00 over 2,970 pairs), TE x WR same team (+0.02), WR x WR opposing
 (+0.02), and every RB/WR/TE cross-team combination. Same-team receivers do not
 stack: target competition cancels out team volume.
 
+**A back CATCHING passes is a third receiving pair, not the WR one.** The
+`QB x RB` row above is QB passing x RB RUSHING. Until 2026-11-05 the code
+asked only whether the receiving player was a TE, so **every RB with a
+receiving prop was scored at the WR value of +0.31** — Derrick Henry
+receiving yards beside Lawrence passing at double its real correlation.
+Measured on nflverse 2025-26: QB passing x RB receiving is **+0.157**
+(n=2,154) against +0.243 for WR receiving on that same filter, a ratio of
+**0.65**. The shipped constant is that ratio applied to the documented
++0.31, giving **+0.20**, and is marked PROVISIONAL: the documented table's
+own filter could not be recovered (E3), so a raw level from a different
+filter would sit on a different scale from its neighbours, while a ratio
+measured within one filter transfers. E3 should replace it with a directly
+measured value.
+
+**Magnitude does not decide priceability.** `classify()` refuses an EV if
+ANY pair is non-zero, so +0.31 and +0.20 both make a slip unpriceable. These
+numbers reach the explanation text and the comparison against the book's own
+`correlation_factor` — which is the comparison the next paragraph tells you
+to make, and the reason the level still has to be right.
+
 **Do NOT limit slips to QB-stack shapes.** All-WR slips, cross-team slips,
 opposing-position slips are all fine and mostly independent. Build whatever the
 legs justify.

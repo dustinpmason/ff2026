@@ -361,6 +361,34 @@ THIN_ANCHOR_LIQUIDITY = 25
 SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 
+# ("QB","RB") above is QB PASSING x RB RUSHING. A back catching passes is a
+# different pair and the code used to miss it: `_pair_r` asked only whether
+# the receiving player was a TE, so **an RB with a receiving prop was scored
+# at the WR value of +0.31**. Derrick Henry receiving yards beside Lawrence
+# passing got double its real correlation.
+#
+# Measured 2026-11-05 on nflverse 2025-26, games>=4 and no volume gate:
+# QB passing x RB receiving is **+0.157 (n=2,154)**, against +0.243 for WR
+# receiving and +0.230 for TE on that same filter. RB receiving is about
+# **0.65x** the WR figure.
+#
+# The value below is that RATIO applied to the documented +0.31, not the
+# raw +0.157, and that choice needs stating. The documented table was built
+# on a filter nobody recorded and which this sweep could not recover (E3),
+# so a raw number from a different filter would sit on a different scale
+# from its neighbours — the inconsistency E3 exists to fix. A ratio
+# measured WITHIN one filter transfers across scales far better than a
+# level does. It is still a derived number, so it is marked provisional and
+# E3 should overwrite it with a directly measured value on one documented
+# filter.
+#
+# Low stakes either way, and worth knowing why: magnitude does not decide
+# priceability. `classify()` marks a slip unpriceable if ANY pair is
+# non-zero, so +0.31 and +0.20 both refuse an EV. This number only reaches
+# the explanation text and the comparison against the book's own
+# correlation_factor, which the instructions tell a session to make.
+SAME_TEAM_CORR_PROVISIONAL = {("QB", "RB_RECV"): 0.20}
+
 # The measured table was built on YARDS — QB passing, RB rushing, WR/TE
 # receiving. So the side of a pair is decided by the MARKET being bet, not
 # by the player's roster label.
@@ -654,9 +682,18 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
         # WR vs TE only refines the magnitude; default to the larger one.
         if {sa, sb} == {"PASS", "RECV"}:
             pos = (a.pos if sa == "RECV" else b.pos) or ""
-            r = SAME_TEAM_CORR[("QB", "TE")] if pos.upper() == "TE" \
-                else SAME_TEAM_CORR[("QB", "WR")]
-            return r, f"same team passing x receiving ({pos or 'receiver'})"
+            # Three receiving pairs, not two. Asking only "is it a TE?" sent
+            # every RB catching passes to the WR value — see the note on
+            # SAME_TEAM_CORR_PROVISIONAL.
+            up = pos.upper()
+            if up == "TE":
+                r, lbl = SAME_TEAM_CORR[("QB", "TE")], "TE"
+            elif up == "RB":
+                r, lbl = (SAME_TEAM_CORR_PROVISIONAL[("QB", "RB_RECV")],
+                          "RB receiving — PROVISIONAL, see E3")
+            else:
+                r, lbl = SAME_TEAM_CORR[("QB", "WR")], pos or "receiver"
+            return r, f"same team passing x receiving ({lbl})"
         if {sa, sb} == {"PASS", "RUSH"}:
             return SAME_TEAM_CORR[("QB", "RB")], "same team passing x rushing"
         return 0.0, ""

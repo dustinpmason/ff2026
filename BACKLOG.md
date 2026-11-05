@@ -363,7 +363,7 @@ and at intake, and `ev_pct` was byte-identical across `correlation_factor`
 | **B66** | Test records are structurally indistinguishable from real ones | **OPEN** | Verified 2026-11-05: all eight trashed logs are test data, and the claim holds — but it holds **because a human wrote "delete me" in prose**, not because the record says so. Two of the eight use real players at plausible prices: Tyreek Hill reception yards 54.5 OVER at -115, $10; and Travis Kelce anytime TD at +270 with `fair_p: 0.248` and a 30% boost — which is the worked example straight out of PROJECT-INSTRUCTIONS, reused as a fixture. On player, market, price, stake and boost alone both are indistinguishable from a bet Dustin would actually place. **Only the free-text `note` marks them, and nothing validates, greps or reasons about `note`.** A future fixture that omits it pollutes the history silently, and CLV grading would run on it. Fix: a first-class `test: true` field set by the logging call, excluded from `_bets()`/`live_recs()` by default and reported separately — so the distinction lives in the schema rather than in prose. Also open from B65: an unparseable download still counts toward "N log file(s) pulled", so "pulled and empty" and "pulled and unreadable" read alike, and the per-line JSON warning re-prints on every `_read_all()` call (three times per `status()`). |
 | **F9** | Touchdown-scorer workflow — first TD and anytime TD off short prompts | **DONE 2026-11-05** | `ff_props.devig_field()` plus a named workflow section in PROJECT-INSTRUCTIONS, so "who do you like for the first TD" and "top 8 anytime TD and probability" have one path instead of being assembled from four sections. 8 checks. **The two markets are structurally different and must not share a method:** `player_1st_td` has exactly one winner so the field de-vigs to 1; `player_anytime_td` does NOT — several players score, so its prices sum to the expected NUMBER of scorers, and normalising them to 1 would divide every probability by roughly three while looking entirely plausible. That is refused. **Second refusal, found on live data:** a first-TD field with no no-scorer outcome is INCOMPLETE. Event 87238: DraftKings 32 outcomes including "No Touchdown Scorer" (+6000) and both D/STs, booksum **1.5535**; BetMGM 23 with neither, booksum **1.4109**; the nine DK had and BetMGM lacked sum to **0.1788**, almost the whole gap. So BetMGM's leaner market is a SHORTER FIELD, and de-vigging it inflates every player ~10% in the flattering direction — **never compare two books' overround without checking the outcome count.** Also measured: on that 55%-overround field Shin puts the longest shot (+11000) at **0.22% against 0.58% proportional**, a factor of 2.6, while the favourite rises 12.87% -> 15.17%. This is a MARKET workflow only — the threshold model abstains on low-event binary stats (B32) and F4, the best TD predictor, is unbuilt, so the section says to report de-vigged market probability and best price, never a model opinion. |
 | **F10** | TD edge from ROLE CHANGE, not from a better level estimate | **OPEN — the version of F4 worth building** | F4's measurement says we cannot out-predict a book on a player's TD LEVEL: the best feature reaches AUC 0.66 and the market prices team totals and game script better than this project can. But the project's one demonstrated signal is CHANGE, not level — `role_trend` caught Jeanty COLLAPSED (touch share 0.364 -> 0.185) and Juwan Johnson COLLAPSED (0.104 -> 0.042) while season averages still looked fine, and a sim built on those averages still liked Jeanty. **The edge hypothesis is that a book reprices a role change more slowly than the play-by-play reveals it** — a backup who has taken over goal-line work for two weeks, priced off a season of being the backup. That is a DIFFERENT claim from "our number beats their number" and it is testable: join `role_trend` output to the market's de-vigged anytime-TD probability and measure whether flagged players outperform their implied rate. **Needs historical TD odds** (propline_get_odds_closing / get_odds_history) and real outcomes, so it is a measurement task before it is a build task. Do not build the suggester until the join is measured — that is exactly the F2 mistake, which was reframed from "build the backtest" to "measure the hold" once the data could not support the original question. |
-| **F13** | The correlation table covers only three markets, so most slips are UNPRICEABLE | **OPEN — the single biggest blocker for both modes** | `MARKET_SIDE` maps exactly `player_pass_yds`, `player_rush_yds`, `player_reception_yds`. Every other market in a same-event slip returns `(None, why)` from `_pair_r` and the slip classifies UNPRICEABLE with no EV — correctly, since independence there would be an assumption. But that means **receptions, anytime TD, pass TDs, longest reception, rush attempts and everything else cannot appear in a priced same-game slip at all.** Dustin named receptions explicitly ("JSN over 5 receptions"), and a 2026-11-05 run confirmed a receptions slip classifies same-game-correlated/unpriceable for this reason. The existing table came from a pooled measurement over 43,228 same-game pairs, z-scored per player; extending it is the same job on more markets, not a new method. **Measure before building anything that depends on it** — and note the existing finding that "everything else is ~0.00" was itself a measurement, so the honest default for a NEW market is unmeasured, not zero. Cross-game pairs are unaffected: different events are independent whatever the markets. |
+| **F13** | The correlation table covers only three markets, so most slips are UNPRICEABLE | **OPEN — BLOCKED BY E3, established 2026-11-05** | `MARKET_SIDE` maps exactly `player_pass_yds`, `player_rush_yds`, `player_reception_yds`. Every other market in a same-event slip returns `(None, why)` from `_pair_r` and the slip classifies UNPRICEABLE with no EV — correctly, since independence there would be an assumption. But that means **receptions, anytime TD, pass TDs, longest reception, rush attempts and everything else cannot appear in a priced same-game slip at all.** Dustin named receptions explicitly ("JSN over 5 receptions"), and a 2026-11-05 run confirmed a receptions slip classifies same-game-correlated/unpriceable for this reason. The existing table came from a pooled measurement over 43,228 same-game pairs, z-scored per player; extending it is the same job on more markets — **but the existing table cannot be reproduced, so there is no baseline to extend consistently.** A filter sweep on 2026-11-05 put every documented value inside its plausible range without landing on any of them, and showed the estimates swing up to 2.4x on an undocumented filter choice. New entries measured on MY filter would sit on a different scale from the existing four, making the table internally inconsistent. **Do E3 first.** Early reading from that sweep, for when it is unblocked: receptions behaves as a RECV-side market as expected — QB passing x WR receptions same team +0.199 against +0.243 for receiving yards — so the likely outcome is extra MARKET_SIDE entries rather than a new table shape. **Measure before building anything that depends on it** — and note the existing finding that "everything else is ~0.00" was itself a measurement, so the honest default for a NEW market is unmeasured, not zero. Cross-game pairs are unaffected: different events are independent whatever the markets. |
 | **F11** | Enumeration is not token-aware: it builds to the PROJECT band, not to the promo. **Design settled 2026-11-05.** | **OPEN — build after F13** | `enumerate_candidates(floor=300, ceiling=600, legs_per_slip=3)` filters on this project's band and builds 3-leg slips only. A token has its own **minimum total odds, minimum legs, maximum stake and eligible bet type**, and those decide whether it attaches. B55 added `token_min_odds` but it is checked AFTER pricing a candidate the enumerator chose for unrelated reasons — nothing builds TOWARD the token, and a 4-leg token cannot be served at all because `legs_per_slip` is a fixed int. **DESIGN:** take a token spec (pct, max_stake, min_odds, min_legs, eligible type, event restriction); enumerate leg counts `min_legs` to `min_legs + 1` ONLY, because vig compounds per leg and there is no reason to go further; **deliberately OVERSHOOT the product and then price**, targeting roughly `min_odds / 0.80`, because B61 showed the correlation factor runs 0.77-0.99 and depends on product length and composition, so the product needed to clear a minimum CANNOT be computed — only the real `price_sgp` quote is what the book checks; rank locally before spending pricing calls by fewest legs, then worst leg quality, then true joint; price the top 8; report which cleared, each EV against the token, and `token_note` for any that voided. **"Push the odds higher" is dropped from scope** at Dustin's call — target the minimum, do not reach past it. Thin pool until F13 lands: with `MARKET_SIDE` covering three yards markets, any slip containing receptions or a TD leg is unpriceable, so the enumerator would be choosing from a fraction of the board. |
 | **F14** | No single-leg Q&A path — "do you like CMC over 50 rushing yards?" | **OPEN — cheapest item on this list** | Every part exists and nothing joins them: `get_odds` for the price at his book, an unfiltered `get_event_ev(devig="shin")` for the fair line, `prop_edge()` for the gap, `boost_verdict()`/`role_trend()`/`decline_onset()` for the veto pass, `anchor_coverage()` for whether the anchor is real. A session assembles that from five sections each time, so the answer shape varies run to run. Same gap the TD workflow (F9) just closed, and the same fix: one named section naming the tool order and the output shape. **The output must be allowed to be "the market says X, the model abstains"** — B32 means the threshold model has nothing to say on low-event binaries, and F4's falsification means it should not claim to beat a price on level either. |
 | **F15** | No path for "what do you think about THIS parlay?" | **OPEN** | Dustin assembles slips himself from watching games and wants a sanity check. Needs free text ("JSN over 5 receptions, CMC over 50 rush") resolved to real lines at a real book, then `classify()` + `price_sgp` + the veto pass. **The resolution step is the fragile part and should be built defensively:** it is the B44 name join (Brian Thomas Jr. vs Brian Thomas) and D18 line-grid mismatch (his book at 46.5 where the anchor is at 47.5) in one step, and a 2026-11-05 run dropped 17 of 41 quotes at that join. A leg that cannot be resolved must be refused by name, never snapped to the nearest line. Blocked in practice by F13 for most interesting slips. |
@@ -400,6 +400,7 @@ one is broken. The decision is **leg quality, not leg count**, and
 
 **Rule: use the fewest legs that reach the minimum, unless dropping to that
 many forces a leg you would veto.**
+| **B67** | An RB with a RECEIVING prop was scored at the WR correlation | **DONE 2026-11-05** | `_pair_r` resolved a same-team `{PASS, RECV}` pair by asking only whether the receiving player was a TE, so every other position — including a running back catching passes — took `SAME_TEAM_CORR[("QB","WR")] = +0.31`. The `("QB","RB")` entry is QB passing x RB RUSHING and never applied. Measured on nflverse 2025-26: QB passing x RB receiving is **+0.157 (n=2,154)** against +0.243 for WR receiving on the same filter — a ratio of 0.65, so the live value was roughly **2x** too high. Fixed with three branches on the receiving side. **The value shipped is the RATIO applied to the documented +0.31, giving +0.20, not the raw +0.157**, because the documented table's filter is unrecoverable (E3) and a raw level from a different filter would sit on a different scale from its neighbours, while a ratio measured within one filter transfers. Marked `SAME_TEAM_CORR_PROVISIONAL` and E3 should overwrite it with a direct measurement. **Low operational stakes, stated so nobody over-reads the fix:** magnitude does not decide priceability — `classify()` refuses an EV on any non-zero pair — so this reaches the explanation text and the comparison against the book's own `correlation_factor`, not what is bettable. 6 checks. |
 
 ### BetMGM SGP hold — first reading, 2026-11-04/05. NOT a replacement for SGP_HOLD_*
 
@@ -1049,15 +1050,56 @@ for `grade_clv`. Columns: date, event_id, sport, market, selection, side,
 point, price_taken, bookmaker, stake, ref. Must be written the moment a bet is
 placed.
 
-## E3. The correlation table is not reproducible
+## E3. The correlation table is not reproducible — AND IT IS FILTER-SENSITIVE
 
-**Value: MEDIUM. Effort: ~30 min.** The 43,228-pair correlation map lives only
-as constants in `ff_guillotine.SAME_TEAM_CORR` and in the instructions. The
-script that produced it was ad-hoc and is gone, so it cannot be refreshed as
-the season adds data — and these estimates will tighten considerably by Week 14.
+**Value: HIGH, raised 2026-11-05. Effort: ~45 min. Blocks F13.** The
+43,228-pair correlation map lives only as constants in
+`ff_guillotine.SAME_TEAM_CORR` and in the instructions. The script that
+produced it was ad-hoc and is gone, so it cannot be refreshed as the season
+adds data.
 
-**Fix:** a `ff_correlation.py` that recomputes the table from the pool and
-prints it, so the constants can be updated with one command.
+**Measured 2026-11-05 while scoping F13: the documented values cannot be
+reproduced, and the reason matters more than the fact.** Rebuilding the pool
+from nflverse 2025-26 and sweeping the two obvious filters — minimum games
+for a player's z-score baseline, and a minimum per-game volume to count a
+game at all — gives:
+
+| filter | pairs | QBxWR | QBxTE | RBxRB opp | QBxRB |
+|---|---|---|---|---|---|
+| **documented** | **43,228** | **+0.31** (2217) | **+0.27** (1203) | **-0.14** (1395) | **-0.10** (1353) |
+| games>=4, no vol | 78,040 | +0.24 (3643) | +0.23 (1896) | -0.07 (2802) | -0.08 (2308) |
+| games>=6, no vol | 65,569 | +0.26 (2945) | +0.26 (1500) | -0.09 (2298) | -0.09 (1798) |
+| games>=4, vol>=5 | 12,997 | +0.37 (1047) | +0.46 (392) | -0.17 (778) | -0.10 (1083) |
+| games>=6, vol>=5 | 9,575 | +0.37 (791) | +0.50 (250) | -0.18 (639) | -0.10 (904) |
+| games>=8, vol>=5 | 6,806 | +0.36 (551) | +0.50 (185) | -0.19 (491) | -0.10 (720) |
+
+**The documented numbers are PLAUSIBLE — every one sits inside the range the
+sweep produces — but none of these filters lands on them**, and the
+documented pair count (43,228) sits between two of them. So the table is not
+wrong; its method is simply unrecoverable.
+
+**The real finding is the sensitivity.** QB x TE runs from **+0.21 to +0.50**
+across reasonable filter choices, a 2.4x swing on an undocumented decision.
+RB x RB opposing runs -0.07 to -0.19. These are not small differences: the
+instructions tell a session to compare the book's `correlation_factor`
+against this table, and a factor that looks fair against +0.27 looks like a
+steal against +0.50.
+
+**Fix, revised:** a `ff_correlation.py` that (a) recomputes the WHOLE table
+on one explicitly documented filter, existing four entries included, so the
+table is internally consistent; (b) prints the filter alongside the values;
+(c) reports a pair count and an interval per entry, not a bare point
+estimate. **Expect the shipped constants to change** — that is the point,
+and it is a live behaviour change that needs Dustin's sign-off, because
+`_pair_r` feeds `classify()` and therefore whether a slip gets an EV at all.
+
+**Also found, independent of the above and live today:** `_pair_r` maps a
+`{PASS, RECV}` same-team pair to `SAME_TEAM_CORR[("QB","WR")] = +0.31`
+unless the receiving player's position is literally TE. **An RB with a
+receiving prop therefore gets +0.31.** Measured: QB passing yards x RB
+receiving yards, same team, is **+0.157** (n=2,154) — overstated roughly 2x.
+The table has three position pairs on the receiving side and the code
+distinguishes only TE from not-TE.
 
 ## E5. Opponent lineups assume optimal play
 
