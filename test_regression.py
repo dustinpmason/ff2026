@@ -919,6 +919,47 @@ chk("a suspended market does not count as live to anchor",
                             {"suspended_at": None,
                              "outcomes": [{"name": "Over"}, {"name": "Under"}]}] * 9}]}
                     ).healthy)
+# B62, AND IT IS THE WORST OF THE THREE. The "a book below it anchored"
+# condition — added to kill the lower-priority false positive — opened a
+# hole underneath itself: when NOTHING anchors, no book has anything below
+# it, so nothing flags and `healthy` returns True. That is this fault at
+# its loudest, and it is reason 6 of the `lines: []` ambiguity — the case
+# the instructions say ONLY a paired get_odds control can diagnose. The
+# control said healthy. Observed live 2026-11-05 03:00-03:03.
+_blank = anchor_coverage({"lines": []},
+                         _mk_odds({"pinnacle": 14, "kalshi": 19}))
+chk("an EV with NO anchors beside a live chain book is not healthy",
+    not _blank.healthy and _blank.blank,
+    _blank.describe()[:80])
+chk("the blank case names itself rather than listing a per-book dropout",
+    "NOTHING ANCHORED AT ALL" in _blank.describe()
+    and _blank.silent_dropouts == ["pinnacle"])
+chk("an empty EV with NO chain book live is NOT flagged — that is no market",
+    anchor_coverage({"lines": []}, _mk_odds({"draftkings": 9})).healthy)
+# B63. min_markets=3 counted market ENTRIES, which mean different things per
+# book: Pinnacle 14 (one per player), Bovada 30 (alternates separate),
+# Kalshi's whole anytime-TD board 1. Measured live: on player_pass_yds
+# Pinnacle carries TWO two-sided lines, because a game has two QBs, and
+# anchored 0 of 30 — the detector said "no silent dropouts" in the same
+# minute it correctly flagged three other markets.
+_qb = {"bookmakers": [{"key": "pinnacle", "markets": [{
+    "key": "player_pass_yds", "suspended_at": None, "outcomes": [
+        {"name": "Over", "description": "Joe Fagnano", "point": 160.5},
+        {"name": "Under", "description": "Joe Fagnano", "point": 160.5},
+        {"name": "Over", "description": "Trevor Lawrence", "point": 237.5},
+        {"name": "Under", "description": "Trevor Lawrence", "point": 237.5}]}]}]}
+chk("a two-QB market is still big enough to flag a dropout",
+    not anchor_coverage(_mk_ev({"kalshi": 17, "bovada": 13}), _qb).healthy,
+    "pass yards can never carry 3 markets — size is the wrong gate")
+# Lines, not entries: one market entry holding many players is many lines.
+_collapsed = {"bookmakers": [{"key": "kalshi", "markets": [{
+    "key": "player_anytime_td", "suspended_at": None, "outcomes": [
+        o for i in range(22) for o in
+        ({"name": "Yes", "description": f"P{i}", "point": None},
+         {"name": "No", "description": f"P{i}", "point": None})]}]}]}
+chk("a collapsed Yes/No board counts its real lines, not its one entry",
+    anchor_coverage({"lines": []}, _collapsed).live == {"kalshi": 22},
+    "B64: Kalshi's whole TD board arrives as a single market entry")
 chk("a one-sided board does not count as live to anchor",
     anchor_coverage(_mk_ev({"kalshi": 10}),
                     {"bookmakers": [

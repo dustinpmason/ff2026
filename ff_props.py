@@ -1300,47 +1300,77 @@ ANCHOR_CHAIN = ("pinnacle", "polymarket", "kalshi", "bovada", "smarkets")
 class AnchorCoverage:
     """Which books ANCHORED, against which were live enough to anchor."""
     anchored: dict                      # {book: lines it anchored}
-    live: dict                          # {book: two-sided markets it carries}
+    live: dict                          # {book: two-sided LINES it carries}
     silent_dropouts: list               # live to anchor, anchored nothing
     total_lines: int = 0
+    blank: bool = False                 # nothing anchored at all (B62)
+    eligible: list = field(default_factory=list)   # chain books live enough
 
     @property
     def healthy(self) -> bool:
-        return not self.silent_dropouts
+        return not self.silent_dropouts and not self.blank
 
     def describe(self) -> str:
         a = ", ".join(f"{b} {n}" for b, n in
                       sorted(self.anchored.items(), key=lambda kv: -kv[1])) or "none"
         L = [f"anchored {self.total_lines} line(s): {a}"]
-        if self.silent_dropouts:
-            for b in self.silent_dropouts:
-                L.append(
-                    f"  *** {b} ANCHORED NOTHING while carrying "
-                    f"{self.live[b]} two-sided market(s) in the SAME pull — "
-                    f"B60. This is not an empty response and nothing in the "
-                    f"EV payload says it happened. Every line that would "
-                    f"have anchored on {b} fell through to a softer source. "
-                    f"Do not quote an EV from this pull without saying so.")
-        else:
+        if self.blank:
+            L.append(
+                f"  *** NOTHING ANCHORED AT ALL, while "
+                f"{', '.join(f'{b} carries {self.live[b]}' for b in self.eligible)} "
+                f"two-sided line(s) in the SAME pull — B60 at its loudest. "
+                f"An empty or anchorless EV response next to a live anchor "
+                f"feed is the one case the EV payload cannot diagnose on its "
+                f"own. There is no fair line here: do not quote an EV, and "
+                f"do not read this as 'no market'.")
+        for b in (self.silent_dropouts if not self.blank else []):
+            L.append(
+                f"  *** {b} ANCHORED NOTHING while carrying "
+                f"{self.live[b]} two-sided line(s) in the SAME pull — "
+                f"B60. This is not an empty response and nothing in the "
+                f"EV payload says it happened. Every line that would "
+                f"have anchored on {b} fell through to a softer source. "
+                f"Do not quote an EV from this pull without saying so.")
+        if self.healthy:
             L.append("  no silent dropouts: every book live to anchor did")
         return "\n".join(L)
 
 
-def _two_sided_markets(bookmaker: dict) -> int:
-    """Markets carrying BOTH sides and not suspended — i.e. anchorable."""
-    n = 0
+def _two_sided_lines(bookmaker: dict) -> int:
+    """Distinct two-sided, unsuspended LINES a book carries — anchorable.
+
+    B63. This counted market ENTRIES and that is not comparable across
+    books. On one reception-yards pull Pinnacle showed 14 entries (one per
+    player, main only) while Bovada showed 30 (alternates are separate
+    entries), and Kalshi's entire anytime-TD Yes/No board — 44 outcomes —
+    arrived as a SINGLE entry. A threshold applied to that number means a
+    different thing at every book.
+
+    A (player, point) pair carrying both sides is the same unit everywhere,
+    so that is what gets counted. This also fixes most of B64: Kalshi's
+    collapsed TD board resolves to its real line count instead of 1.
+
+    A one-sided board contributes nothing, which is correct rather than a
+    gap — a book quoting only "Yes" cannot be de-vigged and so cannot
+    anchor. That is reason 4 of the `lines: []` ambiguity, not a dropout.
+    """
+    lines = set()
     for mk in bookmaker.get("markets") or []:
         if mk.get("suspended_at") is not None:
             continue
-        sides = {str(oc.get("name") or "").strip().lower()
-                 for oc in mk.get("outcomes") or []}
-        if sides & OVER_NAMES and sides & UNDER_NAMES:
-            n += 1
-    return n
+        sides: dict = {}
+        for oc in mk.get("outcomes") or []:
+            key = (oc.get("description"), oc.get("point"))
+            sides.setdefault(key, set()).add(
+                str(oc.get("name") or "").strip().lower())
+        for key, s in sides.items():
+            if s & OVER_NAMES and s & UNDER_NAMES:
+                lines.add((mk.get("key"), key))
+    return len(lines)
 
 
 def anchor_coverage(ev_response: dict, odds_response: dict,
-                    *, min_markets: int = 3) -> AnchorCoverage:
+                    *, min_lines: int = 1) -> AnchorCoverage:
     """Catch B60: an anchor book silently missing from a populated EV response.
 
     `get_event_ev` drops an anchor book while that book's odds feed stays
@@ -1360,10 +1390,21 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     payloads side by side, which is what this does.
 
     Pass the EV response and a `get_odds` pull **from the same moment**, on
-    the same market. A book flags only when all three hold: it is in
-    `ANCHOR_CHAIN`, it carries at least `min_markets` two-sided unsuspended
-    markets, and it anchored zero lines while a book BELOW it in the chain
-    anchored some.
+    the same market. A book flags when it is in `ANCHOR_CHAIN`, carries at
+    least `min_lines` two-sided unsuspended lines, and anchored zero while
+    a book BELOW it in the chain anchored some — or when NOTHING anchored
+    at all, which is handled separately as `blank` (B62).
+
+    `min_lines` defaults to 1, not 3. A threshold of 3 hid a confirmed
+    dropout on `player_pass_yds`, where Pinnacle carries exactly two
+    two-sided lines because a game has two quarterbacks: it anchored 0 of
+    30 and the detector said "no silent dropouts" in the same minute it
+    correctly flagged three other markets. A market can be legitimately
+    small, so size is the wrong gate; the "anchored zero while a lower book
+    anchored" condition does the real filtering. The residual risk of a
+    threshold of 1 is flagging a D18 grid mismatch as a dropout, and that
+    trade is deliberate — a false flag costs a check, a missed dropout
+    costs a silently wrong EV.
 
     All three conditions came from a live pull disproving a simpler rule.
     The first version flagged any live book that anchored nothing, and
@@ -1372,12 +1413,20 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     book anchoring zero is correct rather than suspicious: it means the
     books above it covered every line.
 
-    **Known limitation: this catches a TOTAL dropout, not a partial one.**
-    Pinnacle anchoring 5 of 5 and Pinnacle anchoring 2 of 5 both pass. The
-    partial case needs a per-line join of EV against odds on (player,
-    point), which is the fragile part of this codebase — B44 and D18 both
-    live there — so it is deliberately not attempted here. The observed B60
-    events were total (0 of 154, 0 of 22), which is what this detects.
+    **Partial dropouts are still not detected, and measurement says that
+    matters less than it sounds.** Seven market-level observations across a
+    live dropout-and-recovery cycle were every one 0% or 100%: Pinnacle
+    anchored 0 of 14, 0 of 14, 0 of 5, 0 of 2 while dropped, then 14 of 14,
+    14 of 14, 5 of 5 once recovered. Its anchoring is binary. The partial
+    case would need a per-line join on (player, point), which is where B44
+    and D18 live, and a fragile join inside a detector is a detector you
+    cannot trust. One event, one night, one book — it does not rule partials
+    out in general.
+
+    **Only the TOP available chain book's count is interpretable.** Bovada
+    anchoring 21 of 30 anchorable lines is not a partial dropout; Kalshi
+    sits above it and took the rest. Reading a lower book's count as a
+    dropout is an easy mistake and this function does not make it.
 
     This reports rather than raises. The dropout is upstream and the right
     response is usually to say so and re-pull, not to abort — but an EV
@@ -1392,7 +1441,7 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     live: dict = {}
     for bk in odds_response.get("bookmakers") or []:
         key = bk.get("key") or bk.get("title")
-        n = _two_sided_markets(bk)
+        n = _two_sided_lines(bk)
         if n:
             live[key] = n
 
@@ -1401,14 +1450,29 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     # books above it covered everything. The dropout signature is the
     # reverse: a book anchored zero while live, and books BELOW it in the
     # chain picked up the work that should have been its.
+    #
+    # B62. That "books below anchored" condition — added to kill a false
+    # positive — opened a hole underneath it: when NOTHING anchors at all,
+    # no book has anything below it, so nothing flags and `healthy` comes
+    # back True. That is the loudest possible version of this fault, and it
+    # is exactly reason 6 of the `lines: []` ambiguity, the case the
+    # instructions say only a paired `get_odds` control can diagnose. The
+    # control reported it healthy. So a total blank is handled first and
+    # separately, rather than falling through the per-book loop.
+    eligible = [b for b in ANCHOR_CHAIN if live.get(b, 0) >= min_lines]
+    blank = bool(eligible) and not anchored
     dropouts = []
-    for i, book in enumerate(ANCHOR_CHAIN):
-        if anchored.get(book) or live.get(book, 0) < min_markets:
-            continue
-        if any(anchored.get(b) for b in ANCHOR_CHAIN[i + 1:]):
-            dropouts.append(book)
+    if blank:
+        dropouts = [eligible[0]]
+    else:
+        for i, book in enumerate(ANCHOR_CHAIN):
+            if anchored.get(book) or live.get(book, 0) < min_lines:
+                continue
+            if any(anchored.get(b) for b in ANCHOR_CHAIN[i + 1:]):
+                dropouts.append(book)
     return AnchorCoverage(anchored=anchored, live=live,
-                          silent_dropouts=dropouts,
+                          silent_dropouts=dropouts, blank=blank,
+                          eligible=eligible,
                           total_lines=len(ev_response.get("lines") or []))
 
 

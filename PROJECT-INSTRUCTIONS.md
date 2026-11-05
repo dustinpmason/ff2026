@@ -555,18 +555,36 @@ And `anchor_opening` / `anchor_thin` key on liquidity, which
 same moment and names any book that anchored nothing while live. Say the
 counts out loud in any write-up that quotes an EV.
 
-It flags a book only when all three hold: it is in `ANCHOR_CHAIN`
-(pinnacle, polymarket, kalshi, bovada, smarkets — **nothing else can ever
-anchor**, so a live DraftKings anchoring nothing means nothing), it
-carries 3+ two-sided unsuspended markets, and a book BELOW it in the
-chain anchored instead. The chain is tried in order per line, so a
-lower-priority book anchoring zero is correct — the books above it
-covered everything.
+It flags a book in `ANCHOR_CHAIN` (pinnacle, polymarket, kalshi, bovada,
+smarkets — **nothing else can ever anchor**, so a live DraftKings
+anchoring nothing means nothing) that carries two-sided unsuspended lines
+and anchored zero while a book BELOW it in the chain anchored instead.
+The chain is tried in order per line, so a lower-priority book anchoring
+zero is correct — the books above it covered everything. **Only the TOP
+available chain book's count is interpretable:** bovada anchoring 21 of
+30 is kalshi taking the rest, not a dropout.
 
-**It catches a TOTAL dropout, not a partial one.** Pinnacle anchoring 5
-of 5 and 2 of 5 both pass. The partial case needs a per-line join on
-(player, point), which is where B44 and D18 live, so it is deliberately
-not attempted. Every observed B60 event was total — 0 of 154, 0 of 22.
+**`blank` is the separate, louder case:** nothing anchored at all while a
+chain book was live. Read that as "there is no fair line here", never as
+"no market".
+
+**Validated in both directions on a live dropout, 2026-11-05.** At 05:48Z
+it flagged Pinnacle on four markets while a paired control showed
+Pinnacle live with varied prices; six of Pinnacle's exact (player, point)
+lines appeared in the EV anchored on bovada or kalshi instead, and eight
+were **absent from the response entirely** — a dropout can remove lines,
+not just re-anchor them. At 05:59Z the same call reported healthy with
+Pinnacle at 14 of 14. The dropout lasted 10-30 minutes and ended on its
+own.
+
+**Partial dropouts were measured and did not occur:** seven market-level
+observations across that cycle were every one 0% or 100%. Pinnacle's
+anchoring is binary, so partials matter less than first assumed — one
+event, one night, one book, so not ruled out in general.
+
+**Still uncovered:** polymarket carries no NFL props and smarkets is not
+in the NFL book list at all, so two of five chain entries have never been
+exercised live.
 
 On the 00:30 run this left **34 of 48 legs `anchor_immature`** — 30
 Bovada at exactly 0.5000 with null liquidity, 4 thin Kalshi. **There was
