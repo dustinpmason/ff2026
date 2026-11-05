@@ -334,3 +334,13 @@ reality.
     leg on the board for a role EXPANSION that argued FOR the side being
     bet. Same shape as lesson 6, but inverted: not a plausible number
     instead of an error — a plausible REASON instead of a measurement.
+18. **Two copies of a rule, and the newer one was written without the
+    rule.** B80's direction test existed in `price_edge` — with a comment
+    saying blanket-blocking "was wrong" — while `boost_verdict`, written
+    later, restated the same reasoning minus the test and vetoed
+    everything. Lesson 7 said a constant copied into two files is one bug
+    with two homes; this is the same thing for LOGIC, and it is harder to
+    grep for because the copy does not look like the original. **When
+    adding a guard, grep for the concept, not the identifier** — and when
+    two call sites need the same decision, give it one home rather than a
+    comment promising they match.

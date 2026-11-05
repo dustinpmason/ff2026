@@ -2552,6 +2552,108 @@ chk("an unpriceable slip says so in the report",
 chk("the report never prints a P(cash) for a correlated slip",
     "P(cash)" not in txt or "—" in txt)
 
+section("42. the role-change veto measures the direction it claims (B80)")
+# It used to veto on ANY role change and then assert "it runs against
+# {side}" without checking. Live on the TNF board, Justice Hill was the
+# best-priced leg and was dropped for an EXPANSION (targets 2.2 -> 6.0)
+# that SUPPORTS the Over being bet. `price_edge` had this right 150 lines
+# up; boost_verdict restated the reasoning without the direction test, so
+# the same file carried the fix and the un-fixed copy. 488 checks passed
+# over the blanket veto, so nothing pinned it.
+#
+# Six states, enumerated rather than branch-counted: COLLAPSED/EXPANDED x
+# OVER/UNDER, plus no-side, plus the soft GAME_SCRIPT flag.
+# ---------------------------------------------------------------------------
+from dataclasses import replace as _replace
+_ut = lambda verdict, base, rec: ff_props.UsageTrend(
+    column="targets", window=3, recent=rec, baseline=base,
+    ratio=(rec / base if base else 1.0), verdict=verdict,
+    per_opportunity=0.0, expected_now=0.0, share_baseline=0.20,
+    share_recent=0.20 * (rec / base if base else 1.0),
+    share_ratio=(rec / base if base else 1.0), team_volume_ratio=1.0,
+    has_share=True)
+# Hill's real numbers: targets 2.2 -> 6.0, an expansion.
+_HILL = _ut("EXPANDED", 2.2, 6.0)
+_COLL = _ut("COLLAPSED", 6.0, 2.2)
+_est_x = _replace(_e2, usage=_HILL)
+_est_c = _replace(_e2, usage=_COLL)
+chk("the fixture really is flagged as a role change",
+    _est_x.role_changed and _est_c.role_changed)
+
+# The direction test has ONE home now. It was two copies and the second had
+# been written without the test at all, so a check that it has not been
+# re-inlined earns its place here.
+chk("EXPANDED supports an OVER", _HILL.supports("OVER") is True)
+chk("EXPANDED opposes an UNDER", _HILL.supports("UNDER") is False)
+chk("COLLAPSED supports an UNDER", _COLL.supports("UNDER") is True)
+chk("COLLAPSED opposes an OVER", _COLL.supports("OVER") is False)
+chk("an unknown side returns None, not a guess",
+    _HILL.supports(None) is None and _HILL.supports("THIS SIDE") is None)
+chk("an unflagged trend has no direction to support",
+    _ut("STABLE", 5.0, 5.0).supports("OVER") is None
+    and _ut("GAME_SCRIPT", 6.0, 4.0).supports("OVER") is None)
+_psrc = pathlib.Path(ff_props.__file__).read_text()
+chk("the direction test is not re-inlined anywhere (B80)",
+    _psrc.count('self.verdict == "COLLAPSED"') == 1
+    and _psrc.count('self.verdict == "EXPANDED"') == 1
+    and 'u.verdict == "COLLAPSED"' not in _psrc,
+    f"COLLAPSED x{_psrc.count('verdict == ' + chr(34) + 'COLLAPSED' + chr(34))}")
+
+for _u, _side, _want, _lbl in (
+        (_HILL, "OVER", "CAUTION", "EXPANDED + OVER (the Hill case)"),
+        (_HILL, "UNDER", "VETO", "EXPANDED + UNDER"),
+        (_COLL, "UNDER", "CAUTION", "COLLAPSED + UNDER"),
+        (_COLL, "OVER", "VETO", "COLLAPSED + OVER")):
+    _v4, _r4 = boost_verdict(_replace(_e2, usage=_u),
+                             _replace(_ed2, side=_side),
+                             screen_quotes(_cleanq))
+    chk(f"{_lbl} -> {_want}", _v4 == _want, f"got {_v4}: {_r4}")
+
+# The message must not assert a direction it did not measure.
+_v5, _r5 = boost_verdict(_est_x, _replace(_ed2, side="OVER"),
+                         screen_quotes(_cleanq))
+chk("a supportive change says SUPPORTS, not 'runs against'",
+    any("SUPPORTS THIS SIDE" in x for x in _r5)
+    and not any("against" in x.lower() for x in _r5), str(_r5))
+chk("and it still warns the magnitude is unreliable",
+    any("magnitude is unreliable" in x for x in _r5), str(_r5))
+_v6, _r6 = boost_verdict(_est_x, _replace(_ed2, side="UNDER"),
+                         screen_quotes(_cleanq))
+chk("an opposing change names the side it runs against",
+    any("AGAINST THE UNDER" in x for x in _r6), str(_r6))
+
+# No edge means no side, so the direction is UNKNOWABLE. Refusing is right;
+# claiming a direction is not.
+_v7, _r7 = boost_verdict(_est_x, None, screen_quotes(_cleanq))
+chk("no edge supplied -> VETO, but for the missing side", _v7 == "VETO"
+    and any("DIRECTION UNKNOWN" in x for x in _r7), f"{_v7}: {_r7}")
+chk("and it does not name a side it was never given",
+    not any("against the OVER" in x or "against the UNDER" in x
+            for x in _r7), str(_r7))
+
+# A CAUTION leg must actually REACH a slip, or this fix changes nothing.
+# enumerate_candidates drops VETO (ff_boost:1187) and only annotates
+# CAUTION (ff_boost:1090) — pin that, because the whole point of the fix is
+# admission, not wording.
+_cau = leg("WR C1", EV2, verdict="CAUTION")
+_sl2 = enumerate_candidates([leg("WR A1", EV1), _cau, leg("WR E1", EV3)],
+                            META, boost_pct=0.50, mode="cross-game")
+chk("a CAUTION leg is admitted to a slip, not dropped",
+    any(_cau.player in [l.player for l in cc.legs]
+        for cc in _sl2.candidates), str(_sl2.dropped))
+chk("and the candidate carries the caution as a note",
+    any(any(_cau.player in n for n in cc.notes)
+        for cc in _sl2.candidates
+        if _cau.player in [l.player for l in cc.legs]),
+    str([cc.notes for cc in _sl2.candidates]))
+
+# GAME_SCRIPT is the softer flag and must stay CAUTION, not get pulled into
+# the directional branch.
+_v8, _r8 = boost_verdict(_replace(_e2, usage=_ut("GAME_SCRIPT", 6.0, 4.0)),
+                         _replace(_ed2, side="OVER"), screen_quotes(_cleanq))
+chk("a GAME_SCRIPT flag is still CAUTION and not directional",
+    _v8 == "CAUTION" and any("game script" in x for x in _r8), f"{_v8}: {_r8}")
+
 section("41. a refusal reachable by OMITTING an argument (B70-B73)")
 # Every finding in this section came from an independent review of a diff
 # that had already passed 464 checks. The shared shape: the suite tested the

@@ -432,6 +432,28 @@ class UsageTrend:
         reverts more readily than a depth-chart position does."""
         return self.verdict in ("COLLAPSED", "EXPANDED")
 
+    def supports(self, side: str | None) -> bool | None:
+        """Does this role change run WITH the side being bet, or against it?
+
+        The model is built on the old role, so a COLLAPSE means it overstates
+        the player — which makes the true UNDER probability higher than the
+        model says, supporting an under and refusing an over. An EXPANSION is
+        the same logic reversed.
+
+        Returns None when `side` is unknown, because the direction is then
+        unknowable and a caller must not guess. **B80: this lived as a
+        duplicated two-line expression in `price_edge` and `boost_verdict`,
+        and the second copy had been written WITHOUT the direction test at
+        all** — it vetoed every role change and asserted the direction in
+        prose. It cost the best-priced leg on a live board, a Justice Hill
+        over whose targets had gone 2.2 -> 6.0, an EXPANSION that supported
+        the bet. One home, so the two readings cannot drift again.
+        """
+        if side not in ("OVER", "UNDER") or not self.flagged:
+            return None
+        return ((self.verdict == "COLLAPSED" and side == "UNDER")
+                or (self.verdict == "EXPANDED" and side == "OVER"))
+
     @property
     def soft_flagged(self) -> bool:
         return self.verdict == "GAME_SCRIPT"
@@ -1020,8 +1042,7 @@ def prop_edge(est: Estimate,
         #   EXPANDED  + UNDER  -> refuse.
         # Blanket-blocking both sides was wrong and would have refused a
         # genuinely attractive under on a player whose targets had halved.
-        supported = ((u.verdict == "COLLAPSED" and side == "UNDER")
-                     or (u.verdict == "EXPANDED" and side == "OVER"))
+        supported = u.supports(side)
         if not supported:
             return Edge(side=side, model_p=model_p, fair_p=fair_p, edge=edge,
                         ev_per_dollar=ev, hold=hold, kelly=0.0, tier="PASS",
@@ -1156,10 +1177,52 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
 
     if est.role_changed:
         u = est.usage
-        side = edge.side if edge is not None else "this side"
-        veto(f"ROLE CHANGE — {u.column} {u.baseline:.1f} -> {u.recent:.1f} "
-             f"(share {u.share_ratio:.0%}). The sample describes a role this "
-             f"player no longer has, and it runs against {side}.")
+        side = edge.side if edge is not None else None
+        # B80. This used to veto on ANY role change and then assert "it runs
+        # against {side}" in the message WITHOUT EVER CHECKING THE
+        # DIRECTION. Measured live 2026-11-05: Justice Hill was the
+        # best-priced leg on the TNF board (ev_pct -0.23%) and was vetoed
+        # because his targets went 2.2 -> 6.0 — an EXPANSION, which supports
+        # the Over being bet — while the message claimed the opposite. He
+        # was swapped out for a worse leg.
+        #
+        # `price_edge` already had this right, 150 lines up, with a comment
+        # saying blanket-blocking both sides "was wrong and would have
+        # refused a genuinely attractive under on a player whose targets had
+        # halved". So the same file held the fix and an un-fixed restatement
+        # of the same reasoning — B68's shape applied to logic instead of a
+        # constant. The expression below is deliberately IDENTICAL to
+        # price_edge's, so the two cannot drift.
+        #
+        # `flagged` is exactly verdict in (COLLAPSED, EXPANDED), so these
+        # two cases are exhaustive for anything reaching here.
+        supported = u.supports(side)
+        if side is None:
+            # No edge means no side, so the direction cannot be determined.
+            # Refusing is right, but the REASON has to be the missing side
+            # rather than a direction nobody measured.
+            veto(f"ROLE CHANGE, DIRECTION UNKNOWN — {u.column} "
+                 f"{u.baseline:.1f} -> {u.recent:.1f} ({u.verdict}, share "
+                 f"{u.share_ratio:.0%}). No edge was supplied, so there is "
+                 f"no side to compare the change against. Pass the Edge to "
+                 f"get a directional read.")
+        elif supported:
+            # Still not CLEAR: the direction helps, the magnitude is not
+            # trustworthy. Matches price_edge, which costs a supportive
+            # role change one tier rather than rewarding it.
+            caution(f"ROLE CHANGE SUPPORTS THIS SIDE — {u.column} "
+                    f"{u.baseline:.1f} -> {u.recent:.1f} ({u.verdict}, share "
+                    f"{u.share_ratio:.0%}). The model is built on the old "
+                    f"role, so it UNDERSTATES the {side} — the leg is "
+                    f"playable and the true edge is likely larger than "
+                    f"shown, but the magnitude is unreliable, so do not size "
+                    f"up on it.")
+        else:
+            veto(f"ROLE CHANGE AGAINST THE {side} — {u.column} "
+                 f"{u.baseline:.1f} -> {u.recent:.1f} ({u.verdict}, share "
+                 f"{u.share_ratio:.0%}). The sample describes a role this "
+                 f"player no longer has, and the staleness runs in the "
+                 f"direction of the {side}.")
     elif est.usage is not None and est.usage.soft_flagged:
         u = est.usage
         caution(f"team volume at {u.team_volume_ratio:.0%} but share held at "

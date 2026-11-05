@@ -944,6 +944,27 @@ disagreed with a sharp line (Waller, Lloyd) — and both were role changes,
 which is the one thing it genuinely sees. A CLEAR verdict means nothing was
 found against the leg. It is not an endorsement.
 
+**A role change is DIRECTIONAL and no longer vetoes both sides (B80, fixed
+2026-11-05).** Until today `boost_verdict` vetoed every role change and the
+message asserted "it runs against <side>" without checking — which cost a
+real leg on the TNF board: Justice Hill was the best-priced option and was
+dropped because his targets went **2.2 → 6.0**, an EXPANSION that *supports*
+an Over. What you will see now:
+
+- **COLLAPSED + UNDER**, or **EXPANDED + OVER** → **CAUTION**, not VETO. The
+  model is built on the old role, so it UNDERSTATES that side. The leg is
+  **playable** and reaches the slip with a note. Do not size up on it — the
+  direction is informative, the magnitude is not.
+- **COLLAPSED + OVER**, or **EXPANDED + UNDER** → **VETO**, naming the side
+  it runs against.
+- **No edge supplied** → VETO for the **missing side**, not for a direction
+  nobody measured. Pass the `Edge` to get a directional read.
+
+So **a CAUTION on a role-change leg is not a soft veto** — report it as
+playable with the caveat, and say which way the change leans. If you see a
+VETO, quote the side it runs against; the message now names it because it
+actually checked.
+
 The boost objective is cashing, not edge: ≥3 legs at ≥+300 for a fixed $10,
 and the legs are largely dictated by what the boost covers and what the books
 offer. So the useful question is which legs are quietly broken — the collapsed
