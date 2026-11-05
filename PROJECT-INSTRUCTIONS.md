@@ -101,6 +101,8 @@ The sandbox is destroyed between conversations, so the durable copy lives in
 import ff_betlog as bl
 bl.write_pulled("ff-betlog-20261030T171557Z.jsonl", text)
 bl.record_pull(live_names, trashed_names)   # even when both are empty
+# and if EITHER query raised instead of returning:
+#   bl.record_pull(error="what went wrong")
 print(bl.status())
 ```
 
@@ -121,6 +123,22 @@ line cannot distinguish *nobody pulled* from *the pull found nothing*,
 and those are opposite situations — B39's UNSCREENED lesson, one module
 over. **Never upload while the pull state is UNKNOWN**: an upload then
 can orphan records nobody has read.
+
+**If a query ERRORS, record that, never an empty pull.** A failed query
+recorded as `record_pull([], [])` used to print exactly what a genuinely
+empty folder prints — the most reassuring output the function has,
+reachable from a broken query. `record_pull(error=...)` exists for this
+and says the contents are UNKNOWN. The clean case now states "both
+queries returned successfully" out loud, so an absent warning is a claim
+someone made rather than a silence you have to interpret.
+
+**Filenames go in as a LIST.** `record_pull("one-name.jsonl")` raised
+nothing and reported **32 live file(s)** — `sorted()` counted the
+characters. It now raises TypeError.
+
+**History is read only from `ff-betlog-*.jsonl`.** Anything else in the
+log directory is named in a warning and skipped, including a real log
+saved under the wrong extension — which previously vanished in silence.
 
 **Query by `parentId`, not by title.** `title contains 'ff-betlog-'` returns
 the **folder** `ff-betlog` — Drive's `contains` matches token prefixes, not

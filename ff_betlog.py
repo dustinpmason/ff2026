@@ -96,7 +96,24 @@ def _read_all() -> list[dict]:
     out: list[dict] = []
     # Pulled history first, this session's records last, so a correction
     # logged now lands after the record it corrects.
-    paths = sorted(p for p in LOG_DIR.glob("*.jsonl") if p != SESSION)
+    paths = sorted(p for p in LOG_DIR.glob(f"{DRIVE_PREFIX}*.jsonl")
+                   if p != SESSION)
+    # DRIVE_PREFIX was defined and never enforced here: this globbed
+    # `*.jsonl`, so any stray .jsonl in LOG_DIR was ingested AS HISTORY,
+    # and — the dangerous half — a real log saved under any other
+    # extension was silently skipped. A `.txt` log carrying a $500 bet
+    # read as no history at all, with no warning, which is the exact
+    # shape B58 exists to prevent. Anything in LOG_DIR that looks like a
+    # log but will not be read must say so rather than vanish.
+    strays = sorted(p.name for p in LOG_DIR.iterdir()
+                    if p.is_file() and p != SESSION and p != PULL_MARKER
+                    and p not in paths
+                    and (p.suffix in {".jsonl", ".json", ".txt"}
+                         or p.name.startswith(DRIVE_PREFIX)))
+    for name in strays:
+        print(f"  WARNING: {name} is in the log directory but will NOT be "
+              f"read — history is only loaded from {DRIVE_PREFIX}*.jsonl. "
+              f"If this is a real log, rename it.")
     if SESSION.exists():
         paths.append(SESSION)
     for path in paths:
@@ -299,7 +316,8 @@ def write_pulled(name: str, text: str) -> Path:
 PULL_MARKER = LOG_DIR / "_pull.json"
 
 
-def record_pull(live: list, trashed: list | None = None) -> str:
+def record_pull(live: list | None = None, trashed: list | None = None,
+                *, error: str | None = None) -> str:
     """Record that a Drive pull HAPPENED, and what it saw. B58.
 
     Call this once per session, straight after querying Drive, with the
@@ -326,11 +344,36 @@ def record_pull(live: list, trashed: list | None = None) -> str:
     pull that cannot see the trash reports an empty folder either way.
     """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    rec = {"at": _now(), "live": sorted(live or []),
+    live = _namelist(live, "live")
+    trashed = None if trashed is None else _namelist(trashed, "trashed")
+    rec = {"at": _now(), "live": sorted(live),
            "trashed": sorted(trashed or []),
-           "trash_checked": trashed is not None}
+           "trash_checked": trashed is not None,
+           "error": str(error) if error else None}
     PULL_MARKER.write_text(json.dumps(rec, indent=2))
     return pull_state()
+
+
+def _namelist(v, what: str) -> list:
+    """Filenames must arrive as a LIST. A string is not one filename.
+
+    `sorted("ff-betlog-....jsonl")` returns 32 characters and
+    `record_pull` happily reported "32 live file(s)" — a confident,
+    plausible, WRONG count from a caller who passed one name instead of a
+    list of one. A dict reports its key count. Only an int ever raised.
+    That is this project's signature failure (B24, B28, B37): a plausible
+    number instead of an error. It inflates the apparent history, which
+    is the flattering direction — it makes the log look better pulled
+    than it was.
+    """
+    if v is None:
+        return []
+    if isinstance(v, (str, bytes)) or not isinstance(v, (list, tuple, set)):
+        raise TypeError(
+            f"record_pull({what}=...) needs a list of filenames, got "
+            f"{type(v).__name__}. One filename is ['name.jsonl'], not "
+            f"'name.jsonl' — a bare string counts its characters as files.")
+    return [str(x) for x in v]
 
 
 def pull_state() -> str:
@@ -342,8 +385,24 @@ def pull_state() -> str:
                 "upload now can orphan records nobody has seen.")
     try:
         rec = json.loads(PULL_MARKER.read_text())
-    except (ValueError, OSError) as e:
-        return f"*** pull marker unreadable ({e}) — treat history as UNKNOWN"
+        if not isinstance(rec, dict) or not rec.get("at"):
+            raise ValueError("marker is not a completed pull record")
+    except (ValueError, TypeError, AttributeError, OSError) as e:
+        # Widened from (ValueError, OSError). A marker of `[]` is valid
+        # JSON of the wrong shape and raised AttributeError straight out
+        # of `rec.get`, taking down the whole of status() rather than one
+        # line of it. And a marker of `{}` — a half-written file — used to
+        # print "Drive pull at None: 0 live file(s)", presenting a
+        # truncated write as a successfully recorded pull of an empty
+        # folder. The `at: None` was the only tell and nothing read it.
+        return (f"*** pull marker unusable ({e}) — treat history as "
+                f"UNKNOWN and pull again before uploading")
+    if rec.get("error"):
+        return (f"*** THE DRIVE QUERY FAILED at {rec['at']}: "
+                f"{rec['error']}. The folder's contents are UNKNOWN. This "
+                f"is NOT an empty folder — do not log or upload against "
+                f"it, because an upload now can orphan records nobody has "
+                f"seen.")
     live, trashed = rec.get("live", []), rec.get("trashed", [])
     L = [f"Drive pull at {rec.get('at')}: {len(live)} live file(s)"]
     if not rec.get("trash_checked"):
@@ -358,6 +417,18 @@ def pull_state() -> str:
             L.append("    *** every log in this folder is in the trash. Do "
                      "NOT treat this as a fresh start — read them before "
                      "uploading, or the history is orphaned.")
+    elif not live:
+        # The clean-and-empty case used to print this line ALONE, with no
+        # second line at all — the most reassuring output this function
+        # can produce, and byte-identical to what a session gets if its
+        # query ERRORED and it recorded `record_pull([], [])` anyway. B58
+        # closed "nobody pulled" vs "the pull found nothing" and left "the
+        # pull failed" sitting in the same hole, one notch along. So the
+        # quiet case now states its claim out loud instead of being
+        # silent: silence is what an unasked question looks like.
+        L.append("    both queries returned successfully and the folder is "
+                 "genuinely empty — if either query errored, that is "
+                 "record_pull(error=...), not this.")
     return "\n".join(L)
 
 

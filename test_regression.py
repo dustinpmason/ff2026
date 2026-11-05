@@ -360,14 +360,69 @@ _ps = ff_betlog.pull_state()
 chk("a live file alongside trashed ones reports both, warns on neither",
     "1 live file(s)" in _ps and "1 TRASHED" in _ps
     and "fresh start" not in _ps)
-chk("a genuinely empty folder, trash checked, is quiet",
-    ff_betlog.record_pull([], []).count("\n") == 0)
+# This check used to assert the clean case was QUIET — one line, no
+# warning. That was the wrong property to want. Silence is also what a
+# FAILED query looks like when a session records it as an empty pull, so
+# "quiet" made the most reassuring output reachable from a broken one.
+# The clean case now states its claim; the assertion below replaced it.
+chk("a genuinely empty folder states its claim rather than staying silent",
+    "both queries returned successfully" in ff_betlog.record_pull([], []))
 chk("status() surfaces the pull state, not just the file count",
     "Drive pull at" in ff_betlog.status())
 ff_betlog.PULL_MARKER.write_text("{not json")
 chk("an unreadable marker is UNKNOWN, never silently fine",
     "UNKNOWN" in ff_betlog.pull_state())
+# Valid JSON of the WRONG SHAPE used to raise AttributeError out of
+# `rec.get`, taking down all of status() rather than one line; and `{}` —
+# a half-written marker — printed "Drive pull at None: 0 live file(s)",
+# presenting a truncated write as a successfully recorded empty pull.
+for _bad in ("[]", "{}", '"a string"', "null"):
+    ff_betlog.PULL_MARKER.write_text(_bad)
+    chk(f"a marker of {_bad} is UNKNOWN, not a crash and not a clean pull",
+        "UNKNOWN" in ff_betlog.pull_state())
+# A string is not a list of one filename. sorted() iterates it into
+# characters and record_pull reported "32 live file(s)" — a confident,
+# plausible, wrong count, inflating the apparent history. Project
+# signature (B24/B28/B37): a plausible number instead of an error.
+for _bad_arg in ("ff-betlog-x.jsonl", {"a": 1, "b": 2}, 7):
+    try:
+        ff_betlog.record_pull(_bad_arg, [])
+        _raised = False
+    except TypeError:
+        _raised = True
+    chk(f"record_pull refuses {type(_bad_arg).__name__} instead of counting it",
+        _raised)
+# THE ONE THAT MATTERS MOST. A failed Drive query recorded as an empty
+# pull was byte-identical to a genuinely empty checked folder — and was
+# the ONLY state printing no warning at all, so the most reassuring
+# output the function can produce was reachable from a broken query.
+# B58 closed "nobody pulled" vs "the pull found nothing" and left "the
+# pull FAILED" in the same hole one notch along.
+ff_betlog.record_pull(error="HTTP 503 from search_files")
+chk("a failed query is UNKNOWN, and says it is not an empty folder",
+    "THE DRIVE QUERY FAILED" in ff_betlog.pull_state()
+    and "NOT an empty folder" in ff_betlog.pull_state())
+_clean = ff_betlog.record_pull([], [])
+chk("and a genuinely empty folder makes its claim out loud, not by silence",
+    "both queries returned successfully" in _clean
+    and "THE DRIVE QUERY FAILED" not in _clean,
+    "silence is what an unasked question looks like")
 ff_betlog.PULL_MARKER.unlink()
+# DRIVE_PREFIX was defined and never enforced on the read path: _read_all
+# globbed *.jsonl, so a stray file was ingested AS HISTORY while a real
+# log under another extension was silently skipped — a .txt log holding a
+# $500 bet read as no history, no warning.
+(ff_betlog.LOG_DIR / "random-notes.jsonl").write_text(
+    '{"id":"stray","kind":"bet","stake":500.0,"legs":[]}\n')
+(ff_betlog.LOG_DIR / f"{ff_betlog.DRIVE_PREFIX}20261101T000001Z.txt").write_text(
+    '{"id":"wrongext","kind":"bet","stake":500.0,"legs":[]}\n')
+_ids = {r.get("id") for r in ff_betlog._read_all()}
+chk("a stray .jsonl is not ingested as history", "stray" not in _ids)
+chk("a real-looking log under the wrong extension is NOT silently dropped",
+    "wrongext" not in _ids,
+    "it is named in a warning instead — silence is the failure here")
+(ff_betlog.LOG_DIR / "random-notes.jsonl").unlink()
+(ff_betlog.LOG_DIR / f"{ff_betlog.DRIVE_PREFIX}20261101T000001Z.txt").unlink()
 chk("empty log does not crash", "No bets logged" in ff_betlog.bet_summary())
 _legs = [Leg("A", "player_rush_yds", 50.5, "OVER", -110, "fanduel", fair_p=0.52),
          Leg("B", "player_pass_yds", 230.5, "OVER", -105, "fanduel", fair_p=0.50),
