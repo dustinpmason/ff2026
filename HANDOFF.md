@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "422 checks run, 422 passed, 0 failed"
+python3 test_regression.py        # expect: "429 checks run, 429 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md**, **PROJECT-INSTRUCTIONS.md** and **LEAGUE-CONFIG.md**
@@ -34,7 +34,7 @@ context.
 
 ## Current state
 
-- **422 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **429 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
@@ -116,8 +116,9 @@ assess a leg is not the leg being broken.
    before theorising — two hypotheses with different fixes are in its row.
    (B53 WITHDRAWN, the claim was wrong. B54, B55, B56 DONE.)
 3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
-   that works at a $10 stake. **First check B58** — the Drive log folder
-   returned zero files and nobody established why.
+   that works at a $10 stake. B58 is resolved: the log is intact, there is
+   simply no real history in it yet — every prior file was a throwaway
+   test. The first graded bet starts the record.
 4. Tiers 3–5 as listed in BACKLOG.md.
 
 **Two separate scarcity problems live near each other — do not merge them.**

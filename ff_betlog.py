@@ -296,6 +296,71 @@ def write_pulled(name: str, text: str) -> Path:
     return p
 
 
+PULL_MARKER = LOG_DIR / "_pull.json"
+
+
+def record_pull(live: list, trashed: list | None = None) -> str:
+    """Record that a Drive pull HAPPENED, and what it saw. B58.
+
+    Call this once per session, straight after querying Drive, with the
+    filenames the search returned — even when it returned none. Pass the
+    `trashed = true` query's results as `trashed`.
+
+    **Why this exists.** `sync_state()` reports "N log file(s) pulled from
+    Drive", which at N=0 cannot distinguish *nobody pulled* from *the pull
+    found nothing*. Those are opposite situations: the first means the
+    history is UNKNOWN and must not be written over, the second means
+    there is genuinely none. On 2026-11-04 a session read that line as the
+    second, concluded no prior log existed, and uploaded a fresh one. It
+    happened to be right — but it could not have known, and that is the
+    B39 UNSCREENED shape: an unchecked state must not look like a checked
+    one.
+
+    **Why `trashed` matters, measured.** Drive's search defaults to
+    `trashed = false`, so a `parentId` query returns nothing when every
+    file in the folder is in the trash. Checked 2026-11-05: that folder
+    held one live file and **eight trashed logs** the default query could
+    not see. Those eight were throwaway test records — "VERIFICATION
+    TEST", "THROWAWAY verification bet - delete", "ROUND-TRIP TEST" — so
+    no real history was lost. Next time it may not be test data, and a
+    pull that cannot see the trash reports an empty folder either way.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    rec = {"at": _now(), "live": sorted(live or []),
+           "trashed": sorted(trashed or []),
+           "trash_checked": trashed is not None}
+    PULL_MARKER.write_text(json.dumps(rec, indent=2))
+    return pull_state()
+
+
+def pull_state() -> str:
+    """What the Drive pull found — or that nobody looked. B58."""
+    if not PULL_MARKER.exists():
+        return ("*** NO DRIVE PULL RECORDED THIS SESSION. The history is "
+                "UNKNOWN, not empty. Query the folder and call "
+                "record_pull() before logging or uploading anything — an "
+                "upload now can orphan records nobody has seen.")
+    try:
+        rec = json.loads(PULL_MARKER.read_text())
+    except (ValueError, OSError) as e:
+        return f"*** pull marker unreadable ({e}) — treat history as UNKNOWN"
+    live, trashed = rec.get("live", []), rec.get("trashed", [])
+    L = [f"Drive pull at {rec.get('at')}: {len(live)} live file(s)"]
+    if not rec.get("trash_checked"):
+        L.append("    TRASH NOT CHECKED — Drive hides trashed files by "
+                 "default, so an empty result proves nothing. Re-query "
+                 "with `trashed = true`.")
+    elif trashed:
+        L.append(f"    {len(trashed)} TRASHED file(s) in the same folder: "
+                 f"{', '.join(trashed[:4])}"
+                 f"{' ...' if len(trashed) > 4 else ''}")
+        if not live:
+            L.append("    *** every log in this folder is in the trash. Do "
+                     "NOT treat this as a fresh start — read them before "
+                     "uploading, or the history is orphaned.")
+    return "\n".join(L)
+
+
 def sync_state() -> str:
     pulled = sorted(p.name for p in LOG_DIR.glob("*.jsonl")
                     if p != SESSION) if LOG_DIR.exists() else []
@@ -723,4 +788,5 @@ def status() -> str:
         f"logs in {LOG_DIR} (working copy — durable copy is in Drive)",
         f"  {len(bets)} bets, {len(recs)} engine verdicts",
         f"  {sync_state()}",
+        f"  {pull_state()}",
     ])

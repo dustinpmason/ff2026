@@ -332,7 +332,42 @@ import shutil, tempfile
 _tmp = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
 from ff_betlog import Leg
+
+# B58. `sync_state()` says "N log file(s) pulled from Drive", and at N=0
+# that cannot distinguish NOBODY PULLED from THE PULL FOUND NOTHING —
+# opposite situations, since the first means the history is unknown and
+# must not be written over. A 2026-11-04 session read it as the second,
+# concluded no prior log existed and uploaded a fresh one. It was right,
+# but it could not have known. B39's UNSCREENED shape, one module over.
+chk("with no pull recorded, the history is UNKNOWN — not empty",
+    "UNKNOWN" in ff_betlog.pull_state()
+    and "NO DRIVE PULL RECORDED" in ff_betlog.pull_state())
+# Drive's search defaults to `trashed = false`, so an empty result proves
+# nothing on its own. Checked live 2026-11-05: that folder held ONE live
+# file and EIGHT trashed logs the default query could not see.
+ff_betlog.record_pull([])
+chk("a pull that did not check the trash says so",
+    "TRASH NOT CHECKED" in ff_betlog.pull_state())
+ff_betlog.record_pull([], ["ff-betlog-20261030T172619Z.jsonl",
+                           "ff-betlog-20261102T151105Z.jsonl"])
+chk("zero live files beside trashed ones is not a fresh start",
+    "every log in this folder is in the trash" in ff_betlog.pull_state()
+    and "2 TRASHED" in ff_betlog.pull_state())
+ff_betlog.record_pull(["ff-betlog-20261104T213301Z.jsonl"], ["old.jsonl"])
+_ps = ff_betlog.pull_state()
+chk("a live file alongside trashed ones reports both, warns on neither",
+    "1 live file(s)" in _ps and "1 TRASHED" in _ps
+    and "fresh start" not in _ps)
+chk("a genuinely empty folder, trash checked, is quiet",
+    ff_betlog.record_pull([], []).count("\n") == 0)
+chk("status() surfaces the pull state, not just the file count",
+    "Drive pull at" in ff_betlog.status())
+ff_betlog.PULL_MARKER.write_text("{not json")
+chk("an unreadable marker is UNKNOWN, never silently fine",
+    "UNKNOWN" in ff_betlog.pull_state())
+ff_betlog.PULL_MARKER.unlink()
 chk("empty log does not crash", "No bets logged" in ff_betlog.bet_summary())
 _legs = [Leg("A", "player_rush_yds", 50.5, "OVER", -110, "fanduel", fair_p=0.52),
          Leg("B", "player_pass_yds", 230.5, "OVER", -105, "fanduel", fair_p=0.50),

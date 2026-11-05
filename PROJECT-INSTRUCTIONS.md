@@ -92,15 +92,35 @@ The sandbox is destroyed between conversations, so the durable copy lives in
 **Google Drive**, folder `ff-betlog`:
 `https://drive.google.com/drive/folders/1d3oQvz5rgHmvv9FTet8Bup65pXlLQgtS`
 
-**PULL — do this before any betting work:**
+**PULL — do this before any betting work. TWO queries, not one:**
 
 ```python
-# search_files: query "parentId = '1d3oQvz5rgHmvv9FTet8Bup65pXlLQgtS'"
-# then for each hit: download_file_content(fileId=...) and
+# 1. search_files: "parentId = '1d3oQvz5rgHmvv9FTet8Bup65pXlLQgtS'"
+# 2. search_files: "parentId = '...' and trashed = true"     <- REQUIRED
+# then for each live hit: download_file_content(fileId=...) and
 import ff_betlog as bl
 bl.write_pulled("ff-betlog-20261030T171557Z.jsonl", text)
+bl.record_pull(live_names, trashed_names)   # even when both are empty
 print(bl.status())
 ```
+
+**The trash query is not optional, and this is measured.** Drive's search
+defaults to `trashed = false`, so a `parentId` query returns nothing when
+every file in the folder is in the trash — identical output to an empty
+folder. Checked 2026-11-05: the folder held one live file and **eight
+trashed logs** the plain query could not see. Those eight were throwaway
+test records ("VERIFICATION TEST", "THROWAWAY verification bet - delete",
+"ROUND-TRIP TEST"), so nothing real was lost — but the query could not
+have told you that either way.
+
+**`record_pull()` is also not optional.** Without it `pull_state()` says
+NO DRIVE PULL RECORDED and the history is UNKNOWN rather than empty. On
+2026-11-04 a session read "0 log file(s) pulled from Drive" as proof no
+prior log existed and uploaded a fresh one. It was right, by luck. That
+line cannot distinguish *nobody pulled* from *the pull found nothing*,
+and those are opposite situations — B39's UNSCREENED lesson, one module
+over. **Never upload while the pull state is UNKNOWN**: an upload then
+can orphan records nobody has read.
 
 **Query by `parentId`, not by title.** `title contains 'ff-betlog-'` returns
 the **folder** `ff-betlog` — Drive's `contains` matches token prefixes, not
