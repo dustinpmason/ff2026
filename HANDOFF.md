@@ -119,7 +119,16 @@ assess a leg is not the leg being broken.
    that works at a $10 stake. B58 is resolved: the log is intact, there is
    simply no real history in it yet — every prior file was a throwaway
    test. The first graded bet starts the record.
-4. Tiers 3–5 as listed in BACKLOG.md.
+4. **The Mode A / Mode B build, once prioritised.** Dustin's stated vision,
+   2026-11-05: (A) hand the tool a boost token and get back the slip to
+   build for it; (B) conversational sanity checks on single legs and on
+   slips he assembled himself. Gaps filed as F11-F16. **F13 — the
+   correlation table covering only three yards markets — blocks both**, and
+   it is a measurement rather than a build. F14 (single-leg Q&A) is the
+   cheapest and most immediately useful. F11's design is settled; F12 and
+   F16 are blocked on B51 and P4. Nothing here is built. Prioritise before
+   writing code.
+5. Tiers 3–5 as listed in BACKLOG.md.
 
 **Two separate scarcity problems live near each other — do not merge them.**
 An earlier edit of this file did, and wrongly reported item 1 as blocked.
