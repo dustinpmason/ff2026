@@ -681,6 +681,101 @@ def american_to_decimal(odds: float) -> float:
     return 1 + (odds / 100.0 if odds > 0 else 100.0 / -odds)
 
 
+MUTUALLY_EXCLUSIVE_MARKETS = {"player_1st_td", "player_last_td",
+                              "team_first_td_scorer", "first_team_to_score"}
+
+NO_SCORER_NAMES = {"no touchdown scorer", "no td scorer", "no scorer",
+                   "none", "no touchdown"}
+
+
+def devig_field(prices: dict, *, method: str = "shin",
+                market: str | None = None,
+                require_complete: bool = True) -> dict:
+    """De-vig a whole MUTUALLY EXCLUSIVE field at once (first TD scorer).
+
+    `prices` is {outcome name: American odds}. Returns a dict with `fair`
+    ({name: probability}), `booksum`, `overround`, `n`, `z` and `method`.
+
+    **This is only valid where exactly one outcome can win.** First TD
+    scorer qualifies; anytime TD does NOT, and passing it is refused —
+    several players score in a game, so those prices sum to the expected
+    number of scorers, not to 1. Normalising them to 1 would divide every
+    probability by roughly three and look entirely plausible doing it. Use
+    the two-sided path for anytime TD: price from your book, fair
+    probability from an unfiltered `get_event_ev(devig="shin")`.
+
+    **An incomplete field is refused too, and this is the subtle one.**
+    Measured on event 87238, 2026-11-05: DraftKings listed 32 outcomes
+    including "No Touchdown Scorer" (+6000) and both D/STs, booksum
+    **1.5535**. BetMGM listed 23, with no No-Scorer and no defences,
+    booksum **1.4109**. The nine outcomes DK carried and BetMGM did not
+    sum to **0.1788** — almost the entire gap. So BetMGM's apparently
+    leaner market is a SHORTER FIELD, not a better one, and dividing its
+    23 prices by 1.4109 instead of the true ~1.55 inflates every player by
+    about 10%, in the direction that makes a bet look good.
+
+    So a field without a no-scorer outcome is refused by default. Pass
+    `require_complete=False` only to inspect one deliberately, and never
+    quote the result as a probability.
+    """
+    if market and market not in MUTUALLY_EXCLUSIVE_MARKETS:
+        raise ValueError(
+            f"{market} is not a mutually exclusive field, so its prices do "
+            f"not sum to 1 and cannot be de-vigged as one. Anytime TD is "
+            f"the usual mistake: several players score, so the field sums "
+            f"to the expected NUMBER of scorers. Use a two-sided fair "
+            f"line per player instead (get_event_ev, unfiltered, shin).")
+    clean = {k: _num(v) for k, v in (prices or {}).items()}
+    clean = {k: v for k, v in clean.items() if v is not None}
+    if len(clean) < 2:
+        raise ValueError(f"a field needs at least 2 priced outcomes, got "
+                         f"{len(clean)}")
+    r = {k: american_to_prob(v) for k, v in clean.items()}
+    booksum = sum(r.values())
+    has_no_scorer = any(str(k).strip().lower() in NO_SCORER_NAMES
+                        for k in clean)
+    if require_complete and not has_no_scorer:
+        raise ValueError(
+            f"this field has {len(clean)} outcomes and no no-scorer entry, "
+            f"so it is INCOMPLETE and its booksum ({booksum:.4f}) is too "
+            f"low by whatever is missing. De-vigging it would inflate every "
+            f"outcome. Pull the book that carries the full field (DraftKings "
+            f"listed 'No Touchdown Scorer' where BetMGM listed nothing), or "
+            f"pass require_complete=False to inspect it without quoting it.")
+
+    if method == "auto":
+        method = "shin"
+    if method == "multiplicative":
+        fair = {k: v / booksum for k, v in r.items()}
+        return {"fair": fair, "booksum": booksum, "overround": booksum - 1.0,
+                "n": len(clean), "z": 0.0, "method": "multiplicative",
+                "complete": has_no_scorer}
+    if method != "shin":
+        raise ValueError(f"unknown devig method {method!r}")
+
+    # Same Shin inversion as the two-way `devig`, over N outcomes:
+    # p_i = (sqrt(z^2 + 4(1-z) r_i^2 / B) - z) / (2(1-z)), z set so sum == 1.
+    def fair_at(z: float) -> dict:
+        if z <= 1e-12:
+            return {k: v / booksum for k, v in r.items()}
+        return {k: (math.sqrt(z * z + 4.0 * (1.0 - z) * v * v / booksum) - z)
+                   / (2.0 * (1.0 - z)) for k, v in r.items()}
+
+    lo, hi = 0.0, 0.95
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if sum(fair_at(mid).values()) > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    z = (lo + hi) / 2.0
+    fair = fair_at(z)
+    s = sum(fair.values())
+    return {"fair": {k: v / s for k, v in fair.items()}, "booksum": booksum,
+            "overround": booksum - 1.0, "n": len(clean), "z": z,
+            "method": "shin", "complete": has_no_scorer}
+
+
 def devig(over_odds: float, under_odds: float,
           method: str = "auto") -> tuple[float, float, float]:
     """Remove the book's margin from a two-way market.

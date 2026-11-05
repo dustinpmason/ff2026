@@ -965,6 +965,72 @@ chk("line_type='alternate' returns rows when they exist",
                                            _oc("Under", 115, 230.5)]),
                      line_type="alternate")) == 1)
 
+section("24b. first-TD fields de-vig as a field; anytime-TD must not")
+from ff_props import devig_field
+# Live board, event 87238, 2026-11-05. DraftKings listed 32 outcomes
+# INCLUDING "No Touchdown Scorer" (+6000) and both D/STs; BetMGM listed 23
+# with neither. The nine DK carried and BetMGM did not sum to 0.1788 —
+# almost the whole booksum gap — so BetMGM's leaner-looking market is a
+# SHORTER FIELD, not a better one.
+_DK1 = {"Ameer Abdullah": 2500, "BAL Ravens D/ST": 2000, "Bhayshul Tuten": 400,
+        "Brenton Strange": 1000, "Brian Thomas Jr.": 2000,
+        "Chris Rodriguez Jr.": 400, "CJ Williams": 6000, "Derrick Henry": 600,
+        "Devontez Walker": 11000, "Elijah Sarratt": 11000,
+        "Ja'Kobi Lane": 3500, "Jakobi Meyers": 1200, "JAX Jaguars D/ST": 1900,
+        "Joe Fagnano": 5500, "Josh Cameron": 2200, "Josh Cuevas": 7000,
+        "Justice Hill": 2200, "LaJohntay Wester": 8000, "LeQuint Allen": 4000,
+        "Mark Andrews": 2800, "Matthew Hibner": 7500, "Nate Boerkircher": 2000,
+        "Nick Vannett": 11000, "No Touchdown Scorer": 6000,
+        "Parker Washington": 650, "Quintin Morris": 7000, "Rasheen Ali": 11000,
+        "Rashod Bateman": 4000, "Tanner Koziol": 8000, "Travis Hunter": 3000,
+        "Trevor Lawrence": 2000, "Zay Flowers": 2000}
+_MGM1 = {k: v for k, v in _DK1.items()
+         if k not in {"BAL Ravens D/ST", "JAX Jaguars D/ST", "CJ Williams",
+                      "Devontez Walker", "Elijah Sarratt", "LaJohntay Wester",
+                      "Nick Vannett", "No Touchdown Scorer", "Rasheen Ali"}}
+_f = devig_field(_DK1, market="player_1st_td")
+chk("a complete first-TD field de-vigs to exactly 1",
+    abs(sum(_f["fair"].values()) - 1.0) < 1e-9 and _f["n"] == 32,
+    f'booksum {_f["booksum"]:.4f}, overround {_f["overround"]:+.1%}')
+# THE REFUSAL THAT MATTERS MOST. Anytime TD is NOT mutually exclusive —
+# several players score, so the prices sum to the expected NUMBER of
+# scorers. Normalising them to 1 divides every probability by roughly
+# three and looks completely plausible doing it.
+try:
+    devig_field({"a": 100, "b": 200}, market="player_anytime_td")
+    _raised = False
+except ValueError as e:
+    _raised = "not a mutually exclusive field" in str(e)
+chk("anytime TD is REFUSED as a field, not silently normalised", _raised)
+# An incomplete field's booksum is too low by whatever is missing, so
+# de-vigging it inflates every outcome — in the flattering direction.
+try:
+    devig_field(_MGM1, market="player_1st_td")
+    _raised = False
+except ValueError as e:
+    _raised = "INCOMPLETE" in str(e)
+chk("a field with no no-scorer outcome is refused as incomplete", _raised)
+_short = devig_field(_MGM1, market="player_1st_td", require_complete=False)
+chk("and forcing it really does inflate, which is why it is refused",
+    _short["fair"]["Bhayshul Tuten"] > 0
+    and _short["booksum"] < _f["booksum"],
+    f'short field booksum {_short["booksum"]:.4f} vs full {_f["booksum"]:.4f}')
+# Shin vs proportional on a 55% overround field: the whole reason the
+# instructions mandate Shin for longshots.
+_m = devig_field(_DK1, market="player_1st_td", method="multiplicative")
+chk("Shin shrinks the longest shot hard — 2x+ against proportional",
+    _m["fair"]["Nick Vannett"] > 2.0 * _f["fair"]["Nick Vannett"],
+    f'+11000: shin {_f["fair"]["Nick Vannett"]:.4%} vs '
+    f'mult {_m["fair"]["Nick Vannett"]:.4%}')
+chk("and raises the favourite, which is the other half of the correction",
+    _f["fair"]["Bhayshul Tuten"] > _m["fair"]["Bhayshul Tuten"])
+try:
+    devig_field({"solo": 100}, market="player_1st_td")
+    _raised = False
+except ValueError:
+    _raised = True
+chk("a one-outcome field is refused rather than returning 100%", _raised)
+
 section("25a. a silently dropped anchor book is caught (B60)")
 from ff_props import anchor_coverage, ANCHOR_CHAIN
 # `get_event_ev` drops an anchor book while that book's odds feed stays

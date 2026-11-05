@@ -1215,6 +1215,65 @@ raw bet is about -$2.81 and the refund +$6.03 — and burying that hides
 where the money comes from. Quote the band, never a point, and state the
 hold and v you used.
 
+## Touchdown-scorer questions — "who do you like for the first TD?"
+
+Short prompts like *"who scores the first TD tonight"*, *"players you like
+for an anytime TD"* or *"top 8 anytime TD scorers and probability"* all
+land here. **This is a MARKET workflow, not a model one** — say so in the
+answer. The threshold model abstains on low-event binary stats (B32), and
+F4 (goal-line / inside-5 carries), the best available TD predictor, is NOT
+BUILT. So the honest product is a de-vigged market probability and a
+best-price comparison, never "the model likes him".
+
+**The two markets are structurally different and must not share a method.**
+
+| | `player_1st_td` | `player_anytime_td` |
+|---|---|---|
+| exactly one winner? | **yes** | **no** — several players score |
+| field sums to | 1 + overround | the expected NUMBER of scorers |
+| de-vig how | `devig_field()`, whole field at once | two-sided, per player |
+
+**First TD — `ff_props.devig_field(prices, market="player_1st_td")`.**
+Pass `{name: american}` from ONE book. It Shin-de-vigs the field to 1 and
+returns `fair`, `booksum`, `overround`, `z`.
+
+Two refusals it will throw at you, both earned on live data:
+
+- **A field with no no-scorer outcome is INCOMPLETE and is refused.**
+  Measured on event 87238: DraftKings listed 32 outcomes including "No
+  Touchdown Scorer" (+6000) and both D/STs, booksum **1.5535**. BetMGM
+  listed 23 with neither, booksum **1.4109**. The nine DK carried and
+  BetMGM did not sum to **0.1788** — almost the entire gap. BetMGM's
+  leaner-looking market is a SHORTER FIELD, not a better one, and
+  de-vigging its 23 prices by 1.41 instead of the true ~1.55 inflates
+  every player by roughly 10%. **Never compare two books' overround
+  without checking they list the same number of outcomes.**
+- **Anytime TD passed as a field is refused outright.** Normalising a
+  non-exclusive market to 1 divides every probability by roughly three
+  and looks entirely plausible doing it.
+
+**Anytime TD — the documented two-sided path, unchanged.** Price from
+Dustin's book via `get_odds`; fair probability from `get_event_ev`
+**unfiltered**, `devig="shin"`. The EV endpoint prices none of DraftKings,
+FanDuel or BetMGM on this market, so a `bookmakers` filter returns `[]`
+and that means "endpoint does not price your books", never "no edge".
+
+**Shin is not a rounding adjustment here.** On that 55%-overround DK
+field, the longest shot (+11000) is **0.22% under Shin against 0.58%
+proportional** — a factor of 2.6 — while the favourite rises from 12.87%
+to 15.17%. Proportional de-vig on a TD board makes longshots look two to
+three times more likely than they are, which is exactly the direction
+that sells a bad bet.
+
+**What to report.** Rank by fair probability, and for each name give the
+best price across his books and which book it is, the fair probability,
+and the implied probability at that price so the gap is visible. State the
+overround and the outcome count — a 55% market is the headline fact about
+whether any of it is bettable. Run `anchor_coverage` as usual if any EV is
+quoted. And if he holds a stake-back token, this is the market it belongs
+on: see the stake-back section, and note the gradient across the board is
+worth ~$0.86 against ~$1.2 for the `v` assumption.
+
 ## Backtesting — `ff_backtest.py`, and what it can and cannot answer
 
 **It cannot tell you whether the strategy is profitable. Do not ask it to.**
