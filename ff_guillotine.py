@@ -99,6 +99,33 @@ MIN_GAMES = 3
 # available, so the mean is kept and the uncertainty widened instead.
 STALE_VARIANCE_INFLATION = 1.35
 
+# B68 — READ THIS BEFORE CHANGING EITHER LINE BELOW.
+#
+# These are a SECOND, duplicate copy of the tables in ff_boost.py. They are
+# deliberately left identical for now so the regression suite can assert the
+# two copies match; that assertion is what makes a one-sided edit fail loudly
+# instead of silently diverging, which is how B67 came to be fixed in one
+# file only.
+#
+# They are also the WRONG QUANTITY for this module, and knowingly so:
+#   * ff_boost measures one MARKET against another — ("QB","RB") = -0.10 is
+#     QB passing yards x RB rushing yards, where the negative is game script
+#     (team ahead -> run more -> QB throws less).
+#   * correlation_matrix() below correlates FANTASY SCORES, which include
+#     receptions, receiving yards and TDs. Measured on nflverse with
+#     guillotine scoring, QB x RB same-team fantasy score is +0.033 to +0.089
+#     across six filter variants and POSITIVE under every one of them. The
+#     game-script drag on yards does not survive into points, because TDs are
+#     upside both players share. QB x WR and QB x TE land inside their
+#     measured ranges; opposing RB x RB has the right sign at about twice the
+#     measured magnitude.
+#
+# Not corrected in place, for two reasons. The effect is small and was
+# measured rather than assumed: flipping QB x RB to +0.06 over 200,000 sims
+# moved best P(elim) by under 0.01pp, max 0.089pp across all lineups, and
+# picked the same lineup both times. And dropping one filter's levels in here
+# is precisely how the existing table became unreproducible (E3) — the fix is
+# E3 rebuilding BOTH tables on one documented filter, from one home.
 SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 

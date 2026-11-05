@@ -401,6 +401,7 @@ one is broken. The decision is **leg quality, not leg count**, and
 **Rule: use the fewest legs that reach the minimum, unless dropping to that
 many forces a leg you would veto.**
 | **B67** | An RB with a RECEIVING prop was scored at the WR correlation | **DONE 2026-11-05** | `_pair_r` resolved a same-team `{PASS, RECV}` pair by asking only whether the receiving player was a TE, so every other position — including a running back catching passes — took `SAME_TEAM_CORR[("QB","WR")] = +0.31`. The `("QB","RB")` entry is QB passing x RB RUSHING and never applied. Measured on nflverse 2025-26: QB passing x RB receiving is **+0.157 (n=2,154)** against +0.243 for WR receiving on the same filter — a ratio of 0.65, so the live value was roughly **2x** too high. Fixed with three branches on the receiving side. **The value shipped is the RATIO applied to the documented +0.31, giving +0.20, not the raw +0.157**, because the documented table's filter is unrecoverable (E3) and a raw level from a different filter would sit on a different scale from its neighbours, while a ratio measured within one filter transfers. Marked `SAME_TEAM_CORR_PROVISIONAL` and E3 should overwrite it with a direct measurement. **Low operational stakes, stated so nobody over-reads the fix:** magnitude does not decide priceability — `classify()` refuses an EV on any non-zero pair — so this reaches the explanation text and the comparison against the book's own `correlation_factor`, not what is bettable. 6 checks. |
+| **B68** | `ff_guillotine` keeps its OWN copy of the correlation table, and its QB×RB entry has the WRONG SIGN for a fantasy score | **OPEN — found 2026-11-05 while fixing B67, effect measured and small** | Two separate problems, found by checking whether B67's bug existed anywhere else. **(a) Duplicate table.** `ff_guillotine.py:102-103` redefines `SAME_TEAM_CORR` and `OPPOSING_CORR` as its own literals rather than importing `ff_boost`'s. B67 was fixed in one copy only. Any future correction to either table has to be made twice or it silently diverges — exactly the state that let B67 live. **(b) The borrowed numbers do not describe what the sim correlates.** `ff_boost`'s table is a MARKET-level table: `("QB","RB") = -0.10` is QB *passing yards* × RB *rushing yards*, where the negative is a game-script effect (team ahead ⇒ run more ⇒ QB throws less). `ff_guillotine.correlation_matrix()` applies it to **fantasy scores**, which include receptions, receiving yards and TDs. Measured QB × RB same-team fantasy-score correlation, nflverse, guillotine scoring, z-scored per player-season, six filter variants: **+0.037, +0.033, +0.064, +0.089, +0.054, +0.079 — positive under every one, never negative.** The sign in the code is wrong, and unlike E3's levels the *sign* is not filter-sensitive. Mechanism: the game-script drag on yards does not survive into points, because TDs are shared upside. Other three entries on the same sweep: QB×WR measured +0.202…+0.326 against +0.31 in code (inside range, high end); QB×TE +0.189…+0.345 against +0.27 (inside range); opposing RB×RB −0.034…−0.089 against −0.14 (right sign, magnitude roughly 2× overstated). **Effect measured before prioritising, not assumed:** flipping QB×RB from −0.10 to +0.06 over 200,000 sims moved best P(elim) by **0.007pp on a typical synthetic league and 0.003pp with every team deliberately QB-RB stacked; max shift across all lineups 0.089pp; the recommended lineup was identical in both fixtures.** One pair among nine starters at a 0.16 difference barely moves a lineup total's variance. **That is two fixtures, not a proof** — it says the sign error did not change the answer where it was measured, not that it never will. So: real correctness bug, low operational stakes, behind F14. Fix is (i) import both tables from one place, (ii) give the guillotine its own fantasy-score table measured on a documented filter — which is E3's job, done once for both callers. Do NOT paste the six numbers above in as a fix: they are one filter's levels and E3 exists because that is how the current table became unreproducible. |
 
 ### BetMGM SGP hold — first reading, 2026-11-04/05. NOT a replacement for SGP_HOLD_*
 
@@ -1099,7 +1100,30 @@ unless the receiving player's position is literally TE. **An RB with a
 receiving prop therefore gets +0.31.** Measured: QB passing yards x RB
 receiving yards, same team, is **+0.157** (n=2,154) — overstated roughly 2x.
 The table has three position pairs on the receiving side and the code
-distinguishes only TE from not-TE.
+distinguishes only TE from not-TE. **FIXED as B67 2026-11-05**, with the
+ratio rather than the raw level, pending this item.
+
+**E3 now serves TWO callers, and they need DIFFERENT tables — added
+2026-11-05 with B68.** `ff_guillotine.py:102-103` has its own duplicate
+literal copy of both tables, so the four values are doing two unrelated jobs:
+
+- **`ff_boost` needs a MARKET table** — QB *passing yards* × RB *rushing
+  yards*, one market against another. That is what the documented numbers
+  measure, and what the sweep above reproduces.
+- **`ff_guillotine` needs a FANTASY-SCORE table** — total points against
+  total points, receptions and TDs included. The market numbers are simply
+  the wrong quantity there, and for QB×RB they are the wrong **sign**: six
+  filter variants on fantasy scores give **+0.033 to +0.089, never negative**,
+  against −0.10 in the code. The game-script drag that makes passing yards
+  trade off against rushing yards does not survive into points, because TDs
+  are upside both players share.
+
+So E3's deliverable is **two tables from one documented filter**, not one —
+plus a single home for them, since the duplicate is why B67 needed fixing
+twice. **The betting side is the one that needs sign-off** (it gates whether
+a slip gets an EV at all); the fantasy side's effect was measured at under
+0.1pp of P(elim) with no change to the recommended lineup, so it can move
+without ceremony. Full numbers in B68.
 
 ## E5. Opponent lineups assume optimal play
 

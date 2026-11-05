@@ -193,3 +193,23 @@ reality.
 6. **The dangerous bug returns a plausible number, not an error.** That is the
    signature shared by B13, B24, B28 and B35. When a code path can guess, make
    it refuse instead.
+7. **A constant copied into two files is one bug with two homes.** B67 fixed
+   the receiving-RB correlation in `ff_boost`; `ff_guillotine` had its own
+   literal copy of the same table, untouched, and nothing anywhere said so.
+   Found only by asking "does this bug exist anywhere else?" after shipping
+   the fix. **When fixing a shared constant, grep the repo for its value
+   before calling it done** — and if a duplicate has to stay, add a check
+   that the copies match, so the next one-sided edit fails by name.
+8. **Borrowing a measured number for a different quantity changes what it
+   means, sometimes including its sign.** The betting table measures one
+   market against another; the guillotine applies it to fantasy scores.
+   QB x RB is -0.10 on passing-vs-rushing yards (game script) and **positive**
+   on fantasy points (shared TDs). Both are correct measurements of different
+   things. The table was reused because the position pairs matched, which is
+   not the same as the quantities matching.
+9. **Measure the effect before ranking the fix.** B68 is a genuine wrong sign
+   in a live simulation, which sounds urgent. 200,000 sims put it at under
+   0.01pp of P(elim) with the same lineup chosen either way, so it sits
+   behind a feature Dustin will use tonight. The reverse error — assuming an
+   ugly-looking bug is harmless — is equally available; the point is that
+   neither ranking is free, and both took one script.

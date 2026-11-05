@@ -866,6 +866,23 @@ draws. Correlation only bites when a roster stacks a QB with his own
 pass-catcher — four of the ten rosters here do, including yours (Lawrence +
 Strange). It raises P(eliminated) slightly: 2.46% to 2.59% on the Week 9 board.
 
+**Do not quote the correlation values themselves in a fantasy answer, and do
+not explain a P(elim) gap by naming one (B68).** The table
+`ff_guillotine` uses is a duplicate of the betting side's, and the betting
+side measures one MARKET against another: `("QB","RB") = -0.10` is QB
+*passing yards* against RB *rushing yards*. The simulation correlates
+**fantasy scores**, which include receptions and TDs, and on that quantity
+the same pair measures **positive** — +0.03 to +0.09 across six filters,
+never negative. The sign in the code is wrong for this use. Two further
+limits: the matrix keys on position alone, so a pass-catching back and a
+pure rusher get the same entry; and nothing distinguishes a WR1 from a WR4.
+**The effect is small and was measured, not assumed** — correcting the sign
+moved best P(elim) by under 0.01pp and chose the same lineup — so keep
+passing `meta` and keep reporting P(elim). Just describe a stack's effect
+qualitatively ("stacking your QB with his own receiver raises your variance
+slightly") rather than attaching a number to it. E3 will rebuild both
+tables; until then the magnitudes are not quotable.
+
 It returns P(eliminated) for every legal lineup. Report that number, not a
 point total — elimination risk is the thing that matters in this format.
 

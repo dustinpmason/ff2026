@@ -2483,5 +2483,41 @@ chk("an unpriceable slip says so in the report",
 chk("the report never prints a P(cash) for a correlated slip",
     "P(cash)" not in txt or "—" in txt)
 
+section("40. the duplicate correlation table cannot diverge unnoticed (B68)")
+# ff_guillotine keeps its OWN literal copy of both correlation tables rather
+# than importing ff_boost's. B67 was a bug in the SHARED values that got
+# fixed in one copy; nothing told anyone the second copy existed. These
+# checks are not asserting the values are right — B68 records that the
+# guillotine's QB x RB entry has the wrong SIGN for a fantasy score. They
+# assert the two copies are still IDENTICAL, so that the first one-sided edit
+# fails here by name instead of leaving the files quietly out of step.
+#
+# When E3 splits them into a market table and a fantasy-score table, THESE
+# TWO CHECKS ARE SUPPOSED TO FAIL. Replace them then with a check that each
+# table matches its own documented filter — do not simply delete them.
+# ---------------------------------------------------------------------------
+chk("the two SAME_TEAM_CORR copies are still identical",
+    ff_guillotine.SAME_TEAM_CORR == ff_boost.SAME_TEAM_CORR,
+    f"guillotine {ff_guillotine.SAME_TEAM_CORR} vs boost {ff_boost.SAME_TEAM_CORR}")
+chk("the two OPPOSING_CORR copies are still identical",
+    ff_guillotine.OPPOSING_CORR == ff_boost.OPPOSING_CORR,
+    f"guillotine {ff_guillotine.OPPOSING_CORR} vs boost {ff_boost.OPPOSING_CORR}")
+# B67's fix went into ff_boost only. If the guillotine ever grows a
+# receiving-RB branch of its own it needs the same provisional marker, so
+# assert the asymmetry is still the known one rather than a surprise.
+chk("the provisional RB-receiving entry lives in ff_boost only",
+    hasattr(ff_boost, "SAME_TEAM_CORR_PROVISIONAL")
+    and not hasattr(ff_guillotine, "SAME_TEAM_CORR_PROVISIONAL"))
+# correlation_matrix keys on POSITION pairs with no market and no role, so a
+# pass-catching back and a pure rusher are the same entry to it. Pin that, so
+# the limitation is a recorded fact rather than something a reader has to
+# infer from the absence of a branch.
+_m = {"q": ("KC", "QB"), "rb1": ("KC", "RB"), "rb2": ("KC", "RB")}
+_C = ff_guillotine.correlation_matrix(["q", "rb1", "rb2"], _m)
+chk("every same-team QB/RB pair takes one value, whatever the back's role",
+    abs(_C[0, 1] - _C[0, 2]) < 1e-12, f"{_C[0,1]} vs {_C[0,2]}")
+chk("and that value is still the market table's rushing figure",
+    abs(_C[0, 1] - ff_guillotine.SAME_TEAM_CORR[("QB", "RB")]) < 1e-12)
+
 _summary()
 raise SystemExit(1 if fails else 0)
