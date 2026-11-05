@@ -1813,7 +1813,8 @@ chk("a settled anchor at the 500 tier is still NOT flagged",
 
 # B59. The threshold above is a HARDCODED tier and hardcoding it has already
 # failed once (250 -> 500). Derive it from the book's own board per pull.
-from ff_boost import modal_liquidity, book_liquidity_tiers, TIER_MIN_SAMPLE
+from ff_boost import (modal_liquidity, book_liquidity_tiers,
+                      TIER_MIN_SAMPLE, TIER_MAX_TRUSTED)
 chk("a uniform board yields its tier",
     modal_liquidity([500] * 42) == 500.0)
 chk("a mixed board yields its mode, not its min or max",
@@ -1862,6 +1863,32 @@ chk("no derived tier falls back to the module constant",
 chk("a null anchor liquidity still flags, tier or no tier",
     leg("WR A1", EV1, fair_prob=0.5,
         opening_liquidity_tier=1.0).anchor_opening)
+# modal_liquidity derives the most COMMON limit and calls it the MINIMUM
+# tier. Those agree on an opening board (uniform at the floor) and come
+# apart on a mature one (uniform at depth) — Pinnacle rises to 5,000-10,000
+# by kickoff. Derived naively, that board would flag every exact-0.5000
+# line as "opening" regardless of depth, on the very pull you bet from.
+chk("a uniformly DEEP board yields no tier — it is mature, not opening",
+    modal_liquidity([10000] * 28) is None,
+    f"ceiling {TIER_MAX_TRUSTED:g}; above it the hardcoded floor is right")
+chk("a tier inside the opening range still resolves",
+    modal_liquidity([250] * 28) == 250.0
+    and modal_liquidity([1000] * 28) == 1000.0)
+chk("so deep money is still NOT called an opening anchor",
+    not leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=10000,
+            opening_liquidity_tier=modal_liquidity([10000] * 28)
+            ).anchor_opening)
+# B59's remaining gap, made visible: a leg with no derived tier silently
+# uses the hardcoded constant, and on a live run that was 48 of 48 legs.
+# "Derived and agreed" must not look identical to "nothing was available".
+_sl_fb = enumerate_candidates(SAME_INDEP, META, boost_pct=0.30,
+                              mode="single-game")
+_fb, _tot = _sl_fb.tier_fallbacks
+chk("the shortlist counts legs running on the hardcoded tier",
+    _fb == _tot and _tot > 0, f"{_fb} of {_tot}")
+chk("and describe() says so rather than leaving it to be remembered",
+    "fell back to the hardcoded" in _sl_fb.describe(),
+    _sl_fb.describe()[-90:])
 
 # The scope bug the first version shipped with: fair_prob was tested FIRST
 # and returned early, so the liquidity check was unreachable for any line

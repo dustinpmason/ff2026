@@ -524,6 +524,43 @@ control before concluding anything about the anchor. **An empty response
 is never evidence on its own**, and it is not stable: it recurs and
 clears within minutes on the same call.
 
+### Count `fair_source` on EVERY EV call — B60, the worst failure open
+
+`get_event_ev` drops an anchor book while that book's odds feed stays
+perfectly healthy, and **it does not return `[]` when it does.** It
+returns a populated, plausible response with the sharp anchor silently
+replaced. Observed three times on event 87238:
+
+| when | what happened |
+|---|---|
+| 2026-11-04 | `[]`, then 12 of 21 anchored seven minutes later |
+| 2026-11-05 04:02-04:07 | Pinnacle absent for three polls, back at 04:10 |
+| 2026-11-05 ~00:30 ET | **Pinnacle anchored 0 of 154, and did NOT return within 90 seconds** |
+
+Every time, a paired `get_odds` control showed the book live — two-sided
+markets, `suspended_at: null`, liquidity 500, varied prices, and on one
+occasion Flowers' `book_version` byte-identical across the dropout. The
+fault is inside the EV endpoint's anchor derivation, downstream of a
+healthy feed. **"Re-poll and it comes back" is not reliable** — one
+dropout cleared in minutes, another outlasted the window watched.
+
+What it does to a leg: Flowers went pinnacle 0.5178 to **bovada 0.5000**;
+Andrews pinnacle 0.4878 to **bovada 0.5000**; Strange's line vanished.
+And `anchor_opening` / `anchor_thin` key on liquidity, which
+`get_event_ev` does not carry — **so the flags cannot see this either.**
+
+**The rule: on every EV pull, count lines by `fair_source` and compare
+against what `get_odds` shows the anchor book carrying.** A sudden
+absence of Pinnacle with no change in Pinnacle's board is the signature.
+Say the counts out loud in any write-up that quotes an EV.
+
+On the 00:30 run this left **34 of 48 legs `anchor_immature`** — 30
+Bovada at exactly 0.5000 with null liquidity, 4 thin Kalshi. **There was
+no sharp anchor on the board at all.** An EV computed in that state rests
+on priors, and that has to be stated plainly rather than printed to a
+decimal place. This is also the mechanism behind the standing "re-pull
+and re-price immediately before placing" rule.
+
 **Correction (third test): Pinnacle DOES carry anytime-TD.** 13/13 events,
 100 markets, and it anchors 8 of the 32 `get_event_ev` lines on DEN@KC
 (Dobbins, Kelce, Sutton, Waddle, Coleman, Walker, Rice, Worthy). An earlier
@@ -928,13 +965,23 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
   this on every intake** — nothing sets it automatically yet, so a leg
   built without it silently falls back to the hardcoded 500 and B59's
   failure is only pre-empted, not retired.
-  Two things the derivation deliberately refuses. A book with fewer than
-  three liquidity readings gets no tier. And a book whose readings have no
-  dominant value gets none either: Pinnacle quotes a discrete bet LIMIT
-  (10 of 10 at exactly 500), while **Kalshi reports resting money in
-  dollars — 95 distinct values across 100 readings** — so its "mode" is
-  noise and would be a threshold invented from nothing. Kalshi's shallow
-  anchors belong to `anchor_thin`, per B46.
+  **Three things the derivation deliberately refuses.** A book with fewer
+  than three liquidity readings gets no tier. A book whose readings have
+  no dominant value gets none either: Pinnacle quotes a discrete bet LIMIT
+  (28 of 28 at exactly 500 on a live pull), while **Kalshi reports resting
+  money in dollars — 252 distinct values across 272 readings** — so its
+  "mode" is noise and would be a threshold invented from nothing. Kalshi's
+  shallow anchors belong to `anchor_thin`, per B46. And a derived tier
+  above **`TIER_MAX_TRUSTED` (2,000)** is refused as well: that is not a
+  floor, it is a MATURE board. Pinnacle rises to 5,000-10,000 by kickoff,
+  and taking that as the tier would flag every exact-0.5000 line as
+  "opening" regardless of depth — on the very pull you bet from.
+  **Report `Shortlist.tier_fallbacks` whenever an EV rests on
+  `anchor_opening`.** It counts leg-slots running on the hardcoded
+  constant instead of a derived tier, and on a live run that was 48 of 48,
+  because every anchor was Bovada or Kalshi and neither quotes a tier.
+  "Derived and agreed with the constant" and "no tier was available"
+  produce identical output and mean completely different things.
 - **`anchor_thin`** — liquidity at or under 25, *whatever* the fair_prob
   says. A Kalshi contract with $0.98 resting on it produces a
   precise-looking 0.5052 that is pure noise, and it is the worst input you

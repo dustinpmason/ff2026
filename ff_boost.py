@@ -243,6 +243,27 @@ TIER_MIN_SAMPLE = 3
 
 TIER_MIN_SHARE = 0.5
 
+# `modal_liquidity` derives the MOST COMMON limit and asserts it is the
+# book's MINIMUM tier. Those coincide on an OPENING board, which is uniform
+# at the floor — Pinnacle was 28/28 at exactly 500 tonight. They come apart
+# on a MATURE board, which is uniform at depth: `anchor_liquidity`'s own
+# docstring records Pinnacle rising to 5,000-10,000 by kickoff. Derived
+# naively, that board yields a tier of 10,000 and then EVERY exact-0.5000
+# line flags as "opening" regardless of how much money is behind it —
+# turning the flag uninformative exactly on the pull you bet from.
+#
+# So a derived tier above this ceiling is not a floor; it is a mature
+# board, and on a mature board the hardcoded floor is the right test.
+#
+# This is a BOUND, not a threshold, and that is why it does not reintroduce
+# the B54 problem it looks like. OPENING_LIQUIDITY had to track a moving
+# tier and went silent the moment the tier moved. This only has to sit
+# somewhere in the gap between an opening floor (250-1,000 observed) and a
+# mature board (5,000-10,000 observed). That gap is wide and the mechanism
+# making it wide — books raise limits as confidence grows — is not going to
+# invert.
+TIER_MAX_TRUSTED = 2000.0
+
 
 def modal_liquidity(values, *, min_sample: int = TIER_MIN_SAMPLE,
                     min_share: float = TIER_MIN_SHARE):
@@ -286,7 +307,9 @@ def modal_liquidity(values, *, min_sample: int = TIER_MIN_SAMPLE,
     top = max(counts.values())
     if top < min_share * len(vals):
         return None
-    return max(v for v, n in counts.items() if n == top)
+    tier = max(v for v, n in counts.items() if n == top)
+    # A uniformly DEEP board is not an opening board. See TIER_MAX_TRUSTED.
+    return None if tier > TIER_MAX_TRUSTED else tier
 
 
 def book_liquidity_tiers(odds_response: dict,
@@ -1000,6 +1023,25 @@ class Shortlist:
         return sorted({l.player for c in self.candidates for l in c.legs
                        if l.anchor_immature})
 
+    @property
+    def tier_fallbacks(self) -> tuple[int, int]:
+        """(legs on the hardcoded tier, legs total) across the shortlist.
+
+        B59's remaining gap, made visible. `opening_liquidity_tier=None`
+        silently means "use the hardcoded OPENING_LIQUIDITY", and on a live
+        run that was 48 of 48 legs — every anchor was Bovada or Kalshi, and
+        neither quotes a tier. "The tier was derived and agreed with the
+        constant" and "no tier was available so we fell back" produce
+        byte-identical output and mean entirely different things.
+
+        That is B39's UNSCREENED lesson aimed at this field: the default
+        state must not be indistinguishable from the checked one. Report
+        this number whenever an EV rests on `anchor_opening`.
+        """
+        legs = [l for c in self.candidates for l in c.legs]
+        return (sum(1 for l in legs if l.opening_liquidity_tier is None),
+                len(legs))
+
     def describe(self) -> str:
         if not self.candidates:
             return f"NOTHING TO PRICE — {self.reason}"
@@ -1009,6 +1051,12 @@ class Shortlist:
             L.append(f"  opening anchors (fair_prob exactly 0.5000) on: "
                      f"{', '.join(self.immature_anchors)} — re-pull closer "
                      f"to kickoff before trusting any EV built on them")
+        fb, tot = self.tier_fallbacks
+        if fb:
+            L.append(f"  anchor tier: {fb} of {tot} leg-slots fell back to "
+                     f"the hardcoded {OPENING_LIQUIDITY:g} because their "
+                     f"anchor book quotes no tier — `anchor_opening` on "
+                     f"those is only as current as that constant")
         return "\n".join(L)
 
 
