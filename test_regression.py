@@ -1811,6 +1811,58 @@ chk("a settled anchor at the 500 tier is still NOT flagged",
             anchor_liquidity=500).anchor_immature,
     "the 0.5000 does the work; liquidity only sets how far the net reaches")
 
+# B59. The threshold above is a HARDCODED tier and hardcoding it has already
+# failed once (250 -> 500). Derive it from the book's own board per pull.
+from ff_boost import modal_liquidity, book_liquidity_tiers, TIER_MIN_SAMPLE
+chk("a uniform board yields its tier",
+    modal_liquidity([500] * 42) == 500.0)
+chk("a mixed board yields its mode, not its min or max",
+    modal_liquidity([250, 500, 500, 500, 1000]) == 500.0)
+# Ties break HIGH: a tier set too high flags some settled anchors, which is
+# noise. Too low MISSES an opening anchor, which is the failure that has
+# actually happened. Break toward the survivable error.
+chk("ties break toward the higher tier, which over-flags rather than misses",
+    modal_liquidity([500, 500, 1000, 1000]) == 1000.0)
+chk("too few readings is not a measurement — fall back to the constant",
+    modal_liquidity([500, 500]) is None and TIER_MIN_SAMPLE == 3)
+chk("nulls are ignored, not counted as a value",
+    modal_liquidity([None, 500, 500, 500]) == 500.0
+    and modal_liquidity([None, None, None, None]) is None)
+# THE CASE SYNTHETIC DATA WOULD NOT HAVE FOUND, caught on a live pull:
+# Pinnacle reports a discrete BET LIMIT (10 of 10 at exactly 500 — a tier).
+# Kalshi reports resting MONEY in dollars: 95 distinct values across 100
+# readings, whose "mode" of 0.97 appeared twice. A mode of a continuous
+# quantity is noise, and using it as a threshold invents a number.
+_kalshi_like = [round(0.1 + i * 0.137, 2) for i in range(100)]
+chk("a book with no dominant value has no tier, and says so",
+    modal_liquidity(_kalshi_like) is None,
+    f"{len(set(_kalshi_like))} distinct across {len(_kalshi_like)} readings")
+chk("a book that DOES quote tiers still resolves alongside it",
+    modal_liquidity([500] * 10) == 500.0)
+_resp = {"bookmakers": [
+    {"key": "pinnacle", "markets": [{"outcomes": [{"liquidity": 500}] * 10}]},
+    {"key": "kalshi", "markets": [{"outcomes": [{"liquidity": v}
+                                                for v in _kalshi_like]}]},
+    {"key": "betmgm", "markets": [{"outcomes": [{"liquidity": None}] * 20}]}]}
+chk("book_liquidity_tiers keeps only books that actually quote a tier",
+    book_liquidity_tiers(_resp) == {"pinnacle": 500.0},
+    "kalshi has no mode; betmgm reports nothing at all")
+# The derived tier must actually override the constant on the leg.
+chk("a derived tier above the constant widens the net",
+    leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=1000,
+        opening_liquidity_tier=1000.0).anchor_opening
+    and not leg("WR A1", EV1, fair_prob=0.5,
+                anchor_liquidity=1000).anchor_opening,
+    "this is the 250->500 failure, pre-empted")
+chk("a derived tier below the constant narrows it",
+    not leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=400,
+            opening_liquidity_tier=100.0).anchor_opening)
+chk("no derived tier falls back to the module constant",
+    leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=500).anchor_opening)
+chk("a null anchor liquidity still flags, tier or no tier",
+    leg("WR A1", EV1, fair_prob=0.5,
+        opening_liquidity_tier=1.0).anchor_opening)
+
 # The scope bug the first version shipped with: fair_prob was tested FIRST
 # and returned early, so the liquidity check was unreachable for any line
 # that was not exactly 0.5000. Live, a Kalshi anchor at $0.98 with

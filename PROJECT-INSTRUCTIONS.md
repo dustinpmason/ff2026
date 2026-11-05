@@ -920,12 +920,21 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
   liquidity 500, none flagged, and a 2026-11-04 run carried 31 of 60
   Pinnacle anchors at exactly 0.5000 in silence.
   The gate itself is correct and was kept: an exact 0.5000 behind
-  genuinely deep money is a real coin flip rather than a prior. **It will
-  go stale again** if Pinnacle moves to 1,000, and nothing would catch it,
-  because a flag that stops firing breaks no test — B59 is to derive the
-  tier from the board instead of hardcoding it. Until then, if a pull
-  shows a book's lines clustered at a limit above 500, treat an exact
-  0.5000 there as an opening anchor regardless of what the flag says.
+  genuinely deep money is a real coin flip rather than a prior.
+  **B59, done 2026-11-05: derive the tier instead of hardcoding it.**
+  `book_liquidity_tiers(get_odds_response)` returns {book: tier} from a
+  pull; pass each leg's ANCHOR book's tier as
+  `BoostLeg.opening_liquidity_tier` and it overrides the constant. **Do
+  this on every intake** — nothing sets it automatically yet, so a leg
+  built without it silently falls back to the hardcoded 500 and B59's
+  failure is only pre-empted, not retired.
+  Two things the derivation deliberately refuses. A book with fewer than
+  three liquidity readings gets no tier. And a book whose readings have no
+  dominant value gets none either: Pinnacle quotes a discrete bet LIMIT
+  (10 of 10 at exactly 500), while **Kalshi reports resting money in
+  dollars — 95 distinct values across 100 readings** — so its "mode" is
+  noise and would be a threshold invented from nothing. Kalshi's shallow
+  anchors belong to `anchor_thin`, per B46.
 - **`anchor_thin`** — liquidity at or under 25, *whatever* the fair_prob
   says. A Kalshi contract with $0.98 resting on it produces a
   precise-looking 0.5052 that is pure noise, and it is the worst input you

@@ -103,6 +103,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from collections import Counter
 from itertools import combinations, product
 
 from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
@@ -233,6 +234,85 @@ SGP_FACTORS_OBSERVED = (
 # it is to predict the quote from the product against the grid, which needs
 # more than thirteen points at one book on one event. B61.
 OBSERVED_SGP_FACTORS = (0.77, 0.99)
+
+# B59. Below this many liquidity readings, a derived tier is not a
+# measurement and the module constant is used instead. A "modal" value
+# from one or two lines is just that line.
+TIER_MIN_SAMPLE = 3
+
+
+TIER_MIN_SHARE = 0.5
+
+
+def modal_liquidity(values, *, min_sample: int = TIER_MIN_SAMPLE,
+                    min_share: float = TIER_MIN_SHARE):
+    """A book's own minimum limit tier, from its board in ONE pull.
+
+    B59. `OPENING_LIQUIDITY` is a hardcoded number and hardcoding it has
+    already failed once: 250 was Pinnacle's tier the day it was written,
+    Pinnacle moved to 500, and `anchor_opening` went silent on exactly the
+    lines it exists to catch. Raising it to 500 postponed that; deriving it
+    retires it. The tier is observable in every pull — on two consecutive
+    readings Pinnacle was 42 of 42 and then 70 of 70 outcomes at exactly
+    500, uniform, no spread.
+
+    Returns None when there are fewer than `min_sample` readings, so the
+    caller falls back to the constant rather than trusting a "mode" taken
+    from one line.
+
+    **It also returns None unless the mode covers `min_share` of the
+    readings, because not every book reports a TIER.** The first version of
+    this function missed that and a live pull caught it: Pinnacle came back
+    10 of 10 at exactly 500 — a bet limit, discrete, obviously a tier —
+    while Kalshi came back with **95 distinct values across 100 readings**
+    and a "mode" of 0.97 appearing twice. Kalshi reports resting money in
+    dollars, which is continuous; its mode is noise, and feeding it in as a
+    threshold would be inventing a number. A book with no dominant value is
+    a book with no tier, and the right answer is to say so and fall back.
+    Kalshi's shallow anchors are `anchor_thin`'s job, not this one — the
+    separation B46 established.
+
+    **Ties break HIGH, on purpose.** A tier that is too high flags some
+    settled anchors — noise, and safe. A tier that is too low misses an
+    opening anchor, which is silently using a book's prior as its price:
+    the exact failure this flag exists to prevent, and the one that has
+    actually happened. When the two errors are not symmetric, break toward
+    the survivable one.
+    """
+    vals = [float(v) for v in values if v is not None]
+    if len(vals) < min_sample:
+        return None
+    counts = Counter(vals)
+    top = max(counts.values())
+    if top < min_share * len(vals):
+        return None
+    return max(v for v, n in counts.items() if n == top)
+
+
+def book_liquidity_tiers(odds_response: dict,
+                         *, min_sample: int = TIER_MIN_SAMPLE) -> dict:
+    """{book: its own minimum tier} from a `get_odds` event response.
+
+    Pass the result to each BoostLeg as `opening_liquidity_tier`, keyed by
+    the leg's ANCHOR book — not the book being bet. The anchor is what
+    `fair_prob` came from, so it is the board whose tier decides whether
+    that number is a price or a prior.
+
+    Books that report no liquidity at all (DraftKings 0/276, FanDuel 0/204,
+    Bovada) are absent from the result rather than present with None, so a
+    missing key means "never reported" and `anchor_opening` keeps its
+    existing behaviour of flagging a null-liquidity 0.5000 regardless.
+    """
+    out = {}
+    for bk in odds_response.get("bookmakers") or []:
+        key = bk.get("key") or bk.get("title")
+        vals = [oc.get("liquidity")
+                for mk in bk.get("markets") or []
+                for oc in mk.get("outcomes") or []]
+        tier = modal_liquidity(vals, min_sample=min_sample)
+        if tier is not None:
+            out[key] = tier
+    return out
 
 # A SEPARATE problem from an opening line, and the first version of this
 # module could not see it. `anchor_immature` tested fair_prob == 0.5 FIRST
@@ -378,6 +458,12 @@ class BoostLeg:
     # Present on live get_odds (Pinnacle 250 on an opening board, rising to
     # 5,000-10,000 by kickoff); absent on Bovada, which returns null.
     anchor_liquidity: float | None = None
+    # B59. The anchor book's OWN minimum tier in THIS pull, derived from its
+    # board by `modal_liquidity()`. When set it replaces the module-level
+    # OPENING_LIQUIDITY for this leg, so "at the book's minimum limits" is
+    # measured per pull rather than remembered from a previous one. None
+    # falls back to the constant, which is the stale-by-design path.
+    opening_liquidity_tier: float | None = None
 
     def __post_init__(self):
         if not (0.0 < float(self.fair_prob) < 1.0):
@@ -412,11 +498,20 @@ class BoostLeg:
         The structure of this test is unchanged and deliberately so: an
         exact 0.5000 behind genuinely deep money is a real coin flip rather
         than a prior, so the liquidity condition stays.
+
+        B59: the threshold is now the book's OWN tier in this pull when
+        `opening_liquidity_tier` is set, and only falls back to the module
+        constant when it is not. That retires the stale-constant failure
+        rather than postponing it — a hardcoded tier has already gone
+        silent once (250 -> 500) and would again at 1,000.
         """
         if abs(float(self.fair_prob) - 0.5) > 1e-9:
             return False
+        tier = (self.opening_liquidity_tier
+                if self.opening_liquidity_tier is not None
+                else OPENING_LIQUIDITY)
         return (self.anchor_liquidity is None
-                or self.anchor_liquidity <= OPENING_LIQUIDITY)
+                or self.anchor_liquidity <= tier)
 
     @property
     def anchor_thin(self) -> bool:
