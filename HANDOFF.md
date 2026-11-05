@@ -213,3 +213,16 @@ reality.
    behind a feature Dustin will use tonight. The reverse error — assuming an
    ugly-looking bug is harmless — is equally available; the point is that
    neither ranking is free, and both took one script.
+10. **Fixing a branch is not fixing its fall-through.** B67 made `_pair_r`'s
+    receiving branch three-way and left `else:` handing out the WR value to
+    anything that did not match — including a MISSING position (B69). The
+    same function already refused on a missing team eight lines earlier, so
+    the right reasoning was present in the file and applied to one field
+    only. **After changing a branch, read its else.**
+11. **A broad fix can quietly reverse a deliberate decision.** B69's first
+    cut refused every position outside WR/TE/RB, which also refused the
+    Travis-Hunter case that a previous session had deliberately made work
+    (a CB carrying a receiving prop is a receiver whatever the label says).
+    A named check from 2026-11-02 caught it. "Missing" and "present but
+    unmeasured" are different states. Second time the suite has caught me
+    asserting something broader than the actual defect — see B53.

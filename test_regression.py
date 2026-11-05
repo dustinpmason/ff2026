@@ -1852,6 +1852,42 @@ chk("an unknown team in a shared event is unmeasurable, not independent",
 chk("the unknown team is named", "Ghost" in str(s.unmeasured),
     str(s.unmeasured))
 
+# A missing POSITION used to read as "WR" — the largest of the three
+# receiving coefficients — and printed "(receiver)", which looks like a
+# category rather than a miss (B69). Same shape as the missing team eight
+# lines up, and the same reasoning now applies. `pos` comes from
+# build_meta()'s name join, which B44 showed is the fragile link.
+nopos = BoostLeg(event_id=EV1, book="draftkings",
+                 market="player_reception_yds", player="Spectre",
+                 side="OVER", odds=-150, fair_prob=0.6,
+                 fair_source="pinnacle", devig_method="shin",
+                 verdict="CLEAR", team="AAA", pos=None)
+s = classify([leg("QB A", EV1, market="player_pass_yds"), nopos,
+              leg("WR B1", EV1)], {})
+chk("a known team with an UNKNOWN position is unmeasurable, not WR",
+    not s.priceable and not any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs),
+    f"{s.kind} pairs={s.pairs}")
+chk("the player with no position is named", "Spectre" in str(s.unmeasured),
+    str(s.unmeasured))
+chk("the reason points at the name join rather than blaming the market",
+    "nflverse" in str(s.unmeasured).lower()
+    and "spelling" in str(s.unmeasured).lower(), str(s.unmeasured)[:160])
+# The narrowing that the suite forced. "Missing" and "present but outside
+# the table" are DIFFERENT states: a receiving prop is evidence of a
+# receiving role whatever the roster label says, which is why section 30b
+# pins the CB case at +0.31. A first pass at B69 refused both and 30b caught
+# it. These two checks exist so the distinction cannot quietly collapse
+# again in either direction.
+s_cb = classify([leg("QB A", EV1, market="player_pass_yds"),
+                 leg("CB A1", EV1, market="player_reception_yds"),
+                 leg("WR B1", EV1)], dict(META, **{"CB A1": ("AAA", "CB")}))
+chk("a PRESENT but unmeasured position still resolves off the market",
+    any(abs(p[2] - 0.31) < 1e-9 for p in s_cb.pairs), str(s_cb.pairs))
+chk("and it says so, instead of hiding behind the word 'receiver'",
+    any("CB" in str(p[3]) for p in s_cb.pairs)
+    if s_cb.pairs and len(s_cb.pairs[0]) > 3
+    else "CB" in s_cb.reason, f"{s_cb.pairs} / {s_cb.reason[:120]}")
+
 # ---------------------------------------------------------------------------
 section("30c. an unchecked leg is not a clear leg")
 # A live run built 32 legs that all read CLEAR without boost_verdict() ever

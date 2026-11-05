@@ -679,20 +679,56 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
                       f"YARDS), and these legs share an event")
 
     if a.team == b.team:
-        # WR vs TE only refines the magnitude; default to the larger one.
         if {sa, sb} == {"PASS", "RECV"}:
-            pos = (a.pos if sa == "RECV" else b.pos) or ""
+            recv = a if sa == "RECV" else b
+            pos = (recv.pos or "").upper()
             # Three receiving pairs, not two. Asking only "is it a TE?" sent
             # every RB catching passes to the WR value — see the note on
             # SAME_TEAM_CORR_PROVISIONAL.
-            up = pos.upper()
-            if up == "TE":
+            #
+            # B69: a MISSING position must not land on one of them. This used
+            # to be `else: SAME_TEAM_CORR[("QB","WR")]` with the label
+            # `pos or "receiver"`, so an empty position took the LARGEST of
+            # the three values and printed "(receiver)" — which reads like a
+            # category rather than like a miss. `pos` comes from
+            # build_meta()'s name join, and B44 established that join is the
+            # fragile link: one live payload carried both "Brian Thomas Jr."
+            # and "Brian Thomas". An unmatched name therefore arrived here as
+            # a confident +0.31, which is B39's shape — unchecked state
+            # looking exactly like checked state.
+            #
+            # Eight lines above, an unknown TEAM already returns None for
+            # this reasoning, and position now follows it. Note what is NOT
+            # being changed: an odd but PRESENT position still resolves off
+            # the MARKET. Section 30b of the suite pins that deliberately —
+            # build_meta reports Travis Hunter as CB because that is his
+            # nflverse primary position, while he carries a receiving prop on
+            # his QB's team, and a receiving prop is evidence of a receiving
+            # role whatever the roster label says. A first pass at this fix
+            # refused every non-WR/TE/RB position and that check failed by
+            # name, correctly: "missing" and "unmeasured but present" are
+            # different states and only the first one is a miss.
+            if pos == "TE":
                 r, lbl = SAME_TEAM_CORR[("QB", "TE")], "TE"
-            elif up == "RB":
+            elif pos == "RB":
                 r, lbl = (SAME_TEAM_CORR_PROVISIONAL[("QB", "RB_RECV")],
                           "RB receiving — PROVISIONAL, see E3")
+            elif pos:
+                # WR, or any other position carrying a receiving prop. The
+                # label names the position so a CB or FB reading +0.31 is
+                # visible rather than hidden behind the word "receiver".
+                r, lbl = SAME_TEAM_CORR[("QB", "WR")], (
+                    "WR" if pos == "WR" else
+                    f"{pos} with a receiving prop, scored as WR")
             else:
-                r, lbl = SAME_TEAM_CORR[("QB", "WR")], pos or "receiver"
+                return None, (
+                    f"no position known for {recv.player}, and these legs "
+                    f"share a team — the passing x receiving correlation is "
+                    f"+0.31 for a WR, +0.27 for a TE and about +0.20 for a "
+                    f"back, so the pair cannot be scored without it. An "
+                    f"empty position usually means the name did not join to "
+                    f"nflverse; check the spelling against search_players "
+                    f"before reading anything into this slip")
             return r, f"same team passing x receiving ({lbl})"
         if {sa, sb} == {"PASS", "RUSH"}:
             return SAME_TEAM_CORR[("QB", "RB")], "same team passing x rushing"
