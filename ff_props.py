@@ -1289,6 +1289,129 @@ def canonical_bet(q: dict) -> tuple | None:
             q.get("market"), "over", threshold)
 
 
+# `get_event_ev` picks an anchor PER LINE, in this order, and no other book
+# can ever anchor. A live DraftKings carrying three two-sided markets is not
+# a missing anchor, it is a book that was never eligible — the first version
+# of `anchor_coverage` flagged exactly that and a live pull caught it.
+ANCHOR_CHAIN = ("pinnacle", "polymarket", "kalshi", "bovada", "smarkets")
+
+
+@dataclass
+class AnchorCoverage:
+    """Which books ANCHORED, against which were live enough to anchor."""
+    anchored: dict                      # {book: lines it anchored}
+    live: dict                          # {book: two-sided markets it carries}
+    silent_dropouts: list               # live to anchor, anchored nothing
+    total_lines: int = 0
+
+    @property
+    def healthy(self) -> bool:
+        return not self.silent_dropouts
+
+    def describe(self) -> str:
+        a = ", ".join(f"{b} {n}" for b, n in
+                      sorted(self.anchored.items(), key=lambda kv: -kv[1])) or "none"
+        L = [f"anchored {self.total_lines} line(s): {a}"]
+        if self.silent_dropouts:
+            for b in self.silent_dropouts:
+                L.append(
+                    f"  *** {b} ANCHORED NOTHING while carrying "
+                    f"{self.live[b]} two-sided market(s) in the SAME pull — "
+                    f"B60. This is not an empty response and nothing in the "
+                    f"EV payload says it happened. Every line that would "
+                    f"have anchored on {b} fell through to a softer source. "
+                    f"Do not quote an EV from this pull without saying so.")
+        else:
+            L.append("  no silent dropouts: every book live to anchor did")
+        return "\n".join(L)
+
+
+def _two_sided_markets(bookmaker: dict) -> int:
+    """Markets carrying BOTH sides and not suspended — i.e. anchorable."""
+    n = 0
+    for mk in bookmaker.get("markets") or []:
+        if mk.get("suspended_at") is not None:
+            continue
+        sides = {str(oc.get("name") or "").strip().lower()
+                 for oc in mk.get("outcomes") or []}
+        if sides & OVER_NAMES and sides & UNDER_NAMES:
+            n += 1
+    return n
+
+
+def anchor_coverage(ev_response: dict, odds_response: dict,
+                    *, min_markets: int = 3) -> AnchorCoverage:
+    """Catch B60: an anchor book silently missing from a populated EV response.
+
+    `get_event_ev` drops an anchor book while that book's odds feed stays
+    perfectly healthy, and **it does not return `[]` when it does** — it
+    returns a populated, plausible response with the sharp anchor quietly
+    replaced by a softer one. Observed three times on event 87238; on the
+    worst, Pinnacle anchored 0 of 154 lines across three calls over 90
+    seconds while a paired `get_odds` control showed it live with 14
+    two-sided markets, `suspended_at: null`, liquidity 500 and varied
+    prices. One dropout cleared in minutes, another outlasted the window,
+    so **re-polling is not a fix.**
+
+    `anchor_opening` and `anchor_thin` cannot catch this: they key on
+    liquidity, and `get_event_ev` carries no liquidity field at any level
+    (D17). Nothing downstream of the EV response can see it either, because
+    the response looks complete. The only way to know is to hold the two
+    payloads side by side, which is what this does.
+
+    Pass the EV response and a `get_odds` pull **from the same moment**, on
+    the same market. A book flags only when all three hold: it is in
+    `ANCHOR_CHAIN`, it carries at least `min_markets` two-sided unsuspended
+    markets, and it anchored zero lines while a book BELOW it in the chain
+    anchored some.
+
+    All three conditions came from a live pull disproving a simpler rule.
+    The first version flagged any live book that anchored nothing, and
+    immediately reported DraftKings — which can never anchor, so its absence
+    means nothing. And because the chain is tried in order, a lower-priority
+    book anchoring zero is correct rather than suspicious: it means the
+    books above it covered every line.
+
+    **Known limitation: this catches a TOTAL dropout, not a partial one.**
+    Pinnacle anchoring 5 of 5 and Pinnacle anchoring 2 of 5 both pass. The
+    partial case needs a per-line join of EV against odds on (player,
+    point), which is the fragile part of this codebase — B44 and D18 both
+    live there — so it is deliberately not attempted here. The observed B60
+    events were total (0 of 154, 0 of 22), which is what this detects.
+
+    This reports rather than raises. The dropout is upstream and the right
+    response is usually to say so and re-pull, not to abort — but an EV
+    quoted from a pull with a dropout must carry that fact.
+    """
+    anchored: dict = {}
+    for ln in ev_response.get("lines") or []:
+        src = ln.get("fair_source")
+        if src:
+            anchored[src] = anchored.get(src, 0) + 1
+
+    live: dict = {}
+    for bk in odds_response.get("bookmakers") or []:
+        key = bk.get("key") or bk.get("title")
+        n = _two_sided_markets(bk)
+        if n:
+            live[key] = n
+
+    # Only chain books can anchor, and the chain is tried IN ORDER per line.
+    # So a LOWER-priority book anchoring nothing is correct behaviour — the
+    # books above it covered everything. The dropout signature is the
+    # reverse: a book anchored zero while live, and books BELOW it in the
+    # chain picked up the work that should have been its.
+    dropouts = []
+    for i, book in enumerate(ANCHOR_CHAIN):
+        if anchored.get(book) or live.get(book, 0) < min_markets:
+            continue
+        if any(anchored.get(b) for b in ANCHOR_CHAIN[i + 1:]):
+            dropouts.append(book)
+    return AnchorCoverage(anchored=anchored, live=live,
+                          silent_dropouts=dropouts,
+                          total_lines=len(ev_response.get("lines") or []))
+
+
 def flatten_odds(response: dict,
                  line_type: str = "main",
                  market: str | None = None,

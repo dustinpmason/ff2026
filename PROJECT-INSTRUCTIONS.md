@@ -549,10 +549,24 @@ Andrews pinnacle 0.4878 to **bovada 0.5000**; Strange's line vanished.
 And `anchor_opening` / `anchor_thin` key on liquidity, which
 `get_event_ev` does not carry — **so the flags cannot see this either.**
 
-**The rule: on every EV pull, count lines by `fair_source` and compare
-against what `get_odds` shows the anchor book carrying.** A sudden
-absence of Pinnacle with no change in Pinnacle's board is the signature.
-Say the counts out loud in any write-up that quotes an EV.
+**The rule: on every EV pull, call
+`ff_props.anchor_coverage(ev_response, odds_response)` and report
+`.describe()`.** It takes the EV response and a `get_odds` pull from the
+same moment and names any book that anchored nothing while live. Say the
+counts out loud in any write-up that quotes an EV.
+
+It flags a book only when all three hold: it is in `ANCHOR_CHAIN`
+(pinnacle, polymarket, kalshi, bovada, smarkets — **nothing else can ever
+anchor**, so a live DraftKings anchoring nothing means nothing), it
+carries 3+ two-sided unsuspended markets, and a book BELOW it in the
+chain anchored instead. The chain is tried in order per line, so a
+lower-priority book anchoring zero is correct — the books above it
+covered everything.
+
+**It catches a TOTAL dropout, not a partial one.** Pinnacle anchoring 5
+of 5 and 2 of 5 both pass. The partial case needs a per-line join on
+(player, point), which is where B44 and D18 live, so it is deliberately
+not attempted. Every observed B60 event was total — 0 of 154, 0 of 22.
 
 On the 00:30 run this left **34 of 48 legs `anchor_immature`** — 30
 Bovada at exactly 0.5000 with null liquidity, 4 thin Kalshi. **There was

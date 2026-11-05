@@ -863,6 +863,74 @@ chk("line_type='alternate' returns rows when they exist",
                                            _oc("Under", 115, 230.5)]),
                      line_type="alternate")) == 1)
 
+section("25a. a silently dropped anchor book is caught (B60)")
+from ff_props import anchor_coverage, ANCHOR_CHAIN
+# `get_event_ev` drops an anchor book while that book's odds feed stays
+# healthy, and DOES NOT return [] when it does — it returns a populated,
+# plausible response with the sharp anchor quietly replaced. Observed three
+# times on event 87238; worst case Pinnacle anchored 0 of 154 lines across
+# three calls over 90 seconds while a paired get_odds control showed it
+# live. anchor_opening/anchor_thin cannot see it: they key on liquidity and
+# the EV payload carries none (D17). Only holding both payloads together
+# catches it.
+def _mk_odds(books):
+    return {"bookmakers": [
+        {"key": b, "markets": [{"suspended_at": None, "outcomes": [
+            {"name": "Over", "point": 10.5 + i}, {"name": "Under", "point": 10.5 + i}]}
+            for i in range(n)]}
+        for b, n in books.items()]}
+def _mk_ev(sources):
+    return {"lines": [{"fair_source": s} for s, n in sources.items()
+                      for _ in range(n)]}
+
+_ok = anchor_coverage(_mk_ev({"pinnacle": 5, "kalshi": 41, "bovada": 6}),
+                      _mk_odds({"pinnacle": 5, "kalshi": 19, "bovada": 7}))
+chk("a healthy pull reports no dropout", _ok.healthy and not _ok.silent_dropouts,
+    _ok.describe()[:70])
+_drop = anchor_coverage(_mk_ev({"kalshi": 133, "bovada": 21}),
+                        _mk_odds({"pinnacle": 14, "kalshi": 19, "bovada": 7}))
+chk("the observed B60 signature IS caught",
+    _drop.silent_dropouts == ["pinnacle"] and not _drop.healthy,
+    "pinnacle live with 14 two-sided markets, anchored 0")
+chk("and the note says it is invisible in the EV payload alone",
+    "nothing in the EV payload says it happened" in _drop.describe())
+# THE FALSE POSITIVE A LIVE PULL CAUGHT. DraftKings can never anchor — the
+# chain is pinnacle -> polymarket -> kalshi -> bovada -> smarkets — so its
+# absence from the anchor set means nothing at all.
+chk("a book outside the anchor chain is never a dropout",
+    anchor_coverage(_mk_ev({"pinnacle": 5, "kalshi": 41}),
+                    _mk_odds({"pinnacle": 5, "kalshi": 19,
+                              "draftkings": 3})).healthy,
+    f"chain is {ANCHOR_CHAIN}; draftkings is not in it")
+# The chain is tried IN ORDER, so a LOWER book anchoring nothing is correct
+# behaviour — the books above it covered every line — not a dropout.
+chk("a lower-priority book anchoring nothing is correct, not suspicious",
+    anchor_coverage(_mk_ev({"pinnacle": 52}),
+                    _mk_odds({"pinnacle": 14, "kalshi": 19,
+                              "bovada": 7})).healthy,
+    "pinnacle covered everything; kalshi and bovada had nothing left")
+chk("a suspended market does not count as live to anchor",
+    anchor_coverage(_mk_ev({"kalshi": 10}),
+                    {"bookmakers": [
+                        {"key": "pinnacle", "markets": [
+                            {"suspended_at": "2026-11-05T00:00:00Z",
+                             "outcomes": [{"name": "Over"}, {"name": "Under"}]}] * 9},
+                        {"key": "kalshi", "markets": [
+                            {"suspended_at": None,
+                             "outcomes": [{"name": "Over"}, {"name": "Under"}]}] * 9}]}
+                    ).healthy)
+chk("a one-sided board does not count as live to anchor",
+    anchor_coverage(_mk_ev({"kalshi": 10}),
+                    {"bookmakers": [
+                        {"key": "pinnacle", "markets": [
+                            {"suspended_at": None,
+                             "outcomes": [{"name": "Over"}]}] * 9},
+                        {"key": "kalshi", "markets": [
+                            {"suspended_at": None,
+                             "outcomes": [{"name": "Over"}, {"name": "Under"}]}] * 9}]}
+                    ).healthy,
+    "one-sided is D-18's fourth meaning of [], not a dropout")
+
 section("25b. milestone rungs at real board cardinality (B49)")
 from ff_props import canonical_bet, rung_threshold
 # THE GAP THIS CLOSES: the milestone fixture in section 24 posts ONE rung for
