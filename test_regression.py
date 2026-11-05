@@ -418,6 +418,18 @@ ff_betlog.PULL_MARKER.unlink()
     '{"id":"wrongext","kind":"bet","stake":500.0,"legs":[]}\n')
 _ids = {r.get("id") for r in ff_betlog._read_all()}
 chk("a stray .jsonl is not ingested as history", "stray" not in _ids)
+# status() reads the log TWICE (bets, then recs), so every warning was
+# emitted once per read — one stray file printed two identical lines, a
+# corrupt line three. A warning repeated is a warning skimmed, and the
+# repetition made the log look more broken than it was.
+import io as _io, contextlib as _ctx
+ff_betlog._WARNED.clear()
+_buf = _io.StringIO()
+with _ctx.redirect_stdout(_buf):
+    ff_betlog.status()
+chk("a warning is emitted once per process, not once per read",
+    _buf.getvalue().count("random-notes") == 1,
+    f'{_buf.getvalue().count("random-notes")} copies in one status() call')
 chk("a real-looking log under the wrong extension is NOT silently dropped",
     "wrongext" not in _ids,
     "it is named in a warning instead — silence is the failure here")

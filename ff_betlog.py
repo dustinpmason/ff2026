@@ -89,6 +89,23 @@ def _append(rec: dict) -> dict:
     return rec
 
 
+_WARNED: set = set()
+
+
+def _warn_once(msg: str) -> None:
+    """Say it once per process, not once per read.
+
+    `status()` reads the log twice (bets, then recs) and every read
+    re-emitted every warning, so a single stray file produced two
+    identical lines and a corrupt log line produced three. A warning
+    repeated is a warning skimmed — and worse, the repetition made the
+    log look more broken than it is.
+    """
+    if msg not in _WARNED:
+        _WARNED.add(msg)
+        print(msg)
+
+
 def _read_all() -> list[dict]:
     """Every record from every log file in LOG_DIR, oldest file first."""
     if not LOG_DIR.exists():
@@ -111,9 +128,9 @@ def _read_all() -> list[dict]:
                     and (p.suffix in {".jsonl", ".json", ".txt"}
                          or p.name.startswith(DRIVE_PREFIX)))
     for name in strays:
-        print(f"  WARNING: {name} is in the log directory but will NOT be "
-              f"read — history is only loaded from {DRIVE_PREFIX}*.jsonl. "
-              f"If this is a real log, rename it.")
+        _warn_once(f"  WARNING: {name} is in the log directory but will NOT "
+                   f"be read — history is only loaded from "
+                   f"{DRIVE_PREFIX}*.jsonl. If this is a real log, rename it.")
     if SESSION.exists():
         paths.append(SESSION)
     for path in paths:
@@ -126,8 +143,8 @@ def _read_all() -> list[dict]:
             except json.JSONDecodeError:
                 # A corrupt line must not take the whole log down with it.
                 # Report it and keep going — the rest is still gradeable.
-                print(f"  WARNING: {path.name} line {i} is not valid JSON, "
-                      f"skipped")
+                _warn_once(f"  WARNING: {path.name} line {i} is not valid "
+                           f"JSON, skipped")
     return out
 
 

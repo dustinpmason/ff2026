@@ -139,6 +139,19 @@ characters. It now raises TypeError.
 **History is read only from `ff-betlog-*.jsonl`.** Anything else in the
 log directory is named in a warning and skipped, including a real log
 saved under the wrong extension — which previously vanished in silence.
+**That warning fires once per session, not once per read**, because
+`status()` reads the log twice and was printing every warning twice (and
+a corrupt line three times). So a second `status()` is quiet even when
+the stray file is still there — do not read the silence as "fixed".
+
+**Do not trash, delete or overwrite anything in that Drive folder.** It
+holds the only copy of the log; there is no second backup. The pull and
+push procedures are read-and-append only, and nothing in normal work
+requires removing a file. If something looks like clutter, leave it and
+say so — note that **test records are not distinguishable from real ones
+by structure** (B66): two of the throwaway fixtures use real players at
+plausible prices, and only free-text `note` marks them, so "this looks
+like a test" is not a safe basis for deleting anything.
 
 **Query by `parentId`, not by title.** `title contains 'ff-betlog-'` returns
 the **folder** `ff-betlog` — Drive's `contains` matches token prefixes, not
