@@ -868,20 +868,22 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
 - **`anchor_opening`** — fair_prob exactly 0.5000 at or below Pinnacle's
   250 minimum tier. The book set a point and has taken no money. Re-pull
   closer to kickoff.
-  **BROKEN AS WRITTEN — B54, do not rely on this flag.** The 250 is
-  Pinnacle's minimum tier, not a constant. Measured on event 87238:
-  liquidity 250 on every outcome on 2026-11-03, and **500 on every
-  outcome on 2026-11-05**, roughly a day out. Pinnacle raises the tier as
-  the event approaches. So the flag now tests a threshold the lines have
-  already passed, and it cannot fire on the case it was written for — on
-  that same 2026-11-05 pull, 7 of 14 receiving lines were priced
-  −112/−112, which de-vigs to **exactly 0.5000**, and every one carried
-  liquidity 500. A 2026-11-04 session ran with 31 of 60 Pinnacle anchors
-  at exactly 0.5000 and no flag raised.
-  **Until it is fixed, treat an exact 0.5000 as an opening anchor on the
-  0.5000 alone, whatever the liquidity**, which is what B42 says is
-  sufficient. Do not read an unraised `anchor_opening` as evidence the
-  anchor has taken money.
+  **The 250 was Pinnacle's minimum tier the day this was written, and a
+  tier is not a constant — fixed 2026-11-05 (B54), threshold now 500.**
+  Measured on event 87238: liquidity 250 on every outcome 2026-11-03 and
+  **500 on every outcome 2026-11-05**, about a day out. Pinnacle raises
+  the limit as an event approaches, so the flag was testing a line the
+  board had already walked past: on that 2026-11-05 pull, 7 of 14
+  receiving lines were priced −112/−112 — exactly 0.5000 — every one at
+  liquidity 500, none flagged, and a 2026-11-04 run carried 31 of 60
+  Pinnacle anchors at exactly 0.5000 in silence.
+  The gate itself is correct and was kept: an exact 0.5000 behind
+  genuinely deep money is a real coin flip rather than a prior. **It will
+  go stale again** if Pinnacle moves to 1,000, and nothing would catch it,
+  because a flag that stops firing breaks no test — B59 is to derive the
+  tier from the board instead of hardcoding it. Until then, if a pull
+  shows a book's lines clustered at a limit above 500, treat an exact
+  0.5000 there as an opening anchor regardless of what the flag says.
 - **`anchor_thin`** — liquidity at or under 25, *whatever* the fair_prob
   says. A Kalshi contract with $0.98 resting on it produces a
   precise-looking 0.5052 that is pure noise, and it is the worst input you

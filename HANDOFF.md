@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "363 checks run, 363 passed, 0 failed"
+python3 test_regression.py        # expect: "366 checks run, 366 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md**, **PROJECT-INSTRUCTIONS.md** and **LEAGUE-CONFIG.md**
@@ -34,7 +34,7 @@ context.
 
 ## Current state
 
-- **363 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **366 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
@@ -107,11 +107,12 @@ assess a leg is not the leg being broken.
    slate it is the weaker of the two numbers. It is also the number that
    will be rejecting most of his standalone-game boosts, so it had better be
    right.
-2. **B53 — `_pair_r` reports unmeasured pairs as independent.** Fix this
-   before anything else gets priced; every structure call the module makes
-   runs through it, and it already reached a live recommendation. See
-   BACKLOG. B54 (`anchor_opening` can never fire) is the same shape and
-   nearly as cheap.
+2. **B55/B56 — the module does not understand the actual promo.** FLOOR
+   is checked against the product while a token's minimum odds are checked
+   by the book against the real SGP price, which can void a token; and
+   stake-back tokens have no model at all despite being worth more than
+   the boosts on the 2026-11-05 inventory. See BACKLOG.
+   (B53 was WITHDRAWN — the claim was wrong, see its row. B54 is DONE.)
 3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
    that works at a $10 stake. **First check B58** — the Drive log folder
    returned zero files and nobody established why.

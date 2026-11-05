@@ -1790,6 +1790,26 @@ chk("exactly 0.5000 at HIGH liquidity is not flagged",
 chk("exactly 0.5000 with liquidity unreported is still flagged",
     leg("WR A1", EV1, fair_prob=0.5).anchor_immature,
     "bovada returns null liquidity; the 0.5000 is the signal on its own")
+# B54. The threshold was 250 because that was Pinnacle's minimum tier the
+# day it was written, and a tier is not a constant: the same event read 250
+# on 2026-11-03 and 500 on 2026-11-05, about a day out. The flag then could
+# not fire on the case it exists for — 7 of 14 receiving lines priced
+# -112/-112 (exactly 0.5000) at liquidity 500, none flagged, and a
+# 2026-11-04 run carried 31 of 60 anchors at exactly 0.5000 in silence.
+#
+# THIS IS THE CHECK THAT WAS MISSING, and note why the suite could not have
+# caught it: a flag that never fires breaks nothing. Every existing check
+# here used a liquidity value the threshold still covered. A guard needs a
+# test at the boundary the real world is moving toward, not only inside it.
+chk("exactly 0.5000 at Pinnacle's CURRENT 500 tier is flagged",
+    leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=500).anchor_immature,
+    "measured 2026-11-05: Pinnacle raises its limit as the event nears")
+chk("the 250 tier still flags, so the fix only widened the net",
+    leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=250).anchor_immature)
+chk("a settled anchor at the 500 tier is still NOT flagged",
+    not leg("WR A1", EV1, fair_prob=0.5065,
+            anchor_liquidity=500).anchor_immature,
+    "the 0.5000 does the work; liquidity only sets how far the net reaches")
 
 # The scope bug the first version shipped with: fair_prob was tested FIRST
 # and returned early, so the liquidity check was unreachable for any line

@@ -168,7 +168,27 @@ MODES = ("cross-game", "single-game")
 # it is 0 of 16. An EV built on an opening anchor is an EV against an
 # opening number, and that has to be said out loud rather than printed to a
 # decimal place it has not earned.
-OPENING_LIQUIDITY = 250
+# B54. This was 250 because that was Pinnacle's minimum tier the day it was
+# written. **A tier is not a constant.** Measured on one event: liquidity
+# 250 on every outcome 2026-11-03, and 500 on every outcome 2026-11-05,
+# about a day out — Pinnacle raises the limit as an event approaches, so a
+# threshold pinned to the old tier tests a line the board has already walked
+# past. The flag then cannot fire on the case it exists for: on that
+# 2026-11-05 pull, 7 of 14 receiving lines were priced -112/-112 — exactly
+# 0.5000 — every one at liquidity 500, and none flagged. A 2026-11-04 run
+# priced 31 of 60 Pinnacle anchors at exactly 0.5000 in silence.
+#
+# Raised to 500 rather than removed. The gate is NOT wrong in principle: an
+# exact 0.5000 backed by genuinely deep money is a real coin flip, not a
+# prior, which is what the 10,000-liquidity check in section 35b pins down.
+# What was wrong is reading one book's current minimum as a universal line.
+#
+# This will go stale again. If Pinnacle moves to 1,000 the same silent
+# failure returns, and nothing in the suite would catch it, because a flag
+# that never fires breaks no test. The durable fix is to derive the tier
+# from the board — the modal liquidity across a book's own lines in the
+# pull — instead of hardcoding it. Filed as B59; this is the stopgap.
+OPENING_LIQUIDITY = 500
 
 # A SEPARATE problem from an opening line, and the first version of this
 # module could not see it. `anchor_immature` tested fair_prob == 0.5 FIRST
@@ -343,6 +363,11 @@ class BoostLeg:
         An exact 0.5000 is the signal on its own — by kickoff only ~9% of
         lines sit there — and low liquidity confirms it where the book
         reports any.
+
+        B54 moved OPENING_LIQUIDITY from 250 to 500 — see the note there.
+        The structure of this test is unchanged and deliberately so: an
+        exact 0.5000 behind genuinely deep money is a real coin flip rather
+        than a prior, so the liquidity condition stays.
         """
         if abs(float(self.fair_prob) - 0.5) > 1e-9:
             return False
