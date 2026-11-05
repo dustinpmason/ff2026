@@ -316,3 +316,21 @@ reality.
     clauses of fixes shipped the same morning, which is the part
     self-review structurally cannot catch: the same model wrote the fix,
     the comment explaining the fix, and the test blessing it.
+16. **The engine's guards only protect calls that go through the engine.**
+    The eleventh deployment test self-caught two errors and BOTH were the
+    project's own fixed bugs, re-committed in the thread's own ad-hoc
+    extraction scripts: a raw name lookup that `norm_player()` exists to
+    prevent (B44), and a dict comprehension that kept the "No" side of a
+    two-sided board, which `screen_quotes` exists to prevent (B24/B28).
+    Both were caught only because the resulting numbers were absurd — a
+    booksum of 20.99, a position of None. **A side-mix on a board where
+    both sides sit near -110, or a name miss that returns a plausible
+    position, would have passed silently.** Hardening a module does not
+    harden the session that calls it. Export the primitives the thread
+    keeps hand-rolling (B82).
+17. **A veto must measure the thing its message claims.** The role-change
+    veto fires on ANY role change and then asserts "it runs against
+    <side>" without computing the direction. It rejected the best-priced
+    leg on the board for a role EXPANSION that argued FOR the side being
+    bet. Same shape as lesson 6, but inverted: not a plausible number
+    instead of an error — a plausible REASON instead of a measurement.

@@ -644,6 +644,27 @@ observations across that cycle were every one 0% or 100%. Pinnacle's
 anchoring is binary, so partials matter less than first assumed — one
 event, one night, one book, so not ruled out in general.
 
+**The 10-30 minute figure above is a FLOOR, not a window — measured
+2026-11-05 (D19).** A dropout first seen at 15:42Z was still running at
+16:49Z: **67+ minutes**, more than double anything previously recorded.
+Do not tell Dustin a dropout "should clear shortly"; say it is running and
+that it has been observed to last over an hour.
+
+**And drops are scoped per MARKET per EVENT, independently.** In that same
+window Pinnacle was dropped on `player_reception_yds`, `player_rush_yds`
+**and** `player_pass_yds` across **two different events**, while anchoring
+10 of 32 lines on `player_anytime_td` and reading healthy. So a healthy
+`anchor_coverage` on one market says nothing about another market in the
+same pull, and the yardage markets dropping together is the expensive
+case: **those three are exactly what a main-line boost slip is built
+from.**
+
+**So `anchor_coverage` is necessary and not sufficient. Check
+`fair_source` per leg before quoting a yardage EV**, and say which book
+each leg actually anchored on. A slip whose legs all read `bovada` or
+`kalshi` at liquidity 250-500 is three opening priors from softer books,
+not three measured fair lines — report it that way whatever the EV says.
+
 **Still uncovered:** polymarket carries no NFL props and smarkets is not
 in the NFL book list at all, so two of five chain entries have never been
 exercised live.
@@ -1242,6 +1263,27 @@ number, because the refund is essentially the whole edge — at +900 the
 raw bet is about -$2.81 and the refund +$6.03 — and burying that hides
 where the money comes from. Quote the band, never a point, and state the
 hold and v you used.
+
+**Two reporting rules, both earned 2026-11-05 (B83).**
+
+- **Never interpolate `v`.** The only values with provenance are
+  `STAKE_BACK_V_OBSERVED = (0.58, 0.65, 0.71)`. A write-up that night
+  built its comparison table at **v = 0.62** — an invented midpoint — and
+  set it beside correctly-banded figures in the same answer. Call
+  `stake_back_band()` and quote what it returns.
+- **A range must be ONE bet across the band, not two bets across two
+  assumptions.** The same write-up headlined "each $10 stake-back is worth
+  $1.75-$3.17", where $1.75 was Henry +600 at v=0.58 and $3.17 was Strange
+  +1000 at v=0.71. Measured separately, Henry's band is
+  **$1.75 / $2.38 / $2.93** and Strange's is **$1.94 / $2.60 / $3.17**.
+  Quote a band per leg, and if comparing legs, hold `v` fixed across the
+  comparison and say which `v`.
+
+**Also re-measure the hold rather than inheriting the 0.39 default.** On
+that night's DraftKings First TD board the overround was **54.2%**, not
+39%, and the default would have overstated every EV. `stake_back_ev`'s
+`market_hold` default is one book, one market, one night (B77) — pass the
+booksum you actually measured.
 
 ## Touchdown-scorer questions — "who do you like for the first TD?"
 
