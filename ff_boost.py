@@ -625,6 +625,11 @@ class Candidate:
     book_odds: float | None = None
     correlation_factor: float | None = None
     notes: list[str] = field(default_factory=list)
+    # B55. The minimum TOTAL ODDS a boost token requires, as the promo
+    # states it. Kept separate from FLOOR, which is this project's own band
+    # and is a different question: FLOOR asks "is this slip worth betting",
+    # the token minimum asks "will the book let me apply the token at all".
+    token_min_odds: float | None = None
 
     # --- the price actually under consideration -----------------------
     @property
@@ -639,6 +644,52 @@ class Candidate:
     @property
     def clears_floor(self) -> bool:
         return self.odds >= FLOOR
+
+    # --- B55: the token's minimum applies to the PRICE, not the product ---
+    @property
+    def token_minimum(self) -> bool | None:
+        """Does the real quote clear the token's minimum total odds?
+
+        `None` means UNKNOWN, and unknown is the dangerous state rather than
+        a neutral one. A boost token's "minimum total odds" is checked by
+        the book against the correlated SGP price it actually offers, which
+        is always below the product of the legs. Measured at BetMGM: a +516
+        product quoted +400, +554 quoted +450, +593 quoted +475 — factors
+        0.81 to 0.86. So a +450 product prices to roughly +346 to +372, and
+        a slip that clears a +400 token on the product VOIDS it on the
+        price. Clearing the floor says nothing about this: FLOOR is checked
+        against `odds`, which is the product until the slip is priced.
+
+        Returns None when no token minimum was supplied, and None when one
+        was but the slip is unpriced — because the product cannot answer the
+        question and guessing from it is the bug this exists to stop.
+        """
+        if self.token_min_odds is None or not self.priced:
+            return None
+        return float(self.book_odds) >= float(self.token_min_odds)
+
+    @property
+    def token_note(self) -> str | None:
+        """Say the quiet part: unpriced is not 'probably fine'."""
+        if self.token_min_odds is None:
+            return None
+        if not self.priced:
+            est_lo = american(to_decimal(self.independent_odds) * 0.81)
+            est_hi = american(to_decimal(self.independent_odds) * 0.86)
+            return (f"token needs {self.token_min_odds:+.0f} and this slip "
+                    f"is UNPRICED. Its product is "
+                    f"{self.independent_odds:+.0f}, which at the measured "
+                    f"0.81-0.86 correlation factors would quote roughly "
+                    f"{est_lo:+.0f} to {est_hi:+.0f} — an ESTIMATE, not a "
+                    f"price. Call price_sgp before relying on the token.")
+        if self.token_minimum:
+            return (f"token minimum {self.token_min_odds:+.0f} cleared by "
+                    f"the real quote {self.book_odds:+.0f} "
+                    f"(product was {self.independent_odds:+.0f}).")
+        return (f"TOKEN VOIDS. It needs {self.token_min_odds:+.0f} and the "
+                f"book quotes {self.book_odds:+.0f}. The product "
+                f"{self.independent_odds:+.0f} clears it; the price does "
+                f"not, and the price is what the book checks.")
 
     # --- EV, where it is legal ----------------------------------------
     @property
@@ -975,7 +1026,62 @@ def price_candidate(cand: Candidate, *, book_odds: float,
                      independent_odds=cand.independent_odds,
                      stake=cand.stake, book_odds=float(book_odds),
                      correlation_factor=correlation_factor,
-                     notes=list(cand.notes))
+                     notes=list(cand.notes),
+                     token_min_odds=cand.token_min_odds)
+
+
+def stake_back_ev(odds: float, *, stake: float = 10.0,
+                  bonus_value: float = 0.70,
+                  market_hold: float = 0.22) -> dict:
+    """EV of a STAKE-BACK token (bet reset / safety net / second chance).
+
+    B56. These are not boosts and must not go through the boost path. A
+    boost pays more when you WIN, so it rewards a high win probability. A
+    stake-back refunds the stake as a BONUS BET when you LOSE, so its value
+    rises as win probability FALLS. **The right bet for one is the longest
+    shot that qualifies**, which is why these belong on First TD Scorer and
+    not on a -110 single.
+
+        EV = p*(d-1)*S  -  (1-p)*S*(1-v)
+
+    `bonus_value` (v) is the cash worth of $1 of bonus-bet FACE and it
+    decides the answer, so it is an argument rather than a constant and the
+    caller must state it. A bonus bet returns profit only, never the stake,
+    so at fair odds it is worth `1 - 1/d`: 0.50 at even money, 0.80 at +400,
+    0.90 at +900. Haircut for the vig of whatever market the refund is spent
+    in. A long First TD lands near 0.70; a -110 single near 0.46 — so where
+    the REFUND goes matters nearly as much as where the bet goes.
+
+    `market_hold` backs out the true probability from the offered price the
+    same way `expected_roi` does. First TD is one of the highest-hold
+    markets on the board, so the 0.22 default is a guess at a wide
+    distribution — pass the real one where it is known and quote a range.
+
+    Returns the components rather than one number, because the headline is
+    almost entirely the refund and that should be visible, not buried.
+    """
+    d = to_decimal(odds)
+    p = implied(odds) / (1.0 + float(market_hold))
+    base = p * (d - 1.0) * stake - (1.0 - p) * stake
+    refund = (1.0 - p) * stake * float(bonus_value)
+    return {"odds": float(odds), "p_true": p, "stake": float(stake),
+            "bonus_value": float(bonus_value), "market_hold": float(market_hold),
+            "base_ev": base, "refund_ev": refund, "ev": base + refund,
+            "roi": (base + refund) / stake}
+
+
+def stake_back_band(odds: float, *, stake: float = 10.0,
+                    market_hold: float = 0.22) -> dict:
+    """`stake_back_ev` across a pessimistic/central/optimistic bonus value.
+
+    Never quote a stake-back token as one number. `bonus_value` is an
+    assumption, not a measurement, and the spread it produces is wide enough
+    to matter.
+    """
+    return {lab: stake_back_ev(odds, stake=stake, bonus_value=v,
+                               market_hold=market_hold)
+            for lab, v in (("pessimistic", 0.60), ("central", 0.70),
+                           ("optimistic", 0.80))}
 
 
 # ---------------------------------------------------------------------------

@@ -1863,6 +1863,75 @@ chk("a first-name variant is NOT silently merged",
     "resolve these through search_players on exact known_names")
 
 # ---------------------------------------------------------------------------
+section("35d. a token's minimum applies to the PRICE, not the product (B55)")
+from dataclasses import replace
+from ff_boost import stake_back_ev, stake_back_band
+# A boost token's "minimum total odds" is checked by the book against the
+# correlated SGP quote, which is always below the product of the legs.
+# Measured at BetMGM on event 87238, 2026-11-05: product +516 -> quote +400
+# (factor 0.8114), +554 -> +450 (0.8405), +593 -> +475 (0.8300). So a +450
+# product prices to roughly +346-372 and a +400 token VOIDS on a slip whose
+# product cleared it comfortably. FLOOR could never catch this: it is
+# checked against `odds`, which IS the product until the slip is priced.
+_b55 = enumerate_candidates(SAME_INDEP, META, boost_pct=0.25,
+                            mode="single-game").candidates[0]
+_b55 = replace(_b55, independent_odds=450.0, token_min_odds=400.0)
+chk("an unpriced slip returns UNKNOWN, never a pass",
+    _b55.token_minimum is None and not _b55.priced)
+chk("and says so loudly rather than implying it is fine",
+    "UNPRICED" in (_b55.token_note or ""), str(_b55.token_note)[:70])
+chk("the unpriced note gives an estimate RANGE, labelled as an estimate",
+    "ESTIMATE" in (_b55.token_note or "")
+    and "+364" in (_b55.token_note or "") or "+37" in (_b55.token_note or ""))
+# The case the bug produced: product clears, price does not.
+_void = price_candidate(_b55, book_odds=360.0)
+chk("a product that clears but a price that does not VOIDS the token",
+    _void.token_minimum is False and _void.clears_floor,
+    f"product {_void.independent_odds:+.0f} price {_void.book_odds:+.0f}")
+chk("the void note names both numbers so the gap is visible",
+    "+360" in (_void.token_note or "") and "+450" in (_void.token_note or ""))
+_ok = price_candidate(_b55, book_odds=420.0)
+chk("a price that clears the minimum passes", _ok.token_minimum is True)
+chk("no token minimum supplied stays silent, not False",
+    price_candidate(replace(_b55, token_min_odds=None),
+                    book_odds=360.0).token_minimum is None)
+chk("the token minimum survives pricing", _void.token_min_odds == 400.0)
+# FLOOR and the token minimum are different questions and must not merge.
+chk("FLOOR is the project's band, the token minimum is the book's rule",
+    _void.clears_floor is True and _void.token_minimum is False)
+
+section("35e. stake-back tokens are not boosts (B56)")
+# A boost pays more when you WIN; a stake-back refunds the stake as a BONUS
+# BET when you LOSE. The arithmetic runs the opposite way, so the right bet
+# for one is the LONGEST qualifying shot — which is why these belong on
+# First TD Scorer. On the 2026-11-05 inventory two $10 stake-back tokens
+# were worth ~$4-5 each while all four boost tokens priced negative.
+_sb = {o: stake_back_ev(o) for o in (-150, 100, 400, 900, 1500)}
+chk("value RISES as win probability falls — the opposite of a boost",
+    all(_sb[a]["ev"] < _sb[b]["ev"]
+        for a, b in zip([-150, 100, 400, 900], [100, 400, 900, 1500])),
+    ", ".join(f'{o:+}:{d["ev"]:+.2f}' for o, d in _sb.items()))
+chk("the refund is the whole story, not a rounding adjustment",
+    _sb[900]["refund_ev"] > 3 * abs(_sb[900]["base_ev"]),
+    f'base {_sb[900]["base_ev"]:+.2f} vs refund {_sb[900]["refund_ev"]:+.2f}')
+chk("the raw bet underneath is still negative — the token is the edge",
+    all(d["base_ev"] < 0 for d in _sb.values()))
+chk("components are returned, not just a total",
+    {"base_ev", "refund_ev", "ev", "roi", "p_true"} <= set(_sb[900]))
+# bonus_value is an assumption and the spread is wide enough to matter.
+_band = stake_back_band(900)
+chk("the band is ordered and genuinely wide",
+    _band["pessimistic"]["ev"] < _band["central"]["ev"] < _band["optimistic"]["ev"]
+    and _band["optimistic"]["ev"] - _band["pessimistic"]["ev"] > 1.5,
+    f'{_band["pessimistic"]["ev"]:+.2f} to {_band["optimistic"]["ev"]:+.2f}')
+chk("a worthless bonus bet collapses it to the raw bet",
+    abs(stake_back_ev(900, bonus_value=0.0)["ev"]
+        - stake_back_ev(900)["base_ev"]) < 1e-9)
+chk("a higher market hold lowers EV without flipping the conclusion",
+    stake_back_ev(900, market_hold=0.40)["ev"]
+    < stake_back_ev(900, market_hold=0.15)["ev"]
+    and stake_back_ev(900, market_hold=0.40)["ev"] > 0)
+
 section("36. leg intake — nothing unbettable or circular reaches a slip")
 # ---------------------------------------------------------------------------
 vetoed = leg("WR C1", EV2, verdict="VETO",

@@ -325,10 +325,18 @@ different 3-leg receiving slips:
 | +590 | **+475** | 0.8335 |
 
 **Rule of thumb: a token with a +400 minimum needs a product of roughly
-+500.** A product of +450 would price near +375 and the token would
-void. The module cannot see this — it floors on the product — so check
-the real quote against the token's minimum yourself before recommending
-a slip.
++500 — and +516 is the lowest product actually observed to clear it.**
+Across the measured factor range the requirement is +495 at a 0.84
+factor and +517 at 0.81, so treat ~+520 as the safe target rather than
++500. A product of +450 prices to **+346 to +372** at those factors, so
+a +400 token voids by a wider margin than it looks. The module cannot
+see any of this — it floors on the product — so price the slip and check
+the real quote against the token's minimum before recommending it.
+
+**Re-pull and re-price before placing.** The quote is a live number and
+the anchors underneath it are less stable than they look (see the
+anchor-availability note below). A product computed from one pull and a
+quote fetched from another are not the same slip.
 
 Two things that follow:
 

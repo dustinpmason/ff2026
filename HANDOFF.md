@@ -10,7 +10,7 @@ the cost; everything durable is written down here and in the two docs.
 
 ```bash
 rm -rf ~/ff && git clone --depth 1 https://github.com/dustinpmason/ff2026.git ~/ff && cd ~/ff && python3 refresh.py
-python3 test_regression.py        # expect: "366 checks run, 366 passed, 0 failed"
+python3 test_regression.py        # expect: "382 checks run, 382 passed, 0 failed"
 ```
 
 Then read **BACKLOG.md**, **PROJECT-INSTRUCTIONS.md** and **LEAGUE-CONFIG.md**
@@ -34,7 +34,7 @@ context.
 
 ## Current state
 
-- **366 regression checks, all passing.** Seven engine modules: `ff_data`,
+- **382 regression checks, all passing.** Seven engine modules: `ff_data`,
   `ff_scoring`, `ff_props`, `ff_guillotine`, `ff_betlog`, `ff_backtest`,
   `ff_boost`.
 - Tier 0 and Tier 1 complete. P1 complete. F2 settled. **P0 complete.**
@@ -107,12 +107,14 @@ assess a leg is not the leg being broken.
    slate it is the weaker of the two numbers. It is also the number that
    will be rejecting most of his standalone-game boosts, so it had better be
    right.
-2. **B55/B56 — the module does not understand the actual promo.** FLOOR
-   is checked against the product while a token's minimum odds are checked
-   by the book against the real SGP price, which can void a token; and
-   stake-back tokens have no model at all despite being worth more than
-   the boosts on the 2026-11-05 inventory. See BACKLOG.
-   (B53 was WITHDRAWN — the claim was wrong, see its row. B54 is DONE.)
+2. **B59/B60 — the anchor layer is less stable than the code assumes.**
+   B59: `OPENING_LIQUIDITY` is still a hardcoded tier, now sitting exactly
+   on Pinnacle's 500 and silent again at the next bump; derive it from the
+   board's modal liquidity instead. B60: Pinnacle's availability as an
+   anchor flipped 0/22 to 21/24 inside SEVEN MINUTES on one event, so
+   which anchor a leg gets is not reproducible run to run. Measure B60
+   before theorising — two hypotheses with different fixes are in its row.
+   (B53 WITHDRAWN, the claim was wrong. B54, B55, B56 DONE.)
 3. **Grade forward via the bet log.** CLV across 30+ legs is the measurement
    that works at a $10 stake. **First check B58** — the Drive log folder
    returned zero files and nobody established why.
