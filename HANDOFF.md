@@ -441,3 +441,16 @@ reality.
     indistinguishable from a fact that was checked** — B39's family in its
     softest and most reachable form. When the engine holds both sides of a
     comparison, it should state the comparison.
+32. **Fix the reason, not just the symptom.** B82 is "the session keeps
+    hand-rolling payload walks". The most useful thing done about it was not
+    a warning but B92: `flatten_odds` dropped `liquidity`, so there was NO
+    sanctioned path to per-line anchor depth and the hand-roll was the only
+    option. Carrying one field removed the excuse. **When something keeps
+    getting bypassed, check whether it is missing the thing people bypass it
+    for.**
+33. **"Never reported" is not zero, and one number is not two.** B92 carries
+    liquidity per SIDE because Kalshi's two sides of one line differed
+    $5,977 against $112 — a per-line average would have been a fiction — and
+    returns None rather than 0.0 for books that report none, because
+    anchor_thin treats those differently. Both distinctions have their own
+    check; collapsing either one fails it.

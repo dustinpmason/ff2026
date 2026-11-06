@@ -3086,6 +3086,144 @@ if _prev is None:
 else:
     ff_betlog.SESSION.write_text(_prev)
 
+section("45. flatten_odds carries anchor depth, per side (B92)")
+# It dropped `liquidity`, so there was NO sanctioned path from a get_odds
+# payload to per-line anchor depth — which is why a session hand-rolled a
+# walk of bookmakers[].markets[].outcomes[], bypassing the outcome pairing,
+# the line_type filter, the Over/Under label matching and the price-key
+# fallbacks. B82 is about those hand-rolls; this removes a reason to write
+# one rather than warning against it.
+# ---------------------------------------------------------------------------
+_lq = {"bookmakers": [{"key": "kalshi", "markets": [{
+    "key": "player_reception_yds", "line_type": "main", "outcomes": [
+        {"name": "Over", "description": "Justice Hill", "point": 14.5,
+         "price": -110, "liquidity": 5977},
+        {"name": "Under", "description": "Justice Hill", "point": 14.5,
+         "price": -110, "liquidity": 112}]}]},
+    {"key": "draftkings", "markets": [{
+        "key": "player_reception_yds", "line_type": "main", "outcomes": [
+            {"name": "Over", "description": "Justice Hill", "point": 14.5,
+             "price": -115},
+            {"name": "Under", "description": "Justice Hill", "point": 14.5,
+             "price": -105}]}]}]}
+_rows = {r["book"]: r for r in ff_props.flatten_odds(_lq)}
+chk("both sides' liquidity survives the flatten",
+    _rows["kalshi"]["over_liquidity"] == 5977.0
+    and _rows["kalshi"]["under_liquidity"] == 112.0, str(_rows["kalshi"]))
+# The two sides of one Kalshi line really do differ by orders of magnitude,
+# which is why this is per-side and not one number for the row.
+chk("the two sides are kept apart, not averaged into a fiction",
+    _rows["kalshi"]["over_liquidity"] != _rows["kalshi"]["under_liquidity"])
+# A book that never reports liquidity must come back None, not 0 — "never
+# reported" and "nothing resting" are different states and anchor_thin
+# treats them differently.
+chk("a book that reports no liquidity gives None, never 0",
+    _rows["draftkings"]["over_liquidity"] is None
+    and _rows["draftkings"]["under_liquidity"] is None,
+    str(_rows["draftkings"]))
+chk("and the prices are untouched by the addition",
+    _rows["draftkings"]["over"] == -115.0
+    and _rows["draftkings"]["under"] == -105.0)
+# The whole point is that depth is now reachable WITHOUT walking the payload.
+chk("anchor depth is reachable from flatten_odds alone",
+    all(k in _rows["kalshi"] for k in
+        ("over", "under", "over_liquidity", "under_liquidity", "line",
+         "line_type", "suspended_at")))
+
+section("44. a hold outside its own band gets a verdict, not a neighbour (B93)")
+# report() printed `this slip's hold: 18.8% (reference band 23.1%-37.2%)` —
+# both numbers, one line apart, no verdict — and a live slip holding 18.79%
+# against the same-game band was read as a +1.83% edge and placed. The fix
+# is a sentence, not a computation: slip_hold and hold_band were already
+# properties on the same object.
+#
+# Reconstructed from the REAL placed slip (JAX@BAL, 2026-11-05): three
+# DraftKings receiving legs, Bovada-anchored at 0.4892 / 0.5000 / 0.5108,
+# quoted +550, 30% boost, correlation_factor 0.9498.
+# ---------------------------------------------------------------------------
+_EVT = "87238"
+def _rleg(player, fp, odds, team):
+    return BoostLeg(event_id=_EVT, book="draftkings",
+                    market="player_reception_yds", player=player, side="OVER",
+                    odds=odds, fair_prob=fp, fair_source="bovada",
+                    devig_method="shin", verdict="CLEAR", team=team, pos="WR")
+_real = [_rleg("Brenton Strange", 0.4892, -109, "BAL"),
+         _rleg("Travis Hunter", 0.5000, -115, "JAX"),
+         _rleg("Parker Washington", 0.5108, -110, "JAX")]
+_rst = classify(_real, {})
+_rc = ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
+                         independent_odds=584.0, stake=5.13)
+_rc = price_candidate(_rc, book_odds=550.0, correlation_factor=0.9498)
+chk("the reconstruction reproduces the slip that was placed",
+    abs(_rc.p_cash - 0.124942) < 1e-5 and abs(_rc.slip_hold - 0.1879) < 1e-4
+    and abs(_rc.ev_pct - 0.0183) < 1e-4,
+    f"p_cash {_rc.p_cash:.6f} hold {_rc.slip_hold:.4f} ev {_rc.ev_pct:.4f}")
+chk("and it is a SAME-GAME structure, so the same-game band applies",
+    not _rc.structure.cross_game and _rc.hold_band == (0.231, 0.372),
+    f"{_rc.structure.kind} {_rc.hold_band}")
+chk("the hold is detected as BELOW its band", _rc.hold_vs_band == "below")
+# str() rather than the raw value throughout: if the note regresses to None
+# these must FAIL, not raise TypeError and take every later section with
+# them (lesson 14 — and the first cut of this very section did exactly that).
+_rn = str(_rc.hold_band_note)
+chk("a below-band same-game slip gets a note at all",
+    bool(_rc.hold_band_note))
+chk("the note says the EV is FLATTERED, not merely different",
+    "flatters the EV" in _rn, _rn[:120])
+chk("and it explains WHY: p_cash is a product, not the joint",
+    "PRODUCT" in _rn and "not the joint" in _rn, _rn[:160])
+chk("and it refuses to let the EV be quoted bare",
+    "without saying so" in _rn, _rn[:200])
+chk("report() actually prints it, rather than leaving it on the object",
+    "flatters the EV" in ff_boost.report([_rc]))
+
+# A CROSS-GAME slip below band means something else entirely: the product IS
+# the joint there, so slip_hold is exact and below-band is just a better
+# price than the population. Must not carry the same warning.
+_xl = [leg("WR A1", EV1, fair_prob=0.52), leg("WR B1", EV2, fair_prob=0.52),
+       leg("WR E1", EV3, fair_prob=0.52)]
+_xst = classify(_xl, META)
+_xc = ff_boost.Candidate(legs=_xl, structure=_xst, boost_pct=0.30,
+                         independent_odds=600.0, stake=10.0)
+_xc = price_candidate(_xc, book_odds=640.0)
+chk("the cross-game fixture really is cross-game", _xc.structure.cross_game)
+if _xc.hold_vs_band == "below":
+    chk("a below-band CROSS-game slip is not called flattering",
+        not str(_xc.hold_band_note).startswith("***")
+        and "exact" in str(_xc.hold_band_note),
+        str(_xc.hold_band_note)[:150])
+# Within the band: no note at all, or the flag becomes noise.
+_wc = price_candidate(
+    ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
+                       independent_odds=584.0, stake=10.0),
+    book_odds=430.0)
+chk("a hold inside the band is 'within'", _wc.hold_vs_band == "within",
+    f"hold {_wc.slip_hold:.4f}")
+chk("and gets NO note, so the flag does not become noise",
+    _wc.hold_band_note is None)
+# Above the band understates the EV, which is self-correcting — say so
+# without the warning tone.
+_ac = price_candidate(
+    ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
+                       independent_odds=584.0, stake=10.0),
+    book_odds=250.0)
+chk("a hold above the band is detected", _ac.hold_vs_band == "above",
+    f"hold {_ac.slip_hold:.4f}")
+chk("and is described as understating, not flattering",
+    "understates rather than flatters" in str(_ac.hold_band_note),
+    str(_ac.hold_band_note)[:140])
+# The loudness marker is what separates the dangerous direction from the
+# other two — assert it rather than keyword-matching the prose, which is how
+# the first cut of this check failed on "understates rather than flatters".
+chk("only the EV-flattering case is marked loud",
+    _rn.startswith("***") and not str(_ac.hold_band_note).startswith("***"),
+    f"below={_rn[:10]!r} above={str(_ac.hold_band_note)[:10]!r}")
+# An unpriced or unpriceable candidate has no hold to compare.
+_up = ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
+                         independent_odds=584.0, stake=10.0)
+chk("an unpriced slip reports no verdict rather than a wrong one",
+    _up.hold_vs_band is None and _up.hold_band_note is None)
+
 section("40. the duplicate correlation table cannot diverge unnoticed (B68)")
 # ff_guillotine keeps its OWN literal copy of both correlation tables rather
 # than importing ff_boost's. B67 was a bug in the SHARED values that got

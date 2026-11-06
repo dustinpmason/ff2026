@@ -1044,6 +1044,73 @@ class Candidate:
         return self.structure.hold_band_reason
 
     @property
+    def hold_vs_band(self) -> str | None:
+        """Where this slip's realised hold sits against its own band.
+
+        B93. `report()` already printed both numbers one line apart and said
+        nothing when they disagreed, which is how a live slip holding 18.79%
+        against a same-game band of 23.1-37.2% got read as a +1.83% edge and
+        placed. A fact presented without a verdict is indistinguishable from
+        a fact that was checked.
+
+        Returns "below", "within", "above", or None when not priceable.
+        """
+        h = self.slip_hold
+        if h is None:
+            return None
+        lo, hi = self.hold_band
+        return "below" if h < lo else ("above" if h > hi else "within")
+
+    @property
+    def hold_band_note(self) -> str | None:
+        """The sentence to print when the hold falls outside its band.
+
+        BELOW is the dangerous direction and the two structures mean
+        different things by it:
+
+        * **same-game** — `p_cash` is `fair_joint`, a PRODUCT, and for a
+          same-game slip the product is not the joint. Whatever correlation
+          is not in the table is missing from it, and the band encodes what
+          real same-game slips actually hold. So a product-based hold under
+          the band says the product is probably OVERSTATING P(cash) and the
+          EV is flattered. Measured instance: a slip of three receiving legs,
+          two of them same-team, held 18.79% against a 23.1-37.2% band; the
+          same-team receiver joint-crossing lift is 0.9817x (E6, n=12,622),
+          which alone took that slip from +1.83% to -0.04%.
+        * **cross-game** — the product IS the joint, so `slip_hold` is exact
+          and below-band just means this slip is priced better than the
+          population. Worth saying, not worth worrying about.
+
+        ABOVE the band is a worse price than expected in both cases, which
+        is self-correcting: it makes the EV look worse, not better.
+        """
+        where = self.hold_vs_band
+        if where in (None, "within"):
+            return None
+        lo, hi = self.hold_band
+        h = self.slip_hold
+        if where == "above":
+            return (f"hold {h:.1%} is ABOVE the {lo:.1%}-{hi:.1%} band for "
+                    f"this structure — a worse price than the population, "
+                    f"which understates rather than flatters the EV.")
+        if self.structure.cross_game:
+            return (f"hold {h:.1%} is BELOW the {lo:.1%}-{hi:.1%} band. For "
+                    f"a cross-game slip the product IS the joint, so this "
+                    f"number is exact and simply beats the population — "
+                    f"worth noting, not worth distrusting.")
+        return (f"*** hold {h:.1%} is BELOW the {lo:.1%}-{hi:.1%} band for a "
+                f"SAME-GAME slip, and that flatters the EV. P(cash) here is "
+                f"a PRODUCT of the legs, and for a same-game slip the "
+                f"product is not the joint — it is missing whatever "
+                f"correlation the table does not carry. The band is what "
+                f"real same-game slips actually hold, so a product-based "
+                f"hold beneath it says the product is probably overstating "
+                f"P(cash). Do not quote this EV without saying so. For "
+                f"scale: two same-team receivers cross together at 0.9817x "
+                f"independence (E6, n=12,622), which is worth about 2 points "
+                f"of EV on a three-leg slip.")
+
+    @property
     def payout(self) -> float:
         return boosted_return(self.stake, self.odds, self.boost_pct)
 
@@ -1471,6 +1538,12 @@ def report(cands, boost_label: str = "") -> str:
                 out.append(f"  this slip's hold: {c.slip_hold:.1%}  "
                            f"(observed, not assumed — reference band "
                            f"{c.hold_band[0]:.1%}-{c.hold_band[1]:.1%})")
+                # B93. These two numbers used to sit here with no verdict
+                # between them, and a slip holding 18.79% against a
+                # 23.1-37.2% band got read as an edge and placed.
+                _note = c.hold_band_note
+                if _note:
+                    out.append(f"  {_note}")
             else:
                 out.append(f"  anticipated ROI : {c.ev_band[0]:+.1%} to "
                            f"{c.ev_band[1]:+.1%} across the measured hold "

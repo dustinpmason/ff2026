@@ -959,6 +959,12 @@ an Over. What you will see now:
   it runs against.
 - **No edge supplied** → VETO for the **missing side**, not for a direction
   nobody measured. Pass the `Edge` to get a directional read.
+- **An opportunity count that did not move** → VETO as **DIRECTION NOT
+  ESTABLISHED**, and the message says the count *did NOT move* (B90). This
+  is a SEPARATE predicate from the conflict below — `count_flat`, not
+  `direction_conflict`. Read the flags rather than inferring the predicate
+  from the message: a session reported a flat-count leg as the conflict case
+  because one message used to cover both.
 - **Share and count pointing opposite ways** → VETO as **DIRECTION NOT
   ESTABLISHED** (B84). `verdict` is decided on SHARE, but a threshold prop
   is priced on opportunity COUNT, and when team volume moves the two
@@ -1285,6 +1291,44 @@ Two things to check rather than assume: whether the book allows a
 stake-back and a boost on the same slip (usually one promo per slip), and
 the token's minimum-odds floor, which a long First TD clears easily but a
 heavy favourite may not.
+
+**A slip's hold is now COMPARED against its band, not just printed beside
+it (B93).** `report()` used to show `this slip's hold: 18.8% (reference band
+23.1%-37.2%)` and say nothing — and a live slip was placed off that. It now
+prints a verdict, and the three cases mean different things:
+
+- **Same-game, hold BELOW the band — marked `***`.** This is the dangerous
+  one and it FLATTERS the EV. `P(cash)` is `fair_joint`, a PRODUCT, and for
+  a same-game slip the product is not the joint: it omits whatever
+  correlation the table does not carry. The band is what real same-game
+  slips actually hold, so a product-based hold beneath it says the product
+  is probably overstating `P(cash)`. **Do not quote that EV without saying
+  so.** For scale, two same-team receivers cross together at 0.9817x
+  independence (E6, n=12,622) — about 2 points of EV on a three-leg slip.
+- **Cross-game, hold below the band.** The product IS the joint there, so
+  the number is exact and simply beats the population. Note it, don't
+  distrust it.
+- **Hold ABOVE the band.** A worse price than expected, which understates
+  rather than flatters. Self-correcting.
+
+**`flatten_odds` now carries `over_liquidity` and `under_liquidity` (B92).**
+Anchor depth is reachable from it alone, so **there is no longer any reason
+to walk `bookmakers[].markets[].outcomes[]` by hand** — doing so bypasses
+the outcome pairing, the `line_type` filter, the Over/Under label matching
+and the price-key fallbacks, which is how a booksum of 20.99 and a 15-entry
+field both happened. Liquidity is per SIDE because one Kalshi line's two
+sides can differ by orders of magnitude ($5,977 over vs $112 under on the
+same 14.5). `None` means the book never reported liquidity, which is NOT
+the same as 0.
+
+**`verify_uploaded()` now passes on a RECORD match, not a byte match
+(B91).** Drive decodes `\uXXXX` escapes in transit, so a log containing an
+em dash — which every role-change verdict does — can never be byte-identical.
+The check compares canonical records and still prints that the bytes
+differed and why. **So a False now means real corruption: an altered field,
+a dropped or reordered record, or content that does not parse.** Do not
+mark_uploaded on a False, and do not reason past one by hand — re-upload,
+and if it fails again, say so rather than marking it.
 
 **Modelled in code as of 2026-11-05:** `stake_back_ev()` and
 `stake_back_band()` in `ff_boost`. They return the components, not one

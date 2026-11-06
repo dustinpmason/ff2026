@@ -2014,6 +2014,15 @@ def flatten_odds(response: dict,
     paired, plus the fields the screen needs: `suspended_at` from the market,
     `pregame_only` from the bookmaker, and `last_update`.
 
+    **`over_liquidity` / `under_liquidity` are carried per SIDE (B92).**
+    Kalshi quotes resting money per contract and the two sides of one line
+    can differ by orders of magnitude, so a single per-line number would be
+    a fiction. `None` means the book never reported liquidity — DraftKings
+    0/276, FanDuel 0/204, Bovada — which is a different state from zero and
+    must not be collapsed into it. This field exists because dropping it was
+    the one reason left to hand-roll a walk of
+    bookmakers[].markets[].outcomes[], which bypasses everything below.
+
     `line_type` defaults to "main" — a book's primary two-sided line.
     "milestone" rungs are one-sided by construction (one N+ outcome each) and
     come back with `under=None`, which `screen_quotes` flags rather than
@@ -2079,6 +2088,21 @@ def flatten_odds(response: dict,
                     "line": oc.get("point"),
                     "over": None,
                     "under": None,
+                    # B92. Carried per SIDE, because Kalshi quotes resting
+                    # money per contract and the two sides of one line can
+                    # differ by orders of magnitude. Dropping it was the
+                    # reason a session hand-rolled its own walk of
+                    # bookmakers[].markets[].outcomes[] to get anchor depth —
+                    # bypassing the outcome pairing, the line_type filter,
+                    # the Over/Under label matching and the price-key
+                    # fallbacks that live in this function. B82 is about
+                    # those hand-rolls; this removes one reason to write
+                    # them rather than warning against it. None means the
+                    # book never reported liquidity (DraftKings 0/276,
+                    # FanDuel 0/204, Bovada), which is a different state
+                    # from zero and must not become it.
+                    "over_liquidity": None,
+                    "under_liquidity": None,
                     "line_type": mk.get("line_type"),
                     "suspended_at": mk.get("suspended_at"),
                     "pregame_only": bk.get("pregame_only"),
@@ -2142,6 +2166,7 @@ def flatten_odds(response: dict,
                         f"{book}: {g['outcome_names']}. One of them was "
                         f"misclassified, so neither price can be trusted.")
                 g[side] = price
+                g[f"{side}_liquidity"] = _num(oc.get("liquidity"))
 
             for g in groups.values():
                 if g["unknown_labels"]:
