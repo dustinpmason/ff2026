@@ -1305,9 +1305,11 @@ prints a verdict, and the three cases mean different things:
   is probably overstating `P(cash)`. **Do not quote that EV without saying
   so.** For scale, two same-team receivers cross together at 0.9817x
   independence (E6, n=12,622) — about 2 points of EV on a three-leg slip.
-- **Cross-game, hold below the band.** The product IS the joint there, so
-  the number is exact and simply beats the population. Note it, don't
-  distrust it.
+- **Cross-game — no note at all, either direction (B93b).** `slip_hold` is
+  EXACT for a cross-game slip because the product IS the joint, so the band
+  adds nothing to it. And below-band is the normal state for well-shopped
+  legs: three at -110/-110 hold 13.0% against a 17.7% floor. If you see a
+  cross-game slip under its band, that is good shopping, not a finding.
 - **Hold ABOVE the band.** A worse price than expected, which understates
   rather than flatters. Self-correcting.
 

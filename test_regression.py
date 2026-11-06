@@ -3187,11 +3187,29 @@ _xc = ff_boost.Candidate(legs=_xl, structure=_xst, boost_pct=0.30,
                          independent_odds=600.0, stake=10.0)
 _xc = price_candidate(_xc, book_odds=640.0)
 chk("the cross-game fixture really is cross-game", _xc.structure.cross_game)
-if _xc.hold_vs_band == "below":
-    chk("a below-band CROSS-game slip is not called flattering",
-        not str(_xc.hold_band_note).startswith("***")
-        and "exact" in str(_xc.hold_band_note),
-        str(_xc.hold_band_note)[:150])
+# B93b. A cross-game slip gets NO note in either direction. Checking the
+# firing rate before shipping showed a soft "this beats the population" line
+# would fire on nearly every well-shopped slip — three legs at -110/-110
+# hold 13.03% against a 17.7% floor, and all three cross-game slips measured
+# in the 2026-11-05 session (15.1%, 14.5%, 4.9%) sat below it. And
+# slip_hold is EXACT for cross-game, so the band adds nothing to it.
+chk("a cross-game slip gets no note, whichever side of the band it lands",
+    _xc.hold_band_note is None,
+    f"{_xc.hold_vs_band}: {_xc.hold_band_note}")
+chk("the direction is still REPORTED on the object, just not narrated",
+    _xc.hold_vs_band in ("below", "within", "above"))
+# The specific noise case: well-shopped legs must not produce a note.
+_shop = [leg("WR A1", EV1, fair_prob=0.5, odds=-110),
+         leg("WR B1", EV2, fair_prob=0.5, odds=-110),
+         leg("WR E1", EV3, fair_prob=0.5, odds=-110)]
+_sc = price_candidate(
+    ff_boost.Candidate(legs=_shop, structure=classify(_shop, META),
+                       boost_pct=0.30, independent_odds=664.0, stake=10.0),
+    book_odds=664.0)
+chk("three -110 legs really do hold below the cross-game band",
+    _sc.hold_vs_band == "below", f"hold {_sc.slip_hold:.4f}")
+chk("and still produce no note — good shopping is not a finding",
+    _sc.hold_band_note is None)
 # Within the band: no note at all, or the flag becomes noise.
 _wc = price_candidate(
     ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
@@ -3210,7 +3228,8 @@ _ac = price_candidate(
 chk("a hold above the band is detected", _ac.hold_vs_band == "above",
     f"hold {_ac.slip_hold:.4f}")
 chk("and is described as understating, not flattering",
-    "understates rather than flatters" in str(_ac.hold_band_note),
+    "understates rather than flatters" in str(_ac.hold_band_note)
+    and "same-game" in str(_ac.hold_band_note),
     str(_ac.hold_band_note)[:140])
 # The loudness marker is what separates the dangerous direction from the
 # other two — assert it rather than keyword-matching the prose, which is how

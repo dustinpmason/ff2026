@@ -1087,17 +1087,33 @@ class Candidate:
         where = self.hold_vs_band
         if where in (None, "within"):
             return None
+        # B93b. NO NOTE FOR A CROSS-GAME SLIP, in either direction.
+        #
+        # The first cut printed a soft "this beats the population" line, and
+        # checking the firing rate before shipping it showed that is noise by
+        # construction. Two reasons, and the second is the real one:
+        #
+        #   * It would fire on nearly every well-shopped slip. Three legs at
+        #     -110/-110 hold 13.03%, against a band floor of 17.7% — the band
+        #     implies ~-115/-115 legs. All three cross-game slips measured
+        #     this session (15.1%, 14.5%, 4.9%) sat below it. A note that
+        #     fires on good execution is a note that gets ignored, which is
+        #     the lesson B91 was written for.
+        #   * For a cross-game slip `slip_hold` is EXACT — the product IS the
+        #     joint — and its own docstring says so: "a better number than
+        #     the measured band". Remarking that an exact number differs from
+        #     a population reference adds nothing to it.
+        #
+        # The band earns its keep only where the slip's own number is
+        # incomplete, which is same-game.
+        if self.structure.cross_game:
+            return None
         lo, hi = self.hold_band
         h = self.slip_hold
         if where == "above":
-            return (f"hold {h:.1%} is ABOVE the {lo:.1%}-{hi:.1%} band for "
-                    f"this structure — a worse price than the population, "
+            return (f"hold {h:.1%} is ABOVE the {lo:.1%}-{hi:.1%} band for a "
+                    f"same-game slip — a worse price than the population, "
                     f"which understates rather than flatters the EV.")
-        if self.structure.cross_game:
-            return (f"hold {h:.1%} is BELOW the {lo:.1%}-{hi:.1%} band. For "
-                    f"a cross-game slip the product IS the joint, so this "
-                    f"number is exact and simply beats the population — "
-                    f"worth noting, not worth distrusting.")
         return (f"*** hold {h:.1%} is BELOW the {lo:.1%}-{hi:.1%} band for a "
                 f"SAME-GAME slip, and that flatters the EV. P(cash) here is "
                 f"a PRODUCT of the legs, and for a same-game slip the "

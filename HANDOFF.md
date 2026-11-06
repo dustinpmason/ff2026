@@ -454,3 +454,13 @@ reality.
     returns None rather than 0.0 for books that report none, because
     anchor_thin treats those differently. Both distinctions have their own
     check; collapsing either one fails it.
+34. **Check a new flag's FIRING RATE before shipping it.** B93's first cut
+    noted when a cross-game slip held below its band — which is nearly every
+    well-shopped slip, since three legs at -110/-110 hold 13.03% against a
+    17.7% floor. It would have fired on all three cross-game slips measured
+    that day. A signal that fires on good execution is noise, and B91's
+    lesson about unsatisfiable checks is the same lesson from the other
+    side: one never passes, the other never shuts up, and both get ignored.
+    **Count how often a new flag fires against real cases before you ship
+    it** — it took one script, and the answer went from 3-of-5 to 1-of-5,
+    the one that mattered.
