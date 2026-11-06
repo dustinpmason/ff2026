@@ -52,6 +52,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -658,13 +659,68 @@ def log_edge(edge, player: str, market: str, line: float | None,
 # Grading
 # ---------------------------------------------------------------------------
 
+def check_clv_source(book: str, fair_source: str | None) -> str | None:
+    """Is a closing fair line usable, or is it the book you bet at?
+
+    B102. The project's oldest rule is that a book is not its own reference —
+    "RIGHT: fair line from a sharp anchor, price from the book you'd bet.
+    WRONG: de-vigs DraftKings against itself." It was never applied to the
+    GRADING path, where the same circularity is harder to see because the
+    number arrives pre-computed from an external grader.
+
+    Measured 2026-11-06 grading a real slip: PropLine's `grade_clv` returned
+    `ev_vs_close_pct` of -4.86% and -3.70% with **`fair_source: draftkings`
+    on both legs — the book the bet was placed at.** So the figure was
+    largely measuring DraftKings' own 5.6% hold rather than whether the
+    price taken was good. Re-graded against the best SAME-POINT non-DK
+    close, the three-leg average was at best -5.20% and truly worse.
+
+    Returns None when the source is usable, or the sentence to print
+    instead of the number. **It never silently corrects anything** — an
+    external grader's figure is its own, and the only honest options are to
+    quote it with the caveat or to re-grade against a different book.
+    """
+    if not fair_source:
+        return ("closing fair line has NO source recorded, so ev_vs_close "
+                "cannot be trusted — quote clv_pct (price vs price) or "
+                "re-grade against a named book.")
+    if norm_book(fair_source) == norm_book(book):
+        return (f"CIRCULAR: the closing fair line is sourced from "
+                f"{fair_source!r}, which is the book this was BET at. "
+                f"ev_vs_close here is mostly that book's own hold, not "
+                f"whether the price was good. Re-grade against a sharp "
+                f"book at the SAME POINT, or quote it as a lower bound and "
+                f"say so.")
+    return None
+
+
+def norm_book(name: str | None) -> str:
+    """Book key for comparison — lowercase, no spaces or punctuation."""
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
 def grade_leg(bet_id: str, leg_index: int, result: str,
               actual: float | None = None,
-              closing_odds: float | None = None) -> dict:
-    """Append a grade for one leg. Never edits the original record."""
+              closing_odds: float | None = None,
+              closing_fair_source: str | None = None,
+              book: str | None = None) -> dict:
+    """Append a grade for one leg. Never edits the original record.
+
+    B102. `closing_fair_source` and `book` are recorded so a later reader
+    can tell a clean CLV from a circular one. Passing both runs
+    `check_clv_source` and REFUSES the circular case rather than writing a
+    number that reads as measured value.
+    """
     if result not in ("WIN", "LOSS", "PUSH", "VOID"):
         raise ValueError(f"result must be WIN/LOSS/PUSH/VOID, got {result!r}")
+    if book and closing_fair_source:
+        problem = check_clv_source(book, closing_fair_source)
+        if problem:
+            raise ValueError(
+                f"refusing to grade leg {leg_index} of {bet_id}: {problem}")
     return _append({
+        "closing_fair_source": closing_fair_source,
+        "book": book,
         "id": uuid.uuid4().hex[:12],
         "kind": "leg_grade",
         "logged_at": _now(),

@@ -3095,6 +3095,48 @@ def _raises(fn, exc=Exception) -> bool:
         return True
 
 
+section("49. a book is not its own reference — including at GRADING (B102)")
+# The project's oldest rule, never applied to the grading path. Measured
+# 2026-11-06 on a real slip: PropLine's grader returned ev_vs_close_pct of
+# -4.86% and -3.70% with fair_source "draftkings" — the book the bet was
+# placed at — so the figure was mostly DK's own 5.6% hold. Re-graded against
+# the best SAME-POINT non-DK close, the three-leg average was at best
+# -5.20% and truly worse.
+# ---------------------------------------------------------------------------
+chk("a fair line from the bet's own book is refused",
+    "CIRCULAR" in str(ff_betlog.check_clv_source("draftkings", "draftkings")))
+chk("a fair line from a different book is fine",
+    ff_betlog.check_clv_source("draftkings", "pinnacle") is None)
+# Book names arrive spelled differently across endpoints, so the comparison
+# cannot be a bare string equality.
+for _a, _b in (("DraftKings", "draftkings"), ("draftkings", "Draft Kings"),
+               ("BetMGM", "bet_mgm"), ("draftkings", "DRAFTKINGS")):
+    chk(f"{_a!r} and {_b!r} are recognised as the same book",
+        ff_betlog.check_clv_source(_a, _b) is not None, f"{_a} / {_b}")
+chk("and genuinely different books are not collapsed",
+    ff_betlog.check_clv_source("betmgm", "bovada") is None)
+# A missing source is its OWN problem: unknowable is not the same as clean.
+chk("no recorded source is flagged too, not treated as clean",
+    "NO source" in str(ff_betlog.check_clv_source("draftkings", None)))
+chk("and the message says what to quote instead",
+    "clv_pct" in str(ff_betlog.check_clv_source("draftkings", None)))
+# The guard has to REFUSE the write, not just offer an opinion — a circular
+# number in the log reads as measured value to every later reader.
+chk("grade_leg refuses to record a circular grade",
+    _raises(lambda: ff_betlog.grade_leg(
+        "abc", 0, "LOSS", actual=22.0, closing_odds=-110,
+        closing_fair_source="draftkings", book="draftkings"), ValueError))
+# It must stay silent when it has nothing to check, or every legacy call
+# breaks.
+chk("a grade with no source and no book still records",
+    ff_betlog.grade_leg("abc", 0, "LOSS", actual=22.0,
+                        closing_odds=-110)["kind"] == "leg_grade")
+chk("the source and book are RECORDED when given, for later readers",
+    ff_betlog.grade_leg("abc", 1, "LOSS", actual=22.0, closing_odds=-110,
+                        closing_fair_source="pinnacle",
+                        book="draftkings")["closing_fair_source"]
+    == "pinnacle")
+
 section("48. a changed module names the files that must ship with it (B100)")
 # The repo is updated by uploading files one at a time, so a PARTIAL commit
 # is the normal failure. ff_boost.py was shipped on 2026-11-06 with a

@@ -546,3 +546,29 @@ reality.
     one of the three carrying a duplicate-key guard. The bypass became a
     divergent duplication. Worth knowing before declaring a class of bug
     closed: check what the next-cheapest wrong thing is.
+46. **Check instructions against what a session DID, not against what they
+    say.** Reading the Touchdown-scorer section for correctness found
+    nothing. Reading it beside the transcript found that I had told the
+    session to join on a NAME — in a project whose standing rule forbids
+    exactly that — and that the session had quietly ignored me and been
+    right. The guidance was internally consistent and still wrong, and only
+    the comparison exposed it.
+47. **An instruction that describes a shortcut must enumerate what the
+    shortcut owes.** "About fifteen lines" invited fifteen lines without
+    the six refusals the real helper makes, and the session wrote three
+    copies with only one duplicate-key guard between them. If a fallback is
+    worth documenting, document its obligations, not just its existence.
+48. **The obvious causal story is the one to measure, not the one to
+    accept.** A three-leg receiving slip lost in heavy rain and the natural
+    reading was weather. Measured over five seasons, rain moves receiving
+    yards by about ONE yard (-0.85 se) and wind shows no monotonic pattern
+    at all. The legs missed by 11.5, 9.5 and 2.5. **A story that explains
+    the direction is not a story that explains the magnitude** — check the
+    size before accepting the mechanism.
+49. **A rule the project states in one place is not a rule the project
+    enforces everywhere.** "A book is not its own reference" is the oldest
+    line in the instructions, and the grading path had no guard for it —
+    because there the circular number arrives pre-computed from an external
+    grader, so nothing looks like a de-vig. When a principle matters, grep
+    for every path that could violate it, not just the one it was written
+    about.
