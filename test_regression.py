@@ -3095,6 +3095,37 @@ def _raises(fn, exc=Exception) -> bool:
         return True
 
 
+section("48. a changed module names the files that must ship with it (B100)")
+# The repo is updated by uploading files one at a time, so a PARTIAL commit
+# is the normal failure. ff_boost.py was shipped on 2026-11-06 with a
+# caption saying "ff_props.py and ff_boost.py must be committed together"
+# and ff_props.py was NOT attached. Three sessions in a row then ran against
+# a torn clone. Detection was solved by B99's import message; what was still
+# hand-written was the LIST OF FILES, so shipset.py computes it.
+# ---------------------------------------------------------------------------
+import shipset
+_g = shipset.deps(pathlib.Path(ff_props.__file__).resolve().parent)
+chk("the dependency graph finds every module", len(_g) >= 6, str(sorted(_g)))
+# The exact coupling that caused the outage.
+chk("ff_boost is recorded as importing from ff_props",
+    "ff_props" in _g.get("ff_boost", set()), str(_g.get("ff_boost")))
+_bset = shipset.closure({"ff_boost"}, _g)
+chk("shipping ff_boost names ff_props as required",
+    "ff_props" in _bset, str(sorted(_bset)))
+# BOTH directions: ff_props must also name ff_boost, because an importer
+# left behind runs against a stale copy rather than failing loudly.
+_pset = shipset.closure({"ff_props"}, _g)
+chk("and shipping ff_props names ff_boost back",
+    "ff_boost" in _pset, str(sorted(_pset)))
+chk("and names what ff_props itself imports from",
+    {"ff_data", "ff_guillotine"} <= _pset, str(sorted(_pset)))
+# One hop, not the transitive closure — over seven modules the closure is
+# "all of them", which is not advice.
+chk("the default is one hop, so the answer stays actionable",
+    len(_bset) < len(_g), f"{len(_bset)} of {len(_g)}")
+chk("but --deep still reaches everything",
+    len(shipset.closure({"ff_boost"}, _g, deep=True)) >= len(_bset))
+
 section("47. a uniform hold punishes the leg you shopped hardest (B95)")
 # stake_back_ev backed p out of the price with `implied(odds)/(1+hold)`,
 # which assumes the leg carries the FIELD'S AVERAGE margin. Measured on a

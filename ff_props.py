@@ -1999,6 +1999,46 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
                           total_lines=len(ev_response.get("lines") or []))
 
 
+from ff_guillotine import normalize_name
+
+_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+def norm_player(name: str) -> str:
+    """Canonical key for joining a book's quote to its anchor line.
+
+    USE THIS FOR THE ODDS -> ANCHOR JOIN. It is the one join in the live
+    intake path that has to happen on a name, and it has already cost a
+    player his whole board.
+
+    D13 recorded that the HISTORICAL endpoints carry no player_id and said
+    "just live get_odds has the id". Measured 2026-11-02: live
+    get_event_ev has no player_id either — only `description` — while
+    get_odds does. So the anchor join is name-keyed on the live path too,
+    and the never-join-on-a-name rule has a second and larger hole than
+    D13 describes, at exactly the point boost intake needs it.
+
+    It bites inside one response. On event 87238 the EV payload carried
+    BOTH spellings at once:
+
+        Brian Thomas Jr.  reception_yds  9.5   anchor kalshi
+        Brian Thomas      reception_yds  10.5  anchor pinnacle
+
+    DraftKings and FanDuel both priced him at 10.5, so a raw-name join
+    found only the kalshi 9.5 rows and his entire DK/FD board went
+    unanchored. normalize_name() — built for B1, the phantom-player bug —
+    already collapses both to "brian thomas". The intake path simply was
+    not using it.
+
+    Also strips a trailing parenthetical: Bovada writes
+    "Garrett Wilson (NYJ)" where DraftKings writes "Garrett Wilson".
+
+    What it does NOT fix, and must not be trusted to: first-name variants
+    such as Josh/Joshua Palmer, which are different strings all the way
+    down. Resolve those through propline_search_players on an exact
+    known_names match, as the instructions require.
+    """
+    return normalize_name(_PAREN.sub("", str(name).strip()))
+
 def flatten_odds(response: dict,
                  line_type: str = "main",
                  market: str | None = None,
@@ -2289,3 +2329,136 @@ def screen_quotes(quotes: list[dict],
 
     out.scratch_risk = len(out.suspended_books) >= SCRATCH_BOOKS
     return out
+
+
+def field_from_odds(response: dict, *, market: str, book: str,
+                    line_type: str | None = None) -> dict:
+    """`{normalised name: american}` for ONE book's mutually exclusive field.
+
+    B82. THE HAND-ROLL THIS EXISTS TO REPLACE. A session needing a First TD
+    field to pass to `devig_field` wrote its own walk of
+    `bookmakers[].markets[].outcomes[]`, keyed a dict on the outcome name,
+    and got **booksum 20.99** — because Kalshi posts that board two-sided
+    (28 Yes / 22 No) and last-write-wins kept the **No** price, at numbers
+    like -4900, for every player quoted both ways. On an Over/Under board
+    the same code merely POLLUTES: keying on name alone discards the point,
+    so thirteen milestone rungs joined one player's main line and produced
+    13 outcomes at booksum 2.9756 where a real two-sided line is ~1.07.
+
+    Neither failure was necessary. `flatten_odds` already pairs the
+    outcomes, filters `line_type`, matches Over/Under labels through
+    OVER_NAMES/UNDER_NAMES — **which include "yes" and "no"** — and falls
+    back across the price keys. The hand-roll bypassed the one function that
+    solves all of it. So this is deliberately thin: its value is that it
+    exists and is the obvious thing to reach for.
+
+    What it refuses, rather than guessing:
+
+    * a market that is not mutually exclusive, named early and with a
+      better message than `devig_field` can give after the fact
+    * two outcomes whose names NORMALISE to the same key — that is the
+      ambiguity the 20.99 came from, and taking either one is the bug
+    * a row with no affirmative price
+    * an empty field, naming the book and market asked for, because a
+      silent `{}` becomes "this book doesn't carry it" when the real cause
+      is a misspelled book key
+
+    Names come back through `norm_player`, so the result joins to anchors
+    and to `build_meta` without a second name bug — "Chris Rodriguez Jr."
+    and "Chris Rodriguez" land on one key, which is B44. The no-scorer row
+    survives it (`"No Touchdown Scorer"` -> `"no touchdown scorer"`, which
+    is in NO_SCORER_NAMES), so `devig_field`'s completeness check still
+    works on the output.
+
+    `line_type` defaults to None — no filter — because a mutually exclusive
+    field is not a main/milestone distinction and real boards label it
+    inconsistently. Rungs cannot leak in regardless: they only exist on
+    yardage markets, which the exclusivity guard rejects first.
+    """
+    if market not in MUTUALLY_EXCLUSIVE_MARKETS:
+        raise ValueError(
+            f"{market!r} is not a mutually exclusive field, so there is no "
+            f"field to build. Mutually exclusive markets: "
+            f"{sorted(MUTUALLY_EXCLUSIVE_MARKETS)}. For a two-sided market "
+            f"use two_sided_field(), which returns one line's Over/Under.")
+
+    rows = [r for r in flatten_odds(response, line_type=line_type,
+                                    market=market)
+            if r["book"] == book]
+    if not rows:
+        books = sorted({(bk.get("key") or bk.get("title") or "?")
+                        for bk in response.get("bookmakers") or []})
+        raise LookupError(
+            f"no {market} outcomes for book {book!r} in this payload. Books "
+            f"present: {books}. An empty field reads as 'this book does not "
+            f"carry the market' when the usual cause is a misspelled key.")
+
+    field: dict[str, float] = {}
+    source: dict[str, str] = {}
+    for r in rows:
+        raw = r.get("outcome_label") or r["player"]
+        key = norm_player(raw)
+        price = r["over"]
+        if price is None:
+            raise ValueError(
+                f"{raw!r} has no affirmative price in {book}'s {market} "
+                f"(row: over={r['over']}, under={r['under']}). On a Yes/No "
+                f"board the Yes side is the one a field needs; a row "
+                f"carrying only the No side is not something to invert.")
+        if key in field:
+            raise ValueError(
+                f"two outcomes in {book}'s {market} normalise to {key!r}: "
+                f"{source[key]!r} at {field[key]:+.0f} and {raw!r} at "
+                f"{price:+.0f}. Taking either one is how a hand-rolled "
+                f"version of this produced a booksum of 20.99 — the field "
+                f"is ambiguous and cannot be de-vigged until it is "
+                f"resolved.")
+        field[key] = float(price)
+        source[key] = raw
+    return field
+
+
+def two_sided_field(response: dict, *, market: str, book: str,
+                    player: str) -> tuple[dict, float | None]:
+    """One book's single two-sided line: `({"Over": am, "Under": am}, line)`.
+
+    B82, the other half. Built on `flatten_odds` for the same reason as
+    `field_from_odds` — it already does the outcome pairing, the
+    `line_type` filter, the Over/Under label matching and the price-key
+    fallbacks, and every hand-rolled version has reproduced a bug it
+    already fixes.
+
+    Deliberately refuses rather than returning something usable-looking:
+
+    * more than one main line for that player at that book, because
+      choosing one silently is how a rung gets mistaken for the main line
+      (`"29+ Receiving Yards"` at -116 IS `Over 28.5` at -116, the same
+      wager, while `"30+"` at -108 happens to match the main UNDER's price
+      and is a different bet entirely)
+    * a one-sided market, which cannot be de-vigged two-way
+    * a suspended market, which is not bettable
+
+    `player` matches as a case-insensitive substring, the same contract
+    `flatten_odds` uses, so pass enough of the name to be unambiguous.
+    """
+    rows = [r for r in flatten_odds(response, line_type="main", market=market,
+                                    player=player)
+            if r["book"] == book]
+    if len(rows) != 1:
+        detail = ", ".join(f"{r['player']} @ {r['line']}" for r in rows) or "none"
+        raise LookupError(
+            f"expected exactly one main {market} line for {player!r} at "
+            f"{book}, got {len(rows)}: {detail}. More than one means the "
+            f"player match is ambiguous; zero means the book, market or "
+            f"spelling is wrong.")
+    r = rows[0]
+    if r["over"] is None or r["under"] is None:
+        raise ValueError(
+            f"{player!r} at {book} is one-sided on {market} "
+            f"(over={r['over']}, under={r['under']}), so it has no two-way "
+            f"price to de-vig. A milestone rung looks like this.")
+    if r["suspended_at"] is not None:
+        raise ValueError(
+            f"{player!r} at {book} was suspended at {r['suspended_at']} — "
+            f"not bettable, so its price is not a price.")
+    return {"Over": float(r["over"]), "Under": float(r["under"])}, r["line"]

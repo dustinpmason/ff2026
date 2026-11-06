@@ -532,3 +532,17 @@ reality.
     what `field_from_odds` wraps. **Name the floor as well as the
     preferred call**, because the preferred call is exactly what is absent
     on a half-updated clone.
+44. **Naming a coupling in prose is not shipping it.** `ff_boost.py` went
+    out with a caption saying ff_props.py must be committed alongside it,
+    and ff_props.py was not attached — costing three test rounds against a
+    torn clone. B99 had already made the failure loud; what stayed
+    hand-written was the LIST OF FILES, in a caption, from memory.
+    `shipset.py` computes it from the import graph now. **When a fact is
+    important enough to put in a warning, it is important enough to
+    compute.**
+45. **A fix can move a failure up a level rather than removing it.** With
+    the B99 fallback named, the session stopped walking raw payloads — and
+    wrote the same `flatten_odds`→dict loop three times instead, with only
+    one of the three carrying a duplicate-key guard. The bypass became a
+    divergent duplication. Worth knowing before declaring a class of bug
+    closed: check what the next-cheapest wrong thing is.
