@@ -1251,17 +1251,27 @@ def prop_edge(est: Estimate,
             # the data does not establish. The outcome is the same PASS
             # either way; the REASON must not claim more than was measured.
             if supported is None:
+                _tv = (f" and team volume {u.team_volume_ratio:.0%}"
+                       if u.has_team_volume
+                       else " (team volume not measured for this series)")
+                # B90. Two different reasons reach here — a share/count
+                # conflict, and a count that did not move — and one message
+                # asserted the conflict narrative for both.
+                if u.count_flat:
+                    _tail = (f"{u.column} did not move at all "
+                             f"({u.baseline:.1f} -> {u.recent:.1f}), so the "
+                             f"sample is not stale in either direction and "
+                             f"there is no side for the change to help")
+                else:
+                    _tail = (f"share and count point opposite ways, so the "
+                             f"verdict ({u.verdict}) does not fix which side "
+                             f"the staleness helps: he is a bigger part of a "
+                             f"smaller pie, or the reverse")
                 why = (f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
                        f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) "
-                       f"while share went {u.share_ratio:.0%}"
-                       + (f" and team volume {u.team_volume_ratio:.0%}"
-                          if u.has_team_volume else
-                          " (team volume not measured for this series)")
-                       + f". Share and count point "
-                       f"opposite ways, so the verdict ({u.verdict}) does not "
-                       f"fix which side the staleness helps: he is a bigger "
-                       f"part of a smaller pie, or the reverse. PASS because "
-                       f"it is undetermined, not because it runs against you.")
+                       f"while share went {u.share_ratio:.0%}{_tv}. {_tail}. "
+                       f"PASS because it is undetermined, not because it runs "
+                       f"against you.")
             else:
                 why = (f"ROLE CHANGE AGAINST YOU — {u.column} "
                        f"{u.baseline:.1f} -> {u.recent:.1f} "
@@ -1460,15 +1470,35 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
             # None as False and would VETO "AGAINST THE {side}", asserting
             # a direction again — the same mistake B80 fixed, re-entered
             # through a new None.
-            veto(f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
-                 f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) while "
-                 f"share went {u.share_ratio:.0%}{tv}. "
-                 f"The verdict is {u.verdict} off "
-                 f"SHARE, but the COUNT moved the other way, and a threshold "
-                 f"prop is priced on count. He is a bigger part of a smaller "
-                 f"pie, or the reverse — which side the staleness helps is "
-                 f"undetermined, so this is refused as UNKNOWN rather than "
-                 f"as against the {side}.")
+            # B90. `supports()` returns None for TWO different reasons here
+            # — share and count conflicting, and the count not moving at all
+            # — and this message asserted the conflict narrative for both.
+            # Live result: CeeDee Lamb's targets were exactly flat at
+            # 11.5 -> 11.5 and the refusal told the reader "the COUNT moved
+            # the other way". The reading session then reported him as the
+            # conflict case and had to correct itself by inspecting the
+            # flags. A message asserting what the code did not determine —
+            # the same class as B80 and B88/A4, introduced in the fix for
+            # them, which is why each state now gets its own sentence.
+            if u.count_flat:
+                veto(f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
+                     f"did NOT move ({u.baseline:.1f} -> {u.recent:.1f}) "
+                     f"while share went {u.share_ratio:.0%}{tv}. The verdict "
+                     f"is {u.verdict} off SHARE, but a threshold prop is "
+                     f"priced on opportunity COUNT, and his count is flat — "
+                     f"so the sample is not stale in either direction and "
+                     f"there is no side for the change to help. Refused as "
+                     f"UNDETERMINED, not as against the {side}.")
+            else:
+                veto(f"ROLE CHANGE, DIRECTION NOT ESTABLISHED — {u.column} "
+                     f"{u.baseline:.1f} -> {u.recent:.1f} ({u.ratio:.0%}) "
+                     f"while share went {u.share_ratio:.0%}{tv}. The verdict "
+                     f"is {u.verdict} off SHARE, but the COUNT moved the "
+                     f"OTHER WAY, and a threshold prop is priced on count. "
+                     f"He is a bigger part of a smaller pie, or the reverse "
+                     f"— which side the staleness helps is undetermined, so "
+                     f"this is refused as UNKNOWN rather than as against the "
+                     f"{side}.")
         elif supported:
             # Still not CLEAR: the direction helps, the magnitude is not
             # trustworthy. Matches prop_edge, which costs a supportive

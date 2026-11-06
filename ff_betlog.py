@@ -208,10 +208,17 @@ def upload_payload() -> tuple[str, str] | None:
 
 
 def verify_uploaded(downloaded: str) -> bool:
-    """Does what landed in Drive match what was meant to go there?
+    r"""Does what landed in Drive match what was meant to go there?
 
     Call after create_file: download the file back and pass its text. Returns
     True on an exact match, and prints what differs otherwise.
+
+    Verification is at the RECORD level, not the byte level (B91). Byte
+    equality is reported when it happens, but a difference caused by Drive
+    decoding `\uXXXX` escapes is a lossless JSON transcoding and passes:
+    identical records, identical order. Only a real content change fails.
+    Requiring byte-identity made this function unable to pass for any log
+    containing an em dash, which is all of them.
 
     This exists because the upload path is not byte-safe and cannot be made
     so. The content has to travel through a tool call as text, so it is
@@ -233,6 +240,46 @@ def verify_uploaded(downloaded: str) -> bool:
     if downloaded == want:
         print(f"  verified: {_sha(want)} — byte-identical, {len(want)} chars")
         return True
+
+    # B91. Byte-identity was the only way to pass, and it is UNREACHABLE for
+    # any log containing a non-ASCII character. `json.dumps` is ASCII-only by
+    # design, so an em dash is written locally as the escape `\u2014` and
+    # comes back from Drive as the raw character. Measured: `ff_props.py`
+    # holds 178 em dashes, 35 of them inside verdict-reason f-strings, so
+    # EVERY role-change verdict guarantees a mismatch. The docstring's advice
+    # — "a mismatch means re-upload, not shrug" — cannot help, because the
+    # transcoding is in the transport, not the attempt: a session re-uploaded
+    # and got False again, then declined to call mark_uploaded, leaving 69
+    # verdicts up but unmarked.
+    #
+    # The old code already computed record equality and still returned False,
+    # calling it "equivalent by luck". That is the wrong reading of THIS
+    # cause. Escape-versus-raw for the same codepoint is a deterministic,
+    # lossless JSON transcoding — every conformant reader decodes it the
+    # same way — whereas a truncation or a reordering is what luck would
+    # look like, and both show up at the record level. So compare CANONICAL
+    # serialisations: identical records in identical order is the property
+    # that actually matters, and it is checkable.
+    #
+    # A check that can never pass is not caution, it is noise — and it
+    # trains the reader to ignore the one signal meant to be load-bearing,
+    # which is B39's lesson arriving from the other side.
+    try:
+        lw_r = [json.loads(x) for x in want.splitlines() if x.strip()]
+        ld_r = [json.loads(x) for x in downloaded.splitlines() if x.strip()]
+        canon = lambda rs: [json.dumps(r, sort_keys=True, ensure_ascii=True)
+                            for r in rs]
+        if canon(lw_r) == canon(ld_r):
+            print(f"  verified: {len(lw_r)} records identical field-for-field "
+                  f"and in order. Bytes differ ({len(want)} local vs "
+                  f"{len(downloaded)} downloaded) because Drive decodes "
+                  f"\\uXXXX escapes in transit — a lossless JSON "
+                  f"transcoding, not a content change. Safe to "
+                  f"mark_uploaded.")
+            return True
+    except json.JSONDecodeError as e:
+        print(f"  downloaded copy does not parse: {e}")
+        return False
 
     print(f"  MISMATCH. local {_sha(want)} ({len(want)} chars) vs "
           f"downloaded {_sha(downloaded)} ({len(downloaded)} chars)")

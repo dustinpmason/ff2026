@@ -400,3 +400,44 @@ reality.
     live in `measurements/b84_direction_conflict.py`. **If a number is
     worth putting in a docstring, it is worth a script that reproduces
     it.**
+27. **One message for two states is a message that asserts.** `supports()`
+    returns None for a share/count conflict AND for a count that did not
+    move, and one veto sentence covered both — telling a reader whose
+    targets were flat at 11.5 that "the COUNT moved the other way". The
+    session believed the message, reported the wrong predicate, and had to
+    correct itself from the flags. **When you add a second reason for an
+    existing return value, add a second sentence.** This was committed
+    inside the fix for the same class of bug, which is now the pattern:
+    the fix is where the next one lives.
+28. **A check that can never pass is worse than no check.**
+    `verify_uploaded` demanded byte identity from a transport that cannot
+    deliver it for non-ASCII content — 178 em dashes in ff_props.py, 35 in
+    verdict reasons, so every realistic log failed. A live session got
+    False, reasoned past it by hand, and left 69 records unmarked. The old
+    code even computed record equality, printed "equivalent by luck", and
+    failed anyway. **Check the property that matters, not a proxy that is
+    permanently violated** — and if the proxy carried real information,
+    keep it as a message rather than as the verdict.
+29. **Gate item 5 is not optional and it earns its keep every time.** The
+    B90 fix shipped with the suite green and ZERO checks pinning it;
+    reverting the fix produced no failures at all. Separating two messages
+    felt too obvious to test. Every fix gets the revert check, including
+    the ones that are "just wording" — especially those, because wording
+    is what the reader acts on.
+30. **A fall-through can be right and still be worth measuring.** E6 flagged
+    that `_pair_r` returns 0.0 for same-team receiver pairs without anyone
+    being able to establish it had been measured. It turned out to be a good
+    approximation — WR x WR receiving yards r = +0.009 over 12,622 pairs —
+    but the number that matters for a parlay is the JOINT CROSSING lift,
+    which is 0.9817x, not 1.0. On the slip it ran live in, that 2% took the
+    EV from +1.83% to -0.04%. **"Approximately independent" and "priceable
+    as independent" are not the same claim at three legs.**
+31. **Printing two numbers next to each other is not comparing them.**
+    `report()` emits `this slip's hold: 18.8% (observed — reference band
+    23.1%-37.2%)`: the contradiction was on the page, one line apart, and
+    still slid past a careful reader working through dozens of lines. If the
+    hold were merely at the best end of its own band that bet is -3.6%
+    rather than +1.83%. **A fact presented without a verdict is
+    indistinguishable from a fact that was checked** — B39's family in its
+    softest and most reachable form. When the engine holds both sides of a
+    comparison, it should state the comparison.

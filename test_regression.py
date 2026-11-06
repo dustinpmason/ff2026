@@ -651,9 +651,28 @@ ff_betlog.log_bet(385, 10, [Leg("A", "player_rush_yds", 50.5, "OVER", -110,
                                 "fd")], "fd", note="em dash \u2014 here")
 _n2, _t2 = ff_betlog.upload_payload()
 chk("exact round trip verifies", ff_betlog.verify_uploaded(_t2))
-# The observed corruption: json.dumps writes \u2014, transcription unescaped it.
-chk("unescaped-unicode corruption is caught",
-    not ff_betlog.verify_uploaded(_t2.replace("\\u2014", "\u2014")))
+# json.dumps writes \u2014 and Drive hands back the raw character. This check
+# used to assert that difference was CAUGHT as corruption — the reasoning
+# being that it proves the path is not byte-safe, which is a fair canary.
+# B91 changed it, because the canary fires on every realistic log (178 em
+# dashes in ff_props.py, 35 inside verdict-reason strings), so it carries no
+# information and gets ignored: a live session got False, reasoned it out by
+# hand, and declined to mark_uploaded, leaving 69 records up but unmarked and
+# due to be re-uploaded forever. Escape-versus-raw for the same codepoint is
+# a deterministic lossless transcoding, not luck.
+#
+# The original concern is KEPT, as a message rather than a verdict: the pass
+# reflects record equality, and the output still says the bytes differed and
+# why. Both assertions below have to hold.
+_dec = ff_betlog.verify_uploaded(_t2.replace("\\u2014", "\u2014"))
+chk("escape-decoding verifies, because the records are identical", _dec)
+import io, contextlib
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    ff_betlog.verify_uploaded(_t2.replace("\\u2014", "\u2014"))
+chk("and the byte difference is still REPORTED, not hidden",
+    "Bytes differ" in _buf.getvalue()
+    and "lossless" in _buf.getvalue(), _buf.getvalue()[:140])
 chk("a dropped line is caught",
     not ff_betlog.verify_uploaded("\n".join(_t2.splitlines()[:-1]) + "\n"))
 shutil.rmtree(_tmp2, ignore_errors=True)
@@ -2752,6 +2771,32 @@ _vd, _rd = boost_verdict(_replace(_e2, usage=_flat),
                          _replace(_ed2, side="UNDER"), screen_quotes(_cleanq))
 chk("a flat count vetoes as undetermined", _vd == "VETO"
     and any("NOT ESTABLISHED" in x for x in _rd), f"{_vd}: {_rd}")
+# B90. supports() returns None for TWO reasons — conflict, and a flat count
+# — and ONE message asserted the conflict narrative for both. Live result:
+# CeeDee Lamb's targets were exactly flat at 11.5 -> 11.5 and the refusal
+# told the reader "the COUNT moved the other way". The reading session then
+# reported him as the conflict case and had to correct itself from the flags.
+# A message asserting what the code did not determine, introduced in the fix
+# for exactly that — so each state gets its own sentence.
+chk("a flat count says the count did NOT move",
+    any("did NOT move" in x for x in _rd), str(_rd))
+chk("and never claims it moved the other way",
+    not any("moved the OTHER WAY" in x or "moved the other way" in x
+            for x in _rd), str(_rd))
+_vc2, _rc2 = boost_verdict(_replace(_e2, usage=_conf_x),
+                           _replace(_ed2, side="OVER"), screen_quotes(_cleanq))
+chk("a real conflict DOES say the count moved the other way",
+    any("moved the OTHER WAY" in x for x in _rc2), str(_rc2))
+chk("and does not say the count was flat",
+    not any("did NOT move" in x for x in _rc2), str(_rc2))
+# prop_edge carries the same two states and had the same conflated wording.
+_pe_f = prop_edge(_replace(_e2, usage=_flat), -115, -105)
+chk("prop_edge distinguishes a flat count too",
+    "did not move at all" in _pe_f.reasoning
+    and "opposite ways" not in _pe_f.reasoning, _pe_f.reasoning[:130])
+chk("and still says opposite ways for a real conflict",
+    "opposite ways" in prop_edge(_replace(_e2, usage=_conf_x),
+                                 -115, -105).reasoning)
 
 chk("the direction test is not re-inlined anywhere (B80)",
     _psrc.count('self.verdict == "COLLAPSED"') == 1
@@ -3005,6 +3050,41 @@ s = classify([_pleg("QB A", "player_pass_yds", "AAA", "QB"),
               _pleg("RB A1", "player_reception_yds", "AAA", " rb ")])
 chk("a position with stray whitespace still RESOLVES once stripped",
     any(abs(p[2] - 0.20) < 1e-9 for p in s.pairs), f"pairs={s.pairs}")
+
+section("43. verification that can never pass is not caution (B90, B91)")
+# B91. verify_uploaded required BYTE identity, which is unreachable for any
+# log containing a non-ASCII character: json.dumps is ASCII-only, so an em
+# dash is stored as \u2014 locally and comes back raw from Drive. ff_props.py
+# holds 178 em dashes, 35 inside verdict-reason strings, so every role-change
+# verdict guaranteed a False. A session re-uploaded, got False again, and
+# declined to mark_uploaded — leaving 69 records up but unmarked, forever
+# re-uploaded by the next session. A check that cannot pass gets ignored.
+# ---------------------------------------------------------------------------
+_recs = [{"id": f"v{i}", "kind": "verdict",
+          "reason": f"ROLE CHANGE AGAINST THE OVER \u2014 targets {i}.0 -> 2.0"}
+         for i in range(3)]
+_local = "\n".join(json.dumps(r) for r in _recs) + "\n"
+ff_betlog.SESSION.parent.mkdir(parents=True, exist_ok=True)
+_prev = ff_betlog.SESSION.read_text() if ff_betlog.SESSION.exists() else None
+ff_betlog.SESSION.write_text(_local)
+_drive = _local.replace("\\u2014", "\u2014")      # what Drive hands back
+chk("the escape-decoded round trip is NOT byte-identical", _drive != _local)
+chk("but it verifies, because the records are identical",
+    ff_betlog.verify_uploaded(_drive))
+# And it must still catch what actually matters.
+chk("an altered field still fails",
+    not ff_betlog.verify_uploaded(_drive.replace("targets 1.0", "targets 9.0")))
+chk("a dropped record still fails",
+    not ff_betlog.verify_uploaded("\n".join(_drive.splitlines()[:2]) + "\n"))
+chk("a reordered record still fails",
+    not ff_betlog.verify_uploaded(
+        "\n".join(list(reversed(_drive.splitlines()))) + "\n"))
+chk("unparseable content still fails",
+    not ff_betlog.verify_uploaded(_drive + "{not json\n"))
+if _prev is None:
+    ff_betlog.SESSION.unlink(missing_ok=True)
+else:
+    ff_betlog.SESSION.write_text(_prev)
 
 section("40. the duplicate correlation table cannot diverge unnoticed (B68)")
 # ff_guillotine keeps its OWN literal copy of both correlation tables rather

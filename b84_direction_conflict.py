@@ -12,7 +12,18 @@ it. This script is the missing artefact. Run it to re-derive the numbers.
     python3 measurements/b84_direction_conflict.py
 """
 import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+# Work whether this sits in measurements/ or flat at the repo root — the
+# GitHub web uploader flattens folders, and a repo-root copy adding
+# `parent.parent` to sys.path points ABOVE the repo and fails to import
+# ff_data at all.
+_here = pathlib.Path(__file__).resolve().parent
+for _cand in (_here, _here.parent):
+    if (_cand / "ff_props.py").exists():
+        sys.path.insert(0, str(_cand))
+        break
+else:
+    sys.exit(f"cannot find ff_props.py next to or above {_here} — put this "
+             f"script in the repo root or in measurements/ under it")
 import pandas as pd
 from ff_data import load_weekly, load_pbp
 from ff_scoring import prepare
