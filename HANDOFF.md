@@ -572,3 +572,11 @@ reality.
     grader, so nothing looks like a de-vig. When a principle matters, grep
     for every path that could violate it, not just the one it was written
     about.
+50. **After changing a signature, grep the instructions for every call of
+    it.** B102 added two arguments to `grade_leg` and the documented
+    example still showed the old call — so a session following the
+    instructions would have disabled the guard that had just been written.
+    Same shape as B82 ("pass {name: american} from ONE book") and B101
+    ("key it with norm_player"): **three times in two days, the worked
+    example in the instructions was the thing steering the session
+    wrong.** Code and its documentation are one change, not two.

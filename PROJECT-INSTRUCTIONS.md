@@ -189,9 +189,24 @@ those two, and `rec_summary()` reports calibration and PASS hit rate off them.
 
 Weekly: `bl.pending()` lists what needs grading. Pull closing lines with
 `propline_get_odds_closing` and grade with
-`bl.grade_leg(rec["id"], i, result, closing_odds=...)` — note **`log_bet()`
-returns the record under `id`, not `bet_id`**; `rec.get("bet_id")` reads
-None. **Closing lines matter
+`bl.grade_leg(rec["id"], i, result, closing_odds=...,
+closing_fair_source=..., book=...)` — note **`log_bet()` returns the record
+under `id`, not `bet_id`**; `rec.get("bet_id")` reads None.
+
+**Pass `closing_fair_source` and `book`, or B102's guard never fires.** This
+line used to show the call without them, which is how a documented example
+quietly disables a protection. With both, `grade_leg` REFUSES a grade whose
+closing fair line came from the book the bet was placed at.
+
+**Grading is TWO passes, not one (B105).** The windows do not overlap:
+closing lines must be pulled within hours — the event delists, and
+`price_sgp` returns `404 event_not_at_book`, so **there is no closing SGP
+price for a same-game slip once the game has ended** — while nflverse lands
+days later. The night of the Week 9 opener nflverse had **zero Week 9
+rows**, so the by-player-id settlement the weekly rhythm asks for was
+impossible. Pass 1, same night: closing lines, and settle from PropLine's
+box score. Pass 2, once nflverse catches up: re-settle by GSIS id and
+confirm the box score agreed. Say which pass a number came from. **Closing lines matter
 more than results at this stake** — 10 graded slips says nothing about skill,
 while positive CLV across 30+ legs does.
 
@@ -443,9 +458,31 @@ variance for hundreds of bets.
   `clv_pct` is price-vs-price and VIG-BLIND, so it flatters any bet taken on the
   juicy side of a wide market. `ev_vs_close_pct` scores against the de-vigged
   close and is the real number. Quoting the flattering one defeats the purpose.
+- **CHECK `fair_source` BEFORE QUOTING IT (B102).** If the closing fair
+  line is sourced from the book the bet was placed at, `ev_vs_close_pct` is
+  mostly that book's own hold and not a measure of value — the circular
+  de-vig this project forbids everywhere else, arriving pre-computed so it
+  does not look like one. Measured on a real slip: both matched legs came
+  back `fair_source: draftkings` against a DraftKings bet, reporting
+  **−4.28%** where the best **same-point** non-DK closes gave at best
+  **−5.20%**. Run `ff_betlog.check_clv_source(book, fair_source)`; if it
+  returns a sentence, print that instead of the number, or re-grade against
+  a sharp book **at the same point** — never snapped to a nearby one (D18).
 - Bets whose game has not started carry `closing_is_final: false` and are
   excluded from the summary. Never present those as results.
 - Surface `matched: false` rows rather than dropping them silently.
+- **`matched: false` with `no_outcome_for_selection` usually means the
+  POINT moved, not that the name failed (B104).** A leg bet at 33.5 came
+  back unmatched because DraftKings closed at 34.5; re-running the same
+  selection at 34.5 matched immediately. Re-query the player's closing
+  lines and report which point the book closed at before reporting a name
+  problem — a wrong diagnosis here sends the next session chasing a
+  name-join bug that does not exist.
+- **Never trust `resolution` (B103).** In one response, Over 33.5 came back
+  `resolution: "won"` with `actual_value: 22` while Over 34.5 came back
+  `"lost"` with the **same** `actual_value: 22`. 22 is under 33.5, so "won"
+  is simply wrong, and the two are mutually inconsistent inside a single
+  payload. Settle from the box score and use `resolution` for nothing.
 
 **Log every placed bet** so CLV can be graded: event_id, market, selection,
 side, point, price taken, book, stake. Without the price actually taken there is
@@ -1407,6 +1444,17 @@ best-price comparison, never "the model likes him".
 | field sums to | 1 + overround | the expected NUMBER of scorers |
 | de-vig how | `devig_field()`, whole field at once | two-sided, per player |
 
+**Run `screen_quotes()` BEFORE you publish, not after (B101).** A session
+hand-eyeballed `suspended_at` and `pregame_only` per book, published, then
+ran the real thing in diagnostics and said *"I had no right to that
+confidence when I gave you the boards."* Nothing changed on that occasion —
+97 usable, `scratch_risk=False` — but a hand-check cannot see the signal
+the function exists for: **three or more books suspending one player, i.e.
+a probable scratch.** On a First TD board expect its `one_sided` list to
+name nearly every row; that market is YES-only by construction and is not a
+finding. Read `scratch_risk` and `suspended_books`; ignore its two-sided
+pricing note, which does not apply to a mutually exclusive field.
+
 **First TD — `ff_props.devig_field(prices, market="player_1st_td")`.**
 It Shin-de-vigs ONE book's field to 1 and returns `fair`, `booksum`,
 `overround`, `z`.
@@ -1422,9 +1470,29 @@ loop (B99).** `field_from_odds` is a thin wrapper over `flatten_odds`, and
 filters `line_type`, matches Over/Under labels through OVER_NAMES and
 UNDER_NAMES — **which contain `"yes"` and `"no"`, so it routes a Kalshi
 Yes/No board correctly** — falls back across the price keys, and carries
-`player_id` so the join never has to go through a name. Take the
-affirmative side per row and key it with `norm_player`; that is about
-fifteen lines and it is the floor, not the ceiling. A session that hit a
+`player_id` so the join never has to go through a name.
+
+**Join on `player_id`, not on the name — and this line used to say the
+opposite (B101).** It read "key it with `norm_player`", which steers you to
+the weaker join in a project whose own standing rule is never to join on a
+name. A session ignored that advice, used the id, and was right to:
+Bovada appends a team parenthetical to every one of its 27/29 names, so its
+cross-check column came back silently EMPTY on a name join and the id join
+fixed it. Measured on those boards, the id matched **23/23 and 24/24 with
+zero DraftKings ids missing from Bovada**. Use `player_id` first and fall
+back to `norm_player` only where the id is absent — that is D/ST rows,
+which is why the name join had slightly higher recall (25 and 27 against 23
+and 24) and is the only thing it was good for.
+
+**Write the loop ONCE, and give it these guards.** A session wrote it three
+times in three scripts and **only one of the three carried a duplicate-key
+guard** — a divergent duplication, which is the failure `field_from_odds`
+exists to remove. At minimum the fallback must refuse: two names that
+normalise to one key (show both prices), a row with no affirmative price,
+an empty result (name the books actually present), more than one main line
+for one player, a one-sided market, a suspended market. If you are not
+going to write those, you are not writing the fallback — you are writing
+the bug. A session that hit a
 missing `field_from_odds` wrote the payload walk **three times**, got
 Kalshi's booksum to 21.06 off the −4900 "No" prices, and reported its own
 error as a repo gap — `flatten_odds` was present the whole time and
@@ -1786,7 +1854,27 @@ to 3 automatically at nine games.
 
 ## Analysis discipline
 
-Five rules, each of which exists because it has already been violated:
+**0. A story that explains the DIRECTION is not a story that explains the
+MAGNITUDE — measure before agreeing.** Dustin will sometimes offer a cause
+for a result, and the obvious one is usually directionally right and far
+too small. Worked example, 2026-11-06: a three-leg receiving slip lost in
+heavy rain, and the natural reading was weather. Measured within-player
+over five seasons (`measurements/weather_effect.py`), rain moves receiving
+yards about **one yard** (−0.85 se), passing about 4.8, rushing slightly
+POSITIVE, and wind shows no monotonic pattern at all. **The legs missed by
+11.5, 9.5 and 2.5.** So weather could plausibly have swung the 2.5 and
+explains none of the others; the readable causes were a 33–10 scoreline
+turning the leading team run-heavy and a backup quarterback on a 161.5
+passing line. Two caveats to state when you use this: nflverse's `weather`
+is a KICKOFF SNAPSHOT, so a four-quarter downpour and a drizzle that
+cleared carry the same label and the true effect of a real storm is larger
+than the average; and this is raw yards against a player's own baseline,
+not against a line, so it says nothing about whether books price weather.
+**Run the script rather than quoting the number from here**, and if the
+measurement contradicts the story, say so plainly — agreeing with a
+plausible cause is how a model stops being useful.
+
+Five more rules, each of which exists because it has already been violated:
 
 **1. Multiply by games remaining, not weeks remaining.** Any rest-of-season
 comparison must account for byes. A player whose bye has passed plays more games
