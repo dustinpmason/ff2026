@@ -580,3 +580,17 @@ reality.
     ("key it with norm_player"): **three times in two days, the worked
     example in the instructions was the thing steering the session
     wrong.** Code and its documentation are one change, not two.
+51. **Measure a new flag's firing rate BEFORE choosing its definition, not
+    after.** B86 had two candidate definitions. The obvious one — liquidity
+    at or under the book's tier — fires on 100% of a three-days-out board
+    and would have been pure noise. Excluding what the existing flags
+    already catch brings it to 13%, and to 0% near kickoff. **The
+    measurement picked the definition**, in one script, before any code was
+    written. B93b had to learn this by shipping the noisy version first.
+52. **Overturning a prior decision needs the measurement, not the
+    intuition.** Two checks asserted that a price which had moved off
+    0.5000 was clean, because "the 0.5000 does the work". The board that
+    motivated B86 had ALL 62 lines at liquidity 250 — so the same money
+    sits behind the moved and unmoved prices alike, and the old reasoning
+    does not survive. Keep the distinction the old check was protecting
+    (moved and unmoved ARE different) and change only the verdict.

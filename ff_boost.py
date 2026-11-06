@@ -578,9 +578,52 @@ class BoostLeg:
                 and self.anchor_liquidity <= THIN_ANCHOR_LIQUIDITY)
 
     @property
+    def anchor_untested(self) -> bool:
+        """At the book's opening limit, but the price HAS moved off 0.5000.
+
+        B86. The gap between the other two flags, and the one a slip gets
+        built from. `anchor_thin` fires at liquidity <= 25 and
+        `anchor_opening` needs an exact 0.5000, so a line at the book's
+        opening limit whose price has moved got NOTHING — and that is
+        precisely the set a session selects, because moving off the prior is
+        what makes a line look informative.
+
+        Measured on a real board three days out: Pinnacle had 62 two-sided
+        lines, **54 at exactly 0.5000 and all 62 at liquidity 250 against a
+        derived tier of 250.** The 8 that had moved were the only ones that
+        looked like prices, and a slip was built from them. The session's
+        own verdict: *"I picked these three as the most favourable of 62
+        lines, which is the procedure that manufactures edge from anchor
+        noise."* Its sensitivity table put the whole EV there — +15.3%
+        treating the anchors as accurate, **+0.2% treating them as carrying
+        no information**, which lands on the measured hold band.
+
+        RESIDUAL by construction: it excludes what the other two already
+        catch. The broad version — liquidity <= tier, full stop — fires on
+        **100%** of that board and is noise by B93b's standard; this fires
+        on the 8, which is 13%. Both go to 0% near kickoff, when Pinnacle's
+        tier is up at 1,000 with 1,000-3,000 resting. A flag that fires on
+        everything gets ignored, and the point is to be readable on the one
+        board where it matters.
+        """
+        if self.anchor_opening or self.anchor_thin:
+            return False
+        if self.anchor_liquidity is None:
+            return False          # never reported is not the same as low
+        tier = (self.opening_liquidity_tier
+                if self.opening_liquidity_tier is not None
+                else OPENING_LIQUIDITY)
+        return self.anchor_liquidity <= tier
+
+    @property
     def anchor_immature(self) -> bool:
-        """Either way the anchor cannot carry the weight of an EV."""
-        return self.anchor_opening or self.anchor_thin
+        """Any way you cut it, the anchor cannot carry the weight of an EV.
+
+        B86 added `anchor_untested`. Safe to widen here because this feeds
+        `Shortlist.immature_anchors`, a REPORT, and gates no leg — and at
+        slip level it names three players rather than sixty-two.
+        """
+        return self.anchor_opening or self.anchor_thin or self.anchor_untested
 
     @property
     def anchor_note(self) -> str | None:
@@ -591,6 +634,27 @@ class BoostLeg:
                     f"{self.fair_prob:.4f} is noise wearing a precise-looking "
                     f"number however far from 0.5000 it sits. This is the "
                     f"worst input you can hand fair_over.")
+        if self.anchor_untested:
+            tier = (self.opening_liquidity_tier
+                    if self.opening_liquidity_tier is not None
+                    else OPENING_LIQUIDITY)
+            derived = ("the book's own derived tier"
+                       if self.opening_liquidity_tier is not None
+                       else f"the hardcoded {OPENING_LIQUIDITY:g} fallback")
+            # Defensive on None even though anchor_untested guarantees it
+            # is not — anchor_opening's branch already formats this way, and
+            # a note that can raise turns a flag into an outage.
+            lqs = ("not reported" if self.anchor_liquidity is None
+                   else f"{self.anchor_liquidity:g}")
+            return (f"{self.player}: fair_prob {self.fair_prob:.4f} has moved "
+                    f"off 0.5000, but it sits on liquidity "
+                    f"{lqs} against a tier of {tier:g} "
+                    f"({derived}) — the book is still at its OPENING limit, "
+                    f"so the move is a few hundred dollars of price "
+                    f"discovery, not a market-tested number. This is the "
+                    f"line a slip gets built from, because moving off the "
+                    f"prior is exactly what makes one look informative. "
+                    f"Re-pull closer to kickoff and re-price.")
         if self.anchor_opening:
             lq = (f"liquidity {self.anchor_liquidity:g}"
                   if self.anchor_liquidity is not None

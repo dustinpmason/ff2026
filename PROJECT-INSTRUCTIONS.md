@@ -1210,10 +1210,35 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
   precise-looking 0.5052 that is pure noise, and it is the worst input you
   can hand `fair_over`.
 
-The report prints `** OPENING ANCHOR **` for either. Do not read a
-non-0.5000 anchor as settled without checking its liquidity — an early
+- **`anchor_untested`** — at or under the book's tier, but the price HAS
+  moved off 0.5000. **New 2026-11-06 (B86), and it is the one a slip gets
+  built from.** The other two left a gap: `anchor_thin` needs liquidity
+  <= 25 and `anchor_opening` needs an exact 0.5000, so a line at the
+  opening limit whose price had moved got NOTHING — and moving off the
+  prior is exactly what makes a line look informative. Measured on the
+  board that motivated this: **62 Pinnacle lines, 54 at exactly 0.5000,
+  all 62 at liquidity 250 against a derived tier of 250.** The 8 that had
+  moved were the only ones that looked like prices, and a three-leg slip
+  was built from them — **with no guard firing on any leg.** That slip's
+  own sensitivity: +15.3% treating the anchors as accurate, **+0.2%
+  treating them as carrying no information**, which lands on the measured
+  hold band. So when you see this flag, the move is a few hundred dollars
+  of price discovery, not a market-tested number. Re-pull closer to
+  kickoff and re-price.
+
+**This supersedes the old rule that a non-0.5000 anchor is settled.** It
+is not: on that board the same 250 of money sat behind the moved and
+unmoved prices alike, so the price moving tells you almost nothing about
+whether it was tested. Moved and unmoved are still DIFFERENT states and
+get different flags — `anchor_untested` is the quieter one — but neither
+can carry an EV on its own.
+
+The report prints `** OPENING ANCHOR **` for any of the three. Do not read
+a non-0.5000 anchor as settled without checking its liquidity — an early
 version of the flag tested fair_prob first and was structurally unable to
-see the thin case.
+see the thin case. **And check `Shortlist.immature_anchors` before quoting
+any slip EV**; if it names every leg, the EV is a statement about the
+anchors rather than about the bet.
 
 **Do not switch the anchor to Kalshi** on the strength of it varying more.
 Kalshi is an order-driven exchange and most alternate contracts carry under

@@ -2148,9 +2148,29 @@ chk("exactly 0.5000 at minimum limits is flagged immature",
 chk("the flag says to re-pull closer to kickoff",
     "kickoff" in (opening.anchor_note or "").lower(),
     str(opening.anchor_note)[:70])
-chk("a settled anchor at the same liquidity is NOT flagged",
-    not leg("WR A1", EV1, fair_prob=0.5065,
-            anchor_liquidity=250).anchor_immature)
+# B86 OVERTURNED THIS CHECK, deliberately. It used to assert that a price
+# which had MOVED off 0.5000 was not flagged at all, on the reasoning that
+# "the 0.5000 does the work; liquidity only sets how far the net reaches."
+# The measurement contradicts it: on the board that motivated this, ALL 62
+# Pinnacle lines sat at liquidity 250 and only 54 were at 0.5000 — so 250 of
+# resting money cannot make 0.5065 meaningful when it does not make 0.5000
+# meaningful. The 8 that moved are the ones a slip gets built from.
+#
+# The old check's DISTINCTION survives and is what is asserted now: moved
+# and unmoved are different states, and they get different flags. Only the
+# verdict changed, from "no flag" to "a quieter one".
+_moved = leg("WR A1", EV1, fair_prob=0.5065, anchor_liquidity=250)
+chk("a moved price at the opening limit is NOT anchor_opening",
+    not _moved.anchor_opening)
+chk("but it IS anchor_untested, which is the B86 gap",
+    _moved.anchor_untested)
+chk("so it still cannot carry an EV", _moved.anchor_immature)
+chk("and its note says the move is price discovery, not a tested price",
+    "price discovery" in (_moved.anchor_note or ""),
+    str(_moved.anchor_note)[:90])
+chk("the two states are distinguishable, not collapsed",
+    opening.anchor_opening and not opening.anchor_untested
+    and _moved.anchor_untested and not _moved.anchor_opening)
 chk("exactly 0.5000 at HIGH liquidity is not flagged",
     not leg("WR A1", EV1, fair_prob=0.5,
             anchor_liquidity=10000).anchor_immature)
@@ -2173,10 +2193,19 @@ chk("exactly 0.5000 at Pinnacle's CURRENT 500 tier is flagged",
     "measured 2026-11-05: Pinnacle raises its limit as the event nears")
 chk("the 250 tier still flags, so the fix only widened the net",
     leg("WR A1", EV1, fair_prob=0.5, anchor_liquidity=250).anchor_immature)
-chk("a settled anchor at the 500 tier is still NOT flagged",
+# Same overturn at the 500 tier, same reasoning.
+chk("a moved price at the 500 tier is untested, not unflagged",
+    leg("WR A1", EV1, fair_prob=0.5065,
+        anchor_liquidity=500).anchor_untested)
+# The flag must go QUIET on a mature anchor, or it is the noise B93b cut.
+chk("a moved price ABOVE the tier is not flagged at all",
     not leg("WR A1", EV1, fair_prob=0.5065,
-            anchor_liquidity=500).anchor_immature,
-    "the 0.5000 does the work; liquidity only sets how far the net reaches")
+            anchor_liquidity=3000,
+            opening_liquidity_tier=1000.0).anchor_immature,
+    "near kickoff Pinnacle runs 1,000-3,000 against a 1,000 tier")
+chk("and unreported liquidity is not treated as low",
+    not leg("WR A1", EV1, fair_prob=0.5065).anchor_untested,
+    "never reported is a different state from low")
 
 # B59. The threshold above is a HARDCODED tier and hardcoding it has already
 # failed once (250 -> 500). Derive it from the book's own board per pull.
@@ -3094,6 +3123,59 @@ def _raises(fn, exc=Exception) -> bool:
     except exc:
         return True
 
+
+section("50. the anchor flag gap a slip gets built from (B86)")
+# anchor_thin fires at liquidity <= 25 and anchor_opening needs an exact
+# 0.5000, so a line at the book's OPENING LIMIT whose price has moved got
+# nothing — and that is the set a session selects, because moving off the
+# prior is what makes a line look informative.
+#
+# Reconstructed from the real slip (Sunday board, 2026-11-05): all three
+# legs sat at or under their tier and NOT ONE automated guard fired. The
+# session caught it by querying the fields by hand and had earlier written
+# prose about "shallow Kalshi anchors" as though the tooling had flagged
+# them, then corrected itself.
+# ---------------------------------------------------------------------------
+def _aleg(player, fp, lq, tier):
+    return BoostLeg(event_id=EV1, book="fanduel",
+                    market="player_reception_yds", player=player, side="OVER",
+                    odds=-114, fair_prob=fp, fair_source="pinnacle",
+                    devig_method="shin", verdict="CLEAR", team="X", pos="WR",
+                    anchor_liquidity=lq, opening_liquidity_tier=tier)
+_slip = [_aleg("Gibbs", 0.5427, 250, 250.0),      # tier derived from Pinnacle
+         _aleg("Likely", 0.4944, 175.76, None),   # Kalshi: no tier, falls back
+         _aleg("Allen", 0.4798, 106, None)]
+chk("every leg of the real slip is now flagged",
+    all(l.anchor_untested for l in _slip),
+    str([(l.player, l.anchor_untested) for l in _slip]))
+chk("and none of them was caught by the two older flags",
+    not any(l.anchor_opening or l.anchor_thin for l in _slip))
+chk("a no-tier book falls back to the hardcoded constant, not to silence",
+    _slip[2].anchor_untested and _slip[2].opening_liquidity_tier is None)
+# FIRING RATE. The broad version — liquidity <= tier, full stop — fires on
+# 100% of a three-days-out board and is the noise B93b cut. Residual fires
+# on the 8 of 62 that moved. Both go to zero near kickoff.
+_early = ([_aleg(f"p{i}", 0.5000, 250, 250.0) for i in range(54)]
+          + [_aleg(f"q{i}", 0.5000 + 0.004 * (i + 1), 250, 250.0)
+             for i in range(8)])
+_n_unt = sum(l.anchor_untested for l in _early)
+chk("three days out it fires on the 8 that moved, not all 62",
+    _n_unt == 8, f"{_n_unt} of {len(_early)}")
+chk("and the other 54 are anchor_opening, so nothing is double-counted",
+    sum(l.anchor_opening for l in _early) == 54
+    and not any(l.anchor_opening and l.anchor_untested for l in _early))
+_late = [_aleg(f"r{i}", 0.52 + 0.004 * i, 2000, 1000.0) for i in range(62)]
+chk("near kickoff it goes completely quiet",
+    not any(l.anchor_untested or l.anchor_immature for l in _late))
+# It feeds the slip-level report, which names three players rather than 62.
+_sl = ff_boost.Shortlist(
+    candidates=[ff_boost.Candidate(
+        legs=_slip, structure=classify(_slip, {}), boost_pct=0.30,
+        independent_odds=560.0, stake=10.0)],
+    mode="single-game", boost_pct=0.30, reason="", dropped=[])
+chk("the shortlist names them as immature anchors",
+    set(_sl.immature_anchors) == {"Gibbs", "Likely", "Allen"},
+    str(_sl.immature_anchors))
 
 section("49. a book is not its own reference — including at GRADING (B102)")
 # The project's oldest rule, never applied to the grading path. Measured
