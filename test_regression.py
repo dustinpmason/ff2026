@@ -3086,6 +3086,227 @@ if _prev is None:
 else:
     ff_betlog.SESSION.write_text(_prev)
 
+def _raises(fn, exc=Exception) -> bool:
+    """True when fn() raises exc. Keeps a check a FAILURE, not a crash."""
+    try:
+        fn()
+        return False
+    except exc:
+        return True
+
+
+section("47. a uniform hold punishes the leg you shopped hardest (B95)")
+# stake_back_ev backed p out of the price with `implied(odds)/(1+hold)`,
+# which assumes the leg carries the FIELD'S AVERAGE margin. Measured on a
+# live First TD board, per-leg margins ran +0.01pp to -3.52pp in ONE game.
+# Chase Brown's BetMGM +525 carried almost none, so the derivation put him
+# 24% low and his $10 token at $3.29 instead of $5.47. The error has a
+# direction: the better you shopped, the more it understates you.
+# ---------------------------------------------------------------------------
+_CB_ODDS, _CB_FAIR, _CB_HOLD = 525, 0.1601, 0.3195
+_der = stake_back_ev(_CB_ODDS, market_hold=_CB_HOLD)
+_mea = stake_back_ev(_CB_ODDS, fair_prob=_CB_FAIR)
+chk("the uniform derivation really is low on a well-shopped leg",
+    _der["p_true"] < _mea["p_true"] * 0.80,
+    f'derived {_der["p_true"]:.4f} vs measured {_mea["p_true"]:.4f}')
+chk("and it reproduces the measured gap, $3.29 against $5.47",
+    abs(_der["ev"] - 3.29) < 0.01 and abs(_mea["ev"] - 5.47) < 0.01,
+    f'{_der["ev"]:.2f} / {_mea["ev"]:.2f}')
+chk("fair_prob is used verbatim, not re-derived",
+    abs(_mea["p_true"] - _CB_FAIR) < 1e-12)
+# The result has to say WHICH p it used, or the two are indistinguishable.
+chk("the result names the source of p",
+    _mea["p_source"] == "measured" and "uniform" in _der["p_source"],
+    f'{_mea["p_source"]!r} / {_der["p_source"]!r}')
+chk("a fair_prob outside (0,1) is refused, not clamped",
+    all(_raises(lambda v=v: stake_back_ev(525, fair_prob=v), ValueError)
+        for v in (0.0, 1.0, 1.4, -0.2)))
+# stake_back_band must pass it through, or the band silently reverts.
+_bd = stake_back_band(_CB_ODDS, fair_prob=_CB_FAIR)
+chk("the band passes fair_prob through to every point",
+    all(r["p_source"] == "measured" for r in _bd.values()),
+    str({k: v["p_source"] for k, v in _bd.items()}))
+chk("and reproduces the measured band 4.88 / 5.47 / 5.97",
+    all(abs(_bd[l]["ev"] - e) < 0.01 for l, e in
+        zip(ff_boost.STAKE_BACK_V_LABELS, (4.88, 5.47, 5.97))),
+    str({k: round(v["ev"], 2) for k, v in _bd.items()}))
+
+# ODDS-INDEPENDENCE IS A PREMISE, NOT A PROPERTY. The documented result
+# `base = S*(1/(1+h) - 1)` follows from substituting p = 1/(d*(1+h)) — which
+# IS the uniform-hold assumption. Pin both halves, because the instructions
+# used to state the first without the second.
+_bases_u = [stake_back_ev(o, market_hold=0.39)["base_ev"]
+            for o in (-200, 300, 900, 2800, 20000)]
+chk("under a uniform hold the base EV is constant across all prices",
+    max(_bases_u) - min(_bases_u) < 1e-9, str([round(b, 4) for b in _bases_u]))
+# Real board, real per-leg fair probabilities, same three legs the session
+# recommended from.
+_real_legs = ((300, 0.2148, "McCaffrey"), (525, 0.1601, "Chase Brown"),
+              (1450, 0.0621, "Washington"))
+_bases_m = [stake_back_ev(o, fair_prob=p)["base_ev"] for o, p, _ in _real_legs]
+chk("with MEASURED per-leg fair probabilities it is not constant at all",
+    max(_bases_m) - min(_bases_m) > 1.0, str([round(b, 4) for b in _bases_m]))
+# The practical consequence: a shorter price can beat a longer one.
+_short = stake_back_ev(525, fair_prob=0.1601)["ev"]
+_long = stake_back_ev(800, fair_prob=0.0906)["ev"]
+chk("price QUALITY can beat price LENGTH once margins vary",
+    _short > _long, f"+525 at ${_short:.2f} vs +800 at ${_long:.2f}")
+
+section("46. the extraction helpers that replace the hand-rolls (B82)")
+# Two sessions hand-rolled walks of bookmakers[].markets[].outcomes[] and
+# both reproduced bugs flatten_odds already fixes: a Kalshi First TD board
+# keyed on name kept the LAST price per player — the No side, at -4900 —
+# giving booksum 20.99; and an Over/Under board keyed the same way pulled 13
+# milestone rungs into one player's line, giving booksum 2.9756. Both
+# fixtures below are those shapes.
+# ---------------------------------------------------------------------------
+_kal = {"bookmakers": [{"key": "kalshi", "markets": [{
+    "key": "player_1st_td", "outcomes": sum(
+        [[{"name": "Yes", "description": p, "price": pr},
+          {"name": "No", "description": p, "price": -4900}]
+         for p, pr in [("Bhayshul Tuten", 400), ("Derrick Henry", 600),
+                       ("Zay Flowers", 1000),
+                       ("No Touchdown Scorer", 250)]], [])}]}]}
+_kf = ff_props.field_from_odds(_kal, market="player_1st_td", book="kalshi")
+chk("a Yes/No board yields the YES side, never the No",
+    set(_kf.values()) == {400.0, 600.0, 1000.0, 250.0}, str(_kf))
+chk("and one entry per player, not two", len(_kf) == 4, str(_kf))
+chk("the -4900 No price appears nowhere", -4900.0 not in _kf.values())
+# The no-scorer row has to survive normalisation or devig_field's
+# completeness check stops working on the output.
+chk("the no-scorer row survives norm_player into NO_SCORER_NAMES",
+    any(k in ff_props.NO_SCORER_NAMES for k in _kf), str(list(_kf)))
+
+# A name-only board is the other real shape.
+_dkb = {"bookmakers": [{"key": "draftkings", "markets": [{
+    "key": "player_1st_td", "outcomes": [
+        {"name": p, "description": p, "price": pr} for p, pr in
+        [("Bhayshul Tuten", 400), ("Chris Rodriguez Jr.", 425),
+         ("No Touchdown Scorer", 250)]]}]}]}
+_df = ff_props.field_from_odds(_dkb, market="player_1st_td",
+                               book="draftkings")
+chk("a name-only board works from the same call", len(_df) == 3, str(_df))
+# B44: the exact lookup that reported Chris Rodriguez as UNKNOWN.
+chk("names come back normalised, so the B44 join cannot miss",
+    "chris rodriguez" in _df and "Chris Rodriguez Jr." not in _df, str(_df))
+
+# The ambiguity that taking-either-one hides. One payload really did carry
+# both spellings of Brian Thomas at once (B44).
+_dup = {"bookmakers": [{"key": "dk", "markets": [{
+    "key": "player_1st_td", "outcomes": [
+        {"name": "Brian Thomas Jr.", "description": "Brian Thomas Jr.",
+         "price": 500},
+        {"name": "Brian Thomas", "description": "Brian Thomas",
+         "price": 650}]}]}]}
+_cm = ""
+try:
+    ff_props.field_from_odds(_dup, market="player_1st_td", book="dk")
+    chk("two names normalising to one key is refused", False, "it returned")
+except ValueError as _ex:
+    _cm = str(_ex)
+    chk("two names normalising to one key is refused", True)
+chk("and the refusal shows BOTH prices, so it can be resolved",
+    "+500" in _cm and "+650" in _cm, _cm[:170])
+
+# A non-exclusive market is refused early, with a better message than
+# devig_field can give after the fact — and it means rungs can never leak
+# into a field, since rungs only exist on yardage markets.
+_ym = ""
+try:
+    ff_props.field_from_odds(_dkb, market="player_reception_yds",
+                             book="draftkings")
+    chk("a yardage market cannot be built as a field", False, "it returned")
+except ValueError as _ex:
+    _ym = str(_ex)
+    chk("a yardage market cannot be built as a field", True)
+chk("and it points at the right helper instead",
+    "two_sided_field" in _ym, _ym[:150])
+# An empty result names the books present, because a silent {} reads as
+# "this book does not carry it" when the cause is a misspelled key.
+_bm = ""
+try:
+    ff_props.field_from_odds(_dkb, market="player_1st_td", book="drafkings")
+    chk("a misspelled book raises rather than returning {}", False, "returned")
+except LookupError as _ex:
+    _bm = str(_ex)
+    chk("a misspelled book raises rather than returning {}", True)
+chk("and lists the books that ARE present",
+    "draftkings" in _bm, _bm[:150])
+
+# two_sided_field on a board carrying the main line AND 13 rungs — the
+# pollution shape. "29+ Receiving Yards" at -116 IS Over 28.5 at -116, and
+# "30+" at -108 matches the main UNDER's price while being a different bet.
+_rung = {"bookmakers": [{"key": "draftkings", "markets": [
+    {"key": "player_reception_yds", "line_type": "main", "outcomes": [
+        {"name": "Over", "description": "Jahmyr Gibbs", "point": 28.5,
+         "price": -116},
+        {"name": "Under", "description": "Jahmyr Gibbs", "point": 28.5,
+         "price": -108}]},
+    {"key": "player_reception_yds", "line_type": "milestone", "outcomes": [
+        {"name": f"{n}+ Receiving Yards", "description": "Jahmyr Gibbs",
+         "price": -116 + n} for n in (10, 20, 29, 30, 40, 50, 60, 70, 80,
+                                      90, 100, 110, 120)]}]}]}
+# Guarded: if the line_type filter regresses the rungs join, the row count
+# goes to 14 and this RAISES. That is correct behaviour from the function
+# and a crash from the suite, which stops every later section and prints
+# "0 failed" over a partial count (lesson 14).
+try:
+    _tsf, _tline = ff_props.two_sided_field(
+        _rung, market="player_reception_yds", book="draftkings",
+        player="Gibbs")
+    chk("13 rungs beside the main line do not pollute the result",
+        _tsf == {"Over": -116.0, "Under": -108.0} and _tline == 28.5,
+        f"{_tsf} @ {_tline}")
+except Exception as _ex:
+    chk("13 rungs beside the main line do not pollute the result", False,
+        f"raised {type(_ex).__name__}: {_ex}")
+# A one-sided market has no two-way price to de-vig.
+_one = {"bookmakers": [{"key": "dk", "markets": [{
+    "key": "player_reception_yds", "line_type": "main", "outcomes": [
+        {"name": "Over", "description": "X", "point": 10.5,
+         "price": -110}]}]}]}
+try:
+    ff_props.two_sided_field(_one, market="player_reception_yds", book="dk",
+                             player="X")
+    chk("a one-sided market is refused", False, "it returned")
+except ValueError:
+    chk("a one-sided market is refused", True)
+# A suspended market is not a price.
+_susp = {"bookmakers": [{"key": "dk", "markets": [{
+    "key": "player_reception_yds", "line_type": "main",
+    "suspended_at": "2026-11-05T23:00Z", "outcomes": [
+        {"name": "Over", "description": "X", "point": 10.5, "price": -110},
+        {"name": "Under", "description": "X", "point": 10.5,
+         "price": -110}]}]}]}
+try:
+    ff_props.two_sided_field(_susp, market="player_reception_yds", book="dk",
+                             player="X")
+    chk("a suspended market is refused", False, "it returned")
+except ValueError as _ex:
+    chk("a suspended market is refused", "suspended" in str(_ex))
+# Ambiguity rather than a silent pick: two players matching the substring.
+_two = {"bookmakers": [{"key": "dk", "markets": [{
+    "key": "player_reception_yds", "line_type": "main", "outcomes": [
+        {"name": "Over", "description": "Josh Allen", "point": 10.5,
+         "price": -110},
+        {"name": "Under", "description": "Josh Allen", "point": 10.5,
+         "price": -110},
+        {"name": "Over", "description": "Keenan Allen", "point": 40.5,
+         "price": -115},
+        {"name": "Under", "description": "Keenan Allen", "point": 40.5,
+         "price": -105}]}]}]}
+try:
+    ff_props.two_sided_field(_two, market="player_reception_yds", book="dk",
+                             player="Allen")
+    chk("an ambiguous player match is refused, not picked", False, "returned")
+except LookupError as _ex:
+    chk("an ambiguous player match is refused, not picked",
+        "got 2" in str(_ex), str(_ex)[:140])
+
+# norm_player moved to ff_props (one home, lesson 7) and is re-exported.
+chk("norm_player has ONE home and ff_boost re-exports it",
+    ff_props.norm_player is ff_boost.norm_player)
+
 section("45. flatten_odds carries anchor depth, per side (B92)")
 # It dropped `liquidity`, so there was NO sanctioned path from a get_odds
 # payload to per-line anchor depth — which is why a session hand-rolled a

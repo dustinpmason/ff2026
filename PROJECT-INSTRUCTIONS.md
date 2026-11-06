@@ -1313,6 +1313,34 @@ prints a verdict, and the three cases mean different things:
 - **Hold ABOVE the band.** A worse price than expected, which understates
   rather than flatters. Self-correcting.
 
+**NEVER build a field or a two-sided line by hand. Two helpers now do it
+(B82).**
+
+- `field_from_odds(response, market=..., book=...)` → `{normalised name:
+  american}` for one book's mutually exclusive field, ready to hand
+  straight to `devig_field`.
+- `two_sided_field(response, market=..., book=..., player=...)` →
+  `({"Over": am, "Under": am}, line)` for one player's main line.
+
+Both refuse rather than return something usable-looking: a non-exclusive
+market, **two names that normalise to one key** (showing both prices), a
+row with no affirmative price, an empty result (naming the books actually
+present, since a silent `{}` reads as "this book doesn't carry it"), more
+than one main line for a player, a one-sided market, a suspended market.
+
+**This matters because hand-rolled versions have twice produced numbers
+that looked fine.** A Kalshi First TD board keyed on player name kept the
+**No** price at −4900 for every player quoted both ways → booksum 20.99.
+An Over/Under board keyed the same way pulled 13 milestone rungs into one
+player's line → booksum 2.9756. Both were avoidable: `OVER_NAMES` already
+contains `"yes"` and `UNDER_NAMES` `"no"`, so `flatten_odds` routes a
+Yes/No board correctly and always has. If you find yourself writing
+`for bm in response["bookmakers"]`, stop — one of these two covers it.
+
+Names come back through `norm_player`, so results join to anchors and to
+`build_meta` without a second name bug: "Chris Rodriguez Jr." and "Chris
+Rodriguez" land on one key.
+
 **`flatten_odds` now carries `over_liquidity` and `under_liquidity` (B92).**
 Anchor depth is reachable from it alone, so **there is no longer any reason
 to walk `bookmakers[].markets[].outcomes[]` by hand** — doing so bypasses
@@ -1338,6 +1366,27 @@ number, because the refund is essentially the whole edge — at +900 the
 raw bet is about -$2.81 and the refund +$6.03 — and burying that hides
 where the money comes from. Quote the band, never a point, and state the
 hold and v you used.
+
+**If you de-vigged the field, PASS `fair_prob` (B95).** Both
+`stake_back_ev` and `stake_back_band` take it, and it replaces the
+uniform-hold derivation. That derivation assumes the leg carries the
+field's AVERAGE margin, and real per-leg margins ran **+0.01pp to -3.52pp
+inside one game**. Chase Brown's BetMGM +525 carried almost none, so the
+derived p came out **24% low and his $10 token read $3.29 instead of
+$5.47**. The error always runs the same way: **shopping a price is what
+makes its margin unrepresentative, so the better the leg you found, the
+more the uniform assumption understates it.** The result carries
+`p_source` — say which one you used.
+
+**And stop quoting "the raw bet's EV is odds-independent" as a rule
+(B95).** It is a theorem about a UNIFORM hold, proved by substituting
+`p = 1/(d*(1+h))`, which is that assumption. With measured per-leg
+probabilities the base EV is not constant: on one live board it ran
+-$1.41 at +300, **+$0.01 at +525** and -$0.37 at +1450. So **price
+quality beats price length** once margins vary — Chase Brown at +525
+paying ~0pp returns $5.47 where Tee Higgins at +800 paying 2.05pp returns
+$4.07. Shorter odds, better bet. Use the odds-independence result to bound
+the question, never to wave away which price you are taking.
 
 **Two reporting rules, both earned 2026-11-05 (B83).**
 

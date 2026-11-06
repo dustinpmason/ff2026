@@ -464,3 +464,28 @@ reality.
     **Count how often a new flag fires against real cases before you ship
     it** — it took one script, and the answer went from 3-of-5 to 1-of-5,
     the one that mattered.
+35. **Before building a helper to prevent a bug, check whether the existing
+    function already prevents it.** B82's headline failure was a Kalshi
+    Yes/No board keyed on name, which kept the No price and gave booksum
+    20.99. `OVER_NAMES` already contains "yes" and `UNDER_NAMES` "no", so
+    `flatten_odds` routes that board correctly and always did — the
+    hand-roll bypassed the one function that fixes it. The helper is
+    therefore thin, and its value is existing and being obvious to reach
+    for, not being clever. **A bug that recurs in bypass code is usually a
+    discoverability problem, not a logic one.**
+36. **A derived quantity inherits the assumption it was derived under, and
+    the assumption is usually invisible at the call site.**
+    `stake_back_ev` backed p out of a price using a uniform hold. Nothing
+    in the signature said so, and on a leg whose margin was unrepresentative
+    — which is what a WELL-SHOPPED leg is — it ran 24% low and cost $2.18
+    on a $10 token. **When a function derives an input you might already
+    have measured, let the caller pass the measured one, and make the
+    result say which it used.**
+37. **A proof is only as general as its substitution.** The documented
+    result "the raw bet's EV does not depend on the odds" was proved by
+    substituting p = 1/(d*(1+h)) — which IS the uniform-hold assumption,
+    not a fact about the bet. With measured per-leg probabilities the base
+    EV varies by more than a dollar across one board, and a SHORTER price
+    with no margin beats a longer one with 2pp. The theorem was right; the
+    advice drawn from it was too broad. **Re-read what a result assumed
+    before quoting it as a rule.**

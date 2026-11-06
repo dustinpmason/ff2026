@@ -109,7 +109,10 @@ from itertools import combinations, product
 from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
                          expected_roi, roi_band, SGP_HOLD_CROSS_GAME,
                          SGP_HOLD_SAME_GAME)
-from ff_guillotine import normalize_name
+# B82. norm_player moved to ff_props, which is where the odds intake that
+# needs it lives; re-exported here so existing callers and the instructions
+# keep working. One home, per lesson 7.
+from ff_props import norm_player  # noqa: F401  (re-export)
 
 # +300 is the boost's own requirement and does not move.
 #
@@ -438,44 +441,8 @@ VERDICTS = {
 }
 
 
-_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
 
 
-def norm_player(name: str) -> str:
-    """Canonical key for joining a book's quote to its anchor line.
-
-    USE THIS FOR THE ODDS -> ANCHOR JOIN. It is the one join in the live
-    intake path that has to happen on a name, and it has already cost a
-    player his whole board.
-
-    D13 recorded that the HISTORICAL endpoints carry no player_id and said
-    "just live get_odds has the id". Measured 2026-11-02: live
-    get_event_ev has no player_id either — only `description` — while
-    get_odds does. So the anchor join is name-keyed on the live path too,
-    and the never-join-on-a-name rule has a second and larger hole than
-    D13 describes, at exactly the point boost intake needs it.
-
-    It bites inside one response. On event 87238 the EV payload carried
-    BOTH spellings at once:
-
-        Brian Thomas Jr.  reception_yds  9.5   anchor kalshi
-        Brian Thomas      reception_yds  10.5  anchor pinnacle
-
-    DraftKings and FanDuel both priced him at 10.5, so a raw-name join
-    found only the kalshi 9.5 rows and his entire DK/FD board went
-    unanchored. normalize_name() — built for B1, the phantom-player bug —
-    already collapses both to "brian thomas". The intake path simply was
-    not using it.
-
-    Also strips a trailing parenthetical: Bovada writes
-    "Garrett Wilson (NYJ)" where DraftKings writes "Garrett Wilson".
-
-    What it does NOT fix, and must not be trusted to: first-name variants
-    such as Josh/Joshua Palmer, which are different strings all the way
-    down. Resolve those through propline_search_players on an exact
-    known_names match, as the instructions require.
-    """
-    return normalize_name(_PAREN.sub("", str(name).strip()))
 
 
 def american(decimal: float) -> float:
@@ -1426,7 +1393,8 @@ def price_candidate(cand: Candidate, *, book_odds: float,
 
 def stake_back_ev(odds: float, *, stake: float = 10.0,
                   bonus_value: float = 0.65,
-                  market_hold: float = 0.39) -> dict:
+                  market_hold: float = 0.39,
+                  fair_prob: float | None = None) -> dict:
     """EV of a STAKE-BACK token (bet reset / safety net / second chance).
 
     B56. These are not boosts and must not go through the boost path. A
@@ -1464,7 +1432,21 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
     the truth only at its bottom edge. Honest EV on a $10 token is **$2-4**,
     not the $4-5 first quoted.
 
-    **The raw bet's EV does not depend on the odds at all.** Substituting
+    **`fair_prob` overrides the hold derivation, and you should pass it
+    whenever you have one (B95).** `market_hold` backs p out of the price
+    by assuming the leg carries the FIELD'S AVERAGE margin. Real per-leg
+    margins do not behave: measured on a live First TD board, they ran from
+    **+0.01pp to -3.52pp** across one game. For Chase Brown at +525, whose
+    BetMGM price carried almost no margin, the uniform derivation gives
+    p = 0.1213 against a measured fair of **0.1601 — 24% low** — and the
+    $10 token EV comes out **$3.29 instead of $5.47**. The error is always
+    in the same direction: **a well-shopped leg is the one the uniform
+    assumption punishes hardest**, because shopping is precisely what makes
+    its margin unrepresentative. If you de-vigged the field, you already
+    have the right number; pass it.
+
+    **The raw bet's EV does not depend on the odds — UNDER UNIFORM HOLD,
+    which is a premise, not a property of the bet (B95).** Substituting
     p = 1/(d*(1+h)) into the first term collapses it:
 
         base = S * (1/(1 + h) - 1)
@@ -1488,25 +1470,59 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
       of `v`, not the one-fifth first recorded here — that figure measured
       +900 upward and missed the steepest part of the board.
 
+    **But that substitution IS the uniform-hold assumption**, so the
+    result holds only where it does. With measured per-leg fair
+    probabilities the base EV is not constant at all — on one live board it
+    ran -$1.41 at +300 (McCaffrey), **+$0.01 at +525** (Chase Brown, a
+    price carrying no margin) and -$0.37 at +1450. So **price QUALITY
+    beats price LENGTH once margins vary**: Chase Brown at +525 paying
+    ~0pp returns $5.47 on a $10 token while Tee Higgins at +800 paying
+    2.05pp returns $4.07, shorter odds and better EV. Read the
+    odds-independence result as what it is — a statement about a model of
+    the market, useful for bounding the question, and not a licence to
+    ignore which price you are taking.
+
     Both the hold and v are one book, one market, one night. Re-measure the
-    booksum rather than inheriting 0.39 — D16.
+    booksum rather than inheriting 0.39 — D16. Measured 2026-11-06 across
+    three Sunday First TD boards, overrounds ran **+29.8% to +34.5%**,
+    materially tighter than the 39.4% and 54.2% recorded above, which is
+    exactly why the default is a last resort.
 
     Returns the components rather than one number, because the headline is
     almost entirely the refund and that should be visible, not buried.
     """
     d = to_decimal(odds)
-    p = implied(odds) / (1.0 + float(market_hold))
+    if fair_prob is not None:
+        p = float(fair_prob)
+        if not 0.0 < p < 1.0:
+            raise ValueError(
+                f"fair_prob must be a probability in (0, 1), got {fair_prob!r}")
+        p_source = "measured"
+    else:
+        p = implied(odds) / (1.0 + float(market_hold))
+        p_source = f"derived from a uniform {float(market_hold):.1%} hold"
     base = p * (d - 1.0) * stake - (1.0 - p) * stake
     refund = (1.0 - p) * stake * float(bonus_value)
     return {"odds": float(odds), "p_true": p, "stake": float(stake),
             "bonus_value": float(bonus_value), "market_hold": float(market_hold),
             "base_ev": base, "refund_ev": refund, "ev": base + refund,
-            "roi": (base + refund) / stake}
+            "roi": (base + refund) / stake,
+            # B95. Which p was used, said out loud. A derived p can be 24%
+            # low on a well-shopped leg, and the result used to carry no
+            # way to tell the two apart.
+            "p_source": p_source}
 
 
 def stake_back_band(odds: float, *, stake: float = 10.0,
-                    market_hold: float = 0.39) -> dict:
+                    market_hold: float = 0.39,
+                    fair_prob: float | None = None) -> dict:
     """`stake_back_ev` across a pessimistic/central/optimistic bonus value.
+
+    **Pass `fair_prob` whenever you de-vigged the field (B95)** — it goes
+    straight through to `stake_back_ev` and replaces the uniform-hold
+    derivation, which runs up to 24% low on a leg whose price carries
+    less margin than the board's average. The whole band shifts with it:
+    Chase Brown at +525 is $3.29 central derived, $5.47 measured.
 
     Never quote a stake-back token as one number. `bonus_value` is an
     assumption, not a measurement, and it moves the answer about three times
@@ -1517,7 +1533,7 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
     0.60/0.70/0.80, whose top end this market cannot reach.
     """
     return {lab: stake_back_ev(odds, stake=stake, bonus_value=v,
-                               market_hold=market_hold)
+                               market_hold=market_hold, fair_prob=fair_prob)
             for lab, v in zip(STAKE_BACK_V_LABELS, STAKE_BACK_V_OBSERVED)}
 
 
