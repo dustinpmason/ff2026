@@ -195,6 +195,15 @@ None. **Closing lines matter
 more than results at this stake** — 10 graded slips says nothing about skill,
 while positive CLV across 30+ legs does.
 
+**`verify_uploaded()` now passes on a RECORD match, not a byte match
+(B91).** Drive decodes `\uXXXX` escapes in transit, so a log containing an
+em dash — which every role-change verdict does — can never be byte-identical.
+The check compares canonical records and still prints that the bytes
+differed and why. **So a False now means real corruption: an altered field,
+a dropped or reordered record, or content that does not parse.** Do not
+mark_uploaded on a False, and do not reason past one by hand — re-upload,
+and if it fails again, say so rather than marking it.
+
 ## Then read the config
 
 Read **LEAGUE-CONFIG.md**. It contains all four league keys, the real scoring rules,
@@ -840,6 +849,16 @@ side. Pinnacle is the sharpest book and the cheapest hold, so its no-vig line is
 a better truth estimate than any model built on 20-odd games. Report the edge in
 percentage points and apply the engine's tiers — under 3 points is a PASS.
 
+**`flatten_odds` now carries `over_liquidity` and `under_liquidity` (B92).**
+Anchor depth is reachable from it alone, so **there is no longer any reason
+to walk `bookmakers[].markets[].outcomes[]` by hand** — doing so bypasses
+the outcome pairing, the `line_type` filter, the Over/Under label matching
+and the price-key fallbacks, which is how a booksum of 20.99 and a 15-entry
+field both happened. Liquidity is per SIDE because one Kalshi line's two
+sides can differ by orders of magnitude ($5,977 over vs $112 under on the
+same 14.5). `None` means the book never reported liquidity, which is NOT
+the same as 0.
+
 ## Guillotine lineups — use the simulation, not a projection
 
 **Build the pool with the prior-season fallback, and pass the week.**
@@ -1230,6 +1249,27 @@ cross-game does not make a slip cross-game — two legs in one event make it
   probabilities and will look precise. Read `fair_source` off the line being
   priced; the anchor is per-LINE, not per-book.
 
+**A slip's hold is now COMPARED against its band, not just printed beside
+it (B93).** `report()` used to show `this slip's hold: 18.8% (reference band
+23.1%-37.2%)` and say nothing — and a live slip was placed off that. It now
+prints a verdict, and the three cases mean different things:
+
+- **Same-game, hold BELOW the band — marked `***`.** This is the dangerous
+  one and it FLATTERS the EV. `P(cash)` is `fair_joint`, a PRODUCT, and for
+  a same-game slip the product is not the joint: it omits whatever
+  correlation the table does not carry. The band is what real same-game
+  slips actually hold, so a product-based hold beneath it says the product
+  is probably overstating `P(cash)`. **Do not quote that EV without saying
+  so.** For scale, two same-team receivers cross together at 0.9817x
+  independence (E6, n=12,622) — about 2 points of EV on a three-leg slip.
+- **Cross-game — no note at all, either direction (B93b).** `slip_hold` is
+  EXACT for a cross-game slip because the product IS the joint, so the band
+  adds nothing to it. And below-band is the normal state for well-shopped
+  legs: three at -110/-110 hold 13.0% against a 17.7% floor. If you see a
+  cross-game slip under its band, that is good shopping, not a finding.
+- **Hold ABOVE the band.** A worse price than expected, which understates
+  rather than flatters. Self-correcting.
+
 ## Stake-back tokens are NOT boosts — do not run them through `ff_boost`
 
 A "bet reset", "safety net" or "second chance" token refunds the stake as
@@ -1291,74 +1331,6 @@ Two things to check rather than assume: whether the book allows a
 stake-back and a boost on the same slip (usually one promo per slip), and
 the token's minimum-odds floor, which a long First TD clears easily but a
 heavy favourite may not.
-
-**A slip's hold is now COMPARED against its band, not just printed beside
-it (B93).** `report()` used to show `this slip's hold: 18.8% (reference band
-23.1%-37.2%)` and say nothing — and a live slip was placed off that. It now
-prints a verdict, and the three cases mean different things:
-
-- **Same-game, hold BELOW the band — marked `***`.** This is the dangerous
-  one and it FLATTERS the EV. `P(cash)` is `fair_joint`, a PRODUCT, and for
-  a same-game slip the product is not the joint: it omits whatever
-  correlation the table does not carry. The band is what real same-game
-  slips actually hold, so a product-based hold beneath it says the product
-  is probably overstating `P(cash)`. **Do not quote that EV without saying
-  so.** For scale, two same-team receivers cross together at 0.9817x
-  independence (E6, n=12,622) — about 2 points of EV on a three-leg slip.
-- **Cross-game — no note at all, either direction (B93b).** `slip_hold` is
-  EXACT for a cross-game slip because the product IS the joint, so the band
-  adds nothing to it. And below-band is the normal state for well-shopped
-  legs: three at -110/-110 hold 13.0% against a 17.7% floor. If you see a
-  cross-game slip under its band, that is good shopping, not a finding.
-- **Hold ABOVE the band.** A worse price than expected, which understates
-  rather than flatters. Self-correcting.
-
-**NEVER build a field or a two-sided line by hand. Two helpers now do it
-(B82).**
-
-- `field_from_odds(response, market=..., book=...)` → `{normalised name:
-  american}` for one book's mutually exclusive field, ready to hand
-  straight to `devig_field`.
-- `two_sided_field(response, market=..., book=..., player=...)` →
-  `({"Over": am, "Under": am}, line)` for one player's main line.
-
-Both refuse rather than return something usable-looking: a non-exclusive
-market, **two names that normalise to one key** (showing both prices), a
-row with no affirmative price, an empty result (naming the books actually
-present, since a silent `{}` reads as "this book doesn't carry it"), more
-than one main line for a player, a one-sided market, a suspended market.
-
-**This matters because hand-rolled versions have twice produced numbers
-that looked fine.** A Kalshi First TD board keyed on player name kept the
-**No** price at −4900 for every player quoted both ways → booksum 20.99.
-An Over/Under board keyed the same way pulled 13 milestone rungs into one
-player's line → booksum 2.9756. Both were avoidable: `OVER_NAMES` already
-contains `"yes"` and `UNDER_NAMES` `"no"`, so `flatten_odds` routes a
-Yes/No board correctly and always has. If you find yourself writing
-`for bm in response["bookmakers"]`, stop — one of these two covers it.
-
-Names come back through `norm_player`, so results join to anchors and to
-`build_meta` without a second name bug: "Chris Rodriguez Jr." and "Chris
-Rodriguez" land on one key.
-
-**`flatten_odds` now carries `over_liquidity` and `under_liquidity` (B92).**
-Anchor depth is reachable from it alone, so **there is no longer any reason
-to walk `bookmakers[].markets[].outcomes[]` by hand** — doing so bypasses
-the outcome pairing, the `line_type` filter, the Over/Under label matching
-and the price-key fallbacks, which is how a booksum of 20.99 and a 15-entry
-field both happened. Liquidity is per SIDE because one Kalshi line's two
-sides can differ by orders of magnitude ($5,977 over vs $112 under on the
-same 14.5). `None` means the book never reported liquidity, which is NOT
-the same as 0.
-
-**`verify_uploaded()` now passes on a RECORD match, not a byte match
-(B91).** Drive decodes `\uXXXX` escapes in transit, so a log containing an
-em dash — which every role-change verdict does — can never be byte-identical.
-The check compares canonical records and still prints that the bytes
-differed and why. **So a False now means real corruption: an altered field,
-a dropped or reordered record, or content that does not parse.** Do not
-mark_uploaded on a False, and do not reason past one by hand — re-upload,
-and if it fails again, say so rather than marking it.
 
 **Modelled in code as of 2026-11-05:** `stake_back_ev()` and
 `stake_back_band()` in `ff_boost`. They return the components, not one
@@ -1428,8 +1400,40 @@ best-price comparison, never "the model likes him".
 | de-vig how | `devig_field()`, whole field at once | two-sided, per player |
 
 **First TD — `ff_props.devig_field(prices, market="player_1st_td")`.**
-Pass `{name: american}` from ONE book. It Shin-de-vigs the field to 1 and
-returns `fair`, `booksum`, `overround`, `z`.
+It Shin-de-vigs ONE book's field to 1 and returns `fair`, `booksum`,
+`overround`, `z`.
+
+**Build the `{name: american}` you pass it with
+`ff_props.field_from_odds(response, market="player_1st_td", book=...)`.
+NEVER by hand (B82).** This line used to read "pass `{name: american}` from
+ONE book" and stop there, which is an instruction to construct a dict with
+no word on where one comes from — so a session constructed one, and that is
+the whole of how the failures below happened.
+
+- `field_from_odds(response, market=..., book=...)` → `{normalised name:
+  american}` for one book's mutually exclusive field, ready to hand
+  straight to `devig_field`.
+- `two_sided_field(response, market=..., book=..., player=...)` →
+  `({"Over": am, "Under": am}, line)` for one player's main line.
+
+Both refuse rather than return something usable-looking: a non-exclusive
+market, **two names that normalise to one key** (showing both prices), a
+row with no affirmative price, an empty result (naming the books actually
+present, since a silent `{}` reads as "this book doesn't carry it"), more
+than one main line for a player, a one-sided market, a suspended market.
+
+**This matters because hand-rolled versions have twice produced numbers
+that looked fine.** A Kalshi First TD board keyed on player name kept the
+**No** price at −4900 for every player quoted both ways → booksum 20.99.
+An Over/Under board keyed the same way pulled 13 milestone rungs into one
+player's line → booksum 2.9756. Both were avoidable: `OVER_NAMES` already
+contains `"yes"` and `UNDER_NAMES` `"no"`, so `flatten_odds` routes a
+Yes/No board correctly and always has. If you find yourself writing
+`for bm in response["bookmakers"]`, stop — one of these two covers it.
+
+Names come back through `norm_player`, so results join to anchors and to
+`build_meta` without a second name bug: "Chris Rodriguez Jr." and "Chris
+Rodriguez" land on one key.
 
 **`market=` is REQUIRED as of 2026-11-05 (B70).** Calling
 `devig_field(prices)` now raises `TypeError` rather than skipping the

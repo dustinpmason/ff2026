@@ -489,3 +489,23 @@ reality.
     with no margin beats a longer one with 2pp. The theorem was right; the
     advice drawn from it was too broad. **Re-read what a result assumed
     before quoting it as a rule.**
+38. **Guidance in the wrong section is guidance that does not exist.** B82
+    shipped working helpers AND an instruction never to hand-roll a field —
+    and the next session hand-rolled one, because the instruction was filed
+    under "Stake-back tokens" while the session was reading "Touchdown-
+    scorer questions". Worse, the section it DID read said "pass
+    `{name: american}` from ONE book" and stopped, which is an instruction
+    to build a dict by hand. **Put the rule at the line where the work
+    happens, not in the section you happened to be editing.**
+39. **Check WHERE an instruction lands, not just that it is correct.** Four
+    edits in one day all ended up in the same wrong section because each
+    was inserted with `replace()` anchored on the text I had last been
+    looking at. The anchor is a convenience for the editor and means
+    nothing to the reader. After adding to a long document, walk back to
+    the nearest heading and ask whether a person with that question would
+    ever reach this line.
+40. **A negative deployment result can be about the instructions rather
+    than the code.** Nothing was wrong with `field_from_odds`, and a second
+    test round would have found nothing, because the failure was entirely
+    in where the rule was filed. Before re-testing a feature that was
+    ignored, check whether the reader was ever pointed at it.
