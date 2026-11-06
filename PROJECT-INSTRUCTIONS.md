@@ -1339,6 +1339,14 @@ raw bet is about -$2.81 and the refund +$6.03 — and burying that hides
 where the money comes from. Quote the band, never a point, and state the
 hold and v you used.
 
+**`market_hold` does NOTHING once `fair_prob` is passed (B99b).** It only
+feeds the uniform derivation that `fair_prob` replaces, so do not credit a
+figure to "measuring the hold rather than inheriting 0.39" when you also
+passed `fair_prob` — the result is identical at every hold from 0.10 to
+0.542. Read `p_source`, which now says so outright. Measuring the hold
+matters a great deal when you have NO per-leg fair probability, and not at
+all when you do.
+
 **If you de-vigged the field, PASS `fair_prob` (B95).** Both
 `stake_back_ev` and `stake_back_band` take it, and it replaces the
 uniform-hold derivation. That derivation assumes the leg carries the
@@ -1405,7 +1413,22 @@ It Shin-de-vigs ONE book's field to 1 and returns `fair`, `booksum`,
 
 **Build the `{name: american}` you pass it with
 `ff_props.field_from_odds(response, market="player_1st_td", book=...)`.
-NEVER by hand (B82).** This line used to read "pass `{name: american}` from
+NEVER by hand (B82).**
+
+**If `field_from_odds` is not in the clone, the fallback is
+`ff_props.flatten_odds(response, market="player_1st_td")`, NOT a hand-built
+loop (B99).** `field_from_odds` is a thin wrapper over `flatten_odds`, and
+`flatten_odds` is what does the work that matters: it pairs the outcomes,
+filters `line_type`, matches Over/Under labels through OVER_NAMES and
+UNDER_NAMES — **which contain `"yes"` and `"no"`, so it routes a Kalshi
+Yes/No board correctly** — falls back across the price keys, and carries
+`player_id` so the join never has to go through a name. Take the
+affirmative side per row and key it with `norm_player`; that is about
+fifteen lines and it is the floor, not the ceiling. A session that hit a
+missing `field_from_odds` wrote the payload walk **three times**, got
+Kalshi's booksum to 21.06 off the −4900 "No" prices, and reported its own
+error as a repo gap — `flatten_odds` was present the whole time and
+returned 1.3500 first try. This line used to read "pass `{name: american}` from
 ONE book" and stop there, which is an instruction to construct a dict with
 no word on where one comes from — so a session constructed one, and that is
 the whole of how the failures below happened.

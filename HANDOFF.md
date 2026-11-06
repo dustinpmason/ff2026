@@ -509,3 +509,26 @@ reality.
     test round would have found nothing, because the failure was entirely
     in where the rule was filed. Before re-testing a feature that was
     ignored, check whether the reader was ever pointed at it.
+41. **A cross-module move is a deployment coupling, and this repo deploys
+    file by file.** Moving `norm_player` into ff_props was right by lesson
+    7, but it made ff_boost refuse to import against an older ff_props —
+    and files are uploaded one at a time, so a torn clone is the NORMAL
+    state. A live session got a bare ImportError, inferred three missing
+    functions, built a shim, and was wrong about two of the three. **When a
+    symbol moves between modules, make the failure name the coupling**:
+    which files ship together, and not to shim around it.
+42. **"Absent from the module I checked" is not "absent".** That session
+    reported `book_liquidity_tiers` missing after testing only
+    `hasattr(ff_props, ...)`; it is in ff_boost. And it blamed the Kalshi
+    booksum-21 detour on a missing `field_from_odds` when `flatten_odds`
+    was present and would have returned 1.3500 first try. **It reported its
+    own error as the tool's** — which is the failure mode worth naming,
+    because a wrong repo-gap report sends the next session building around
+    an absence that is not there.
+43. **Naming only the best tool strands the reader when it is missing.**
+    The Touchdown-scorer section said to use `field_from_odds` and stopped.
+    A session that could not find it wrote the payload walk three times
+    rather than falling back to `flatten_odds`, which was present and is
+    what `field_from_odds` wraps. **Name the floor as well as the
+    preferred call**, because the preferred call is exactly what is absent
+    on a half-updated clone.

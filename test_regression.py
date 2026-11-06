@@ -3116,7 +3116,8 @@ chk("fair_prob is used verbatim, not re-derived",
     abs(_mea["p_true"] - _CB_FAIR) < 1e-12)
 # The result has to say WHICH p it used, or the two are indistinguishable.
 chk("the result names the source of p",
-    _mea["p_source"] == "measured" and "uniform" in _der["p_source"],
+    _mea["p_source"].startswith("measured")
+    and "uniform" in _der["p_source"],
     f'{_mea["p_source"]!r} / {_der["p_source"]!r}')
 chk("a fair_prob outside (0,1) is refused, not clamped",
     all(_raises(lambda v=v: stake_back_ev(525, fair_prob=v), ValueError)
@@ -3124,8 +3125,21 @@ chk("a fair_prob outside (0,1) is refused, not clamped",
 # stake_back_band must pass it through, or the band silently reverts.
 _bd = stake_back_band(_CB_ODDS, fair_prob=_CB_FAIR)
 chk("the band passes fair_prob through to every point",
-    all(r["p_source"] == "measured" for r in _bd.values()),
+    all(r["p_source"].startswith("measured") for r in _bd.values()),
     str({k: v["p_source"] for k, v in _bd.items()}))
+# B99b. market_hold is inert once fair_prob is given, and used to be
+# SILENTLY inert — a session headlined "measured hold, not the default" and
+# then found the figure identical at every hold from 0.10 to 0.542.
+_inert = [stake_back_ev(525, market_hold=h, fair_prob=0.1601)["ev"]
+          for h in (0.10, 0.3195, 0.39, 0.542)]
+chk("market_hold changes nothing once fair_prob is passed",
+    max(_inert) - min(_inert) < 1e-12, str(_inert))
+chk("and p_source SAYS the hold was not used",
+    "NOT used" in stake_back_ev(525, market_hold=0.3195,
+                                fair_prob=0.1601)["p_source"])
+chk("while the derived path still names the hold it applied",
+    "uniform 31.9% hold" in stake_back_ev(525,
+                                          market_hold=0.3195)["p_source"])
 chk("and reproduces the measured band 4.88 / 5.47 / 5.97",
     all(abs(_bd[l]["ev"] - e) < 0.01 for l, e in
         zip(ff_boost.STAKE_BACK_V_LABELS, (4.88, 5.47, 5.97))),

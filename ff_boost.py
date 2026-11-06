@@ -112,7 +112,30 @@ from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
 # B82. norm_player moved to ff_props, which is where the odds intake that
 # needs it lives; re-exported here so existing callers and the instructions
 # keep working. One home, per lesson 7.
-from ff_props import norm_player  # noqa: F401  (re-export)
+try:
+    from ff_props import norm_player  # noqa: F401  (re-export)
+except ImportError as _e:               # pragma: no cover - torn repo only
+    # B99. `norm_player` moved from here to ff_props on 2026-11-06 (B82),
+    # which made this module depend on a NEW ff_props. The repo is updated
+    # by uploading files one at a time, so a half-updated clone is the
+    # NORMAL case rather than an edge case — and a live session hit exactly
+    # this, got a bare "cannot import name 'norm_player' from 'ff_props'",
+    # concluded the repo was missing three functions, and built a shim.
+    # Two of those three claims were wrong. A cryptic import error at module
+    # load costs more than the refactor saved, so it says what to do.
+    raise ImportError(
+        "ff_boost needs norm_player from ff_props, and this ff_props does "
+        "not have it.\n\n"
+        "This is a HALF-UPDATED REPO, not a missing feature. norm_player "
+        "moved from ff_boost to ff_props on 2026-11-06 (B82), so the two "
+        "files must be committed TOGETHER:\n"
+        "    ff_props.py  and  ff_boost.py\n\n"
+        "Commit the matching ff_props.py and this import works. Do NOT "
+        "shim norm_player — ff_props is also where field_from_odds and "
+        "two_sided_field live, so an ff_props without norm_player is "
+        "missing those too, and anything built on this clone will be "
+        "working around absences that a correct commit removes."
+    ) from _e
 
 # +300 is the boost's own requirement and does not move.
 #
@@ -1497,7 +1520,14 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
         if not 0.0 < p < 1.0:
             raise ValueError(
                 f"fair_prob must be a probability in (0, 1), got {fair_prob!r}")
-        p_source = "measured"
+        # B99b. `market_hold` is INERT once fair_prob is given, and used to
+        # be silently so — a live session headlined "measured hold 0.3195,
+        # not the 0.39 default" and then found the figure identical at
+        # every hold from 0.10 to 0.542, because it had also passed
+        # fair_prob. Say it, so a caller cannot credit a number to an
+        # argument that did nothing.
+        p_source = ("measured (fair_prob given, so market_hold "
+                    f"{float(market_hold):.1%} was NOT used)")
     else:
         p = implied(odds) / (1.0 + float(market_hold))
         p_source = f"derived from a uniform {float(market_hold):.1%} hold"
