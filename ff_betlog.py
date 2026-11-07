@@ -157,6 +157,30 @@ def _recs() -> list[dict]:
     return [r for r in _read_all() if r.get("kind") in REC_KINDS]
 
 
+# B113. A sentinel, not a default. An OMITTED event_id and a deliberate
+# `event_id=None` are different facts, and with `= None` they were the same
+# keystroke-free outcome — which is D16/B39 exactly: unchecked state must not
+# look like checked state. Zero of 101 records in the live log carry one,
+# because nothing ever made the caller decide. The reading-side guard
+# (`_independence`) is INERT until coverage exists, so it closes nothing on
+# its own; this closes it at the cheap end, the way B70 made `market=`
+# required on `devig_field` one module over.
+_MUST_PASS = object()
+
+
+def _resolve_event_id(event_id, fn: str):
+    if event_id is _MUST_PASS:
+        raise TypeError(
+            f"{fn}() needs event_id=. Verdicts cluster by game, and without "
+            f"it the calibration report cannot tell four verdicts on four "
+            f"games from four on one — it prints CANNOT BE READ and the "
+            f"whole scorecard says nothing. Pass the PropLine event id as a "
+            f"string, e.g. event_id=\"53178\". If you genuinely do not have "
+            f"one, pass event_id=None EXPLICITLY: that is a decision on "
+            f"record, and leaving it out is not.")
+    return _norm_event(event_id)
+
+
 # B107. Below this many INDEPENDENT UNITS — distinct events where every
 # verdict carries an id, and nothing at all otherwise, per `_independence` —
 # a calibration bucket is reporting one game rather than a sample, and
@@ -638,7 +662,8 @@ def log_recommendation(player: str,
                        reasoning: str = "",
                        acted_on: bool = False,
                        bet_id: str | None = None,
-                       event_id: str | None = None) -> dict:
+                       *,
+                       event_id: str | None = _MUST_PASS) -> dict:
     """Record an engine verdict — INCLUDING PASS and COIN-FLIP.
 
     This is the half that makes the engine gradeable. Log every verdict the
@@ -670,7 +695,7 @@ def log_recommendation(player: str,
         # B107. Without this, nothing can tell four verdicts on four games
         # from four on one. Optional, because older records do not have it
         # and backfilling would be inventing data.
-        "event_id": event_id,
+        "event_id": _resolve_event_id(event_id, "log_recommendation"),
         "result": None,
         "actual": None,
     }
@@ -680,7 +705,7 @@ def log_recommendation(player: str,
 def log_edge(edge, player: str, market: str, line: float | None,
              odds: float | None = None, book: str = "",
              acted_on: bool = False, bet_id: str | None = None,
-             event_id: str | None = None) -> dict:
+             *, event_id: str | None = _MUST_PASS) -> dict:
     """Convenience: log an `ff_props.Edge` straight from prop_edge()."""
     return log_recommendation(
         player=player, market=market, line=line, side=edge.side,
@@ -688,7 +713,7 @@ def log_edge(edge, player: str, market: str, line: float | None,
         odds=odds, book=book, fair_source=edge.fair_source,
         devig_method=getattr(edge, "devig_method", ""),
         reasoning=edge.reasoning, acted_on=acted_on, bet_id=bet_id,
-        event_id=event_id)
+        event_id=_resolve_event_id(event_id, "log_edge"))
 
 
 # ---------------------------------------------------------------------------
@@ -915,8 +940,17 @@ def bet_summary() -> str:
     return "\n".join(x for x in L if x != "")
 
 
-def _check_prob(p, name: str) -> float:
-    """A probability, or a refusal. B110."""
+def _check_prob(p, name: str) -> float | None:
+    """A probability, an explicit None, or a refusal. B110/B113.
+
+    None is the honest value for a backfilled verdict whose probability was
+    never recorded: the calibration block already separates those out and
+    NAMES the count, so they cost nothing, while an invented number would
+    enter the figures looking measured. A percentage is a different thing —
+    an error — and is still refused.
+    """
+    if p is None:
+        return None
     v = float(p)
     if not 0.0 <= v <= 1.0:
         raise ValueError(
@@ -1044,8 +1078,7 @@ def _independence(rs: list[dict]) -> tuple[int | None, str]:
     if carried == 0:
         n = len(rs)
         tail = ("" if n == 1 else
-                f", so {n} verdicts on one game cannot be told from "
-                f"{n} on {n}")
+                f", so these {n} could all be one game or {n} separate ones")
         return None, f"no event ids recorded{tail}"
     if carried < len(rs):
         return None, f"only {carried} of {len(rs)} verdicts carry an event id"

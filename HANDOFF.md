@@ -657,3 +657,18 @@ reality.
     were not weak — they were aimed by the same misunderstanding that
     wrote the code. This is why SHIP GATE item 6 is not optional.
 
+60. **A guard on the read side alone closes nothing.** The clustering
+    gate refused honestly and permanently, because the field it needed to
+    measure anything was optional and nobody passed it — 0 of 101 records.
+    A refusal that cannot ever become a verdict is not a guard, it is a
+    disabled report. Where a guard needs a field, REQUIRE the field, and
+    require it such that an omission and a deliberate blank are different
+    keystrokes: `= None` makes them the same, which is D16 again.
+
+61. **Run the call you just documented.** I wrote `model_p=None` into the
+    instructions as the honest value for a backfilled verdict, in the same
+    breath as the code that raised on it. That is B106 for the second time
+    — a worked example that disables what it demonstrates. A sentence in
+    the project doc containing a function call is a claim about behaviour;
+    execute it before shipping it, in the same pass that writes it.
+

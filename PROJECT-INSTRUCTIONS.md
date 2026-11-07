@@ -188,11 +188,19 @@ model that is right 80% of the time *because* he filtered it. The PASSes are
 what separate those two, and `rec_summary()` reports calibration and PASS hit
 rate off them.
 
-**Pass `event_id` (B107) — and pass it as a string.** Verdicts cluster by
-game, and without the id nothing downstream can tell four verdicts on four
-games from four on one. PropLine's ids are numeric, so pass `str(event_id)`
-or let the logger normalise it; a log mixing `"53166"` and `53166` counted
-one game as two. The
+**`event_id` is REQUIRED on both loggers (B113).** Verdicts cluster by game,
+and without the id nothing downstream can tell four verdicts on four games
+from four on one. Both `log_edge` and `log_recommendation` now **raise** if it
+is omitted. PropLine's ids are numeric and the logger normalises them, so
+`event_id=53178` and `event_id="53178"` are the same event.
+
+If you genuinely do not have an event id, pass **`event_id=None`
+explicitly**. That is the whole point of the raise: an omission and a
+deliberate None were the same keystroke-free outcome before, which is D16 —
+unchecked state must not look like checked state. A tested log had **0 of 101
+verdicts carrying an id**, which made every calibration row print CANNOT BE
+READ and the scorecard say nothing at all. The reading-side guard cannot fix
+that; only the write side can. The
 line that forced this read `70%-85% n=4 said 77% went 0% overconfident by
 77%`, and three of the four were Baltimore pass-catchers on the night Lamar
 Jackson and Huntley both went to IR — one injury, three correlated legs,
@@ -253,12 +261,23 @@ would enter the calibration figures as if it had been measured. The one line
 that IS a bug is `!! N of M graded verdicts fell in NO bucket — this is a bug,
 not data`; say so if you ever see it.
 
+**Two loggers, and the second one is not a fallback.** `log_edge(edge, ...)`
+takes an `ff_props.Edge` and is the normal path when the engine priced the
+verdict. **`bl.log_recommendation(player, market, line, side, tier, model_p,
+fair_p, odds, ..., event_id=...)` takes the fields directly and is the path
+for a verdict with no pricing behind it** — a hand-entered judgment, a
+backfill, a correction. Use it without hesitation when there is no `Edge`;
+hand-building an `Edge` to satisfy `log_edge` is the wrong way round, and
+`prop_edge` needs a model estimate and a screened quote that a backfill does
+not have.
+
 `model_p` and `fair_p` are **fractions, not percentages** — `0.77`, never
-`77.0`. `log_recommendation` now refuses a value outside [0,1] rather than
-accepting it, because a percentage landed in no calibration bucket and
-vanished from the report without a word. `log_edge` takes these from the
-`Edge` object and is already correct; the refusal only bites a hand-built
-call.
+`77.0`. Both loggers refuse a value outside [0,1], because a percentage
+landed in no calibration bucket and vanished from the report without a word.
+If a backfilled verdict has no honest `model_p`, pass **`model_p=None`**: it
+will count in the tier table and be named in a `!!` line as excluded from
+calibration, which is correct — an invented probability would enter the
+calibration figures looking measured.
 
 Weekly: `bl.pending()` lists what needs grading. Pull closing lines with
 `propline_get_odds_closing` and grade with

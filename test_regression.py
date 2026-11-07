@@ -461,7 +461,8 @@ except ValueError: chk("bad result rejected", True)
 
 for _t, _p in [("MODERATE", 0.61), ("PASS", 0.44), ("COIN-FLIP", 0.53)]:
     ff_betlog.log_recommendation("P" + _t, "player_rush_yds", 50.5, "OVER",
-                                 _t, _p, 0.5, -110, acted_on=_t != "PASS")
+                                 _t, _p, 0.5, -110, acted_on=_t != "PASS",
+                                 event_id=f"evt-{_t}")
 chk("PASS verdicts are logged too",
     any(r["tier"] == "PASS" for r in ff_betlog.live_recs()))
 _before = len(ff_betlog.live_recs())
@@ -3812,8 +3813,8 @@ chk("the reason names zero coverage, not 'only 0 of 5'",
 chk("and spells out what cannot be distinguished",
     ff_betlog._independence(
         [{"player": f"P{_i}"} for _i in range(5)])[1]
-    == "no event ids recorded, so 5 verdicts on one game cannot be told "
-       "from 5 on 5",
+    == "no event ids recorded, so these 5 could all be one game or "
+       "5 separate ones",
     ff_betlog._independence([{"player": f"P{_i}"} for _i in range(5)])[1])
 # log_edge must carry event_id through. It is the call the engine actually
 # uses, and a parameter that is accepted and dropped is worse than one that
@@ -3850,7 +3851,7 @@ _legs51b = [ff_betlog.Leg(player="Travis Hunter", market="player_rec_yds",
 _b51b = ff_betlog.log_bet(525, 5.0, _legs51b, "draftkings")
 _r51b = ff_betlog.log_edge(_ed51, "Travis Hunter", "player_rec_yds", 8.5,
                            odds=-110, book="draftkings", acted_on=True,
-                           bet_id=_b51b["id"])
+                           bet_id=_b51b["id"], event_id=None)
 chk("a leg already in the rec log is not reported as a gap",
     all(g["player"] != "Travis Hunter"
         for g in ff_betlog.unlogged_bet_verdicts()),
@@ -3974,7 +3975,8 @@ _ed52 = types.SimpleNamespace(side="OVER", tier="PASS", model_p=0.44,
                               fair_p=0.50, fair_source="pinnacle",
                               devig_method="shin", reasoning="x")
 ff_betlog.log_edge(_ed52, "Zay Flowers", "player_rec_yds", 47.5, odds=-110,
-                   book="draftkings", acted_on=True, bet_id=_bl52["id"])
+                   book="draftkings", acted_on=True, bet_id=_bl52["id"],
+                   event_id=None)
 _lad_gap = [g for g in ff_betlog.unlogged_bet_verdicts()
             if g["bet_id"] == _bl52["id"]]
 chk("logging one rung of a ladder does not suppress the other",
@@ -3990,7 +3992,8 @@ _dk = [ff_betlog.Leg(player="D.K. Metcalf", market="player_rec_yds",
                      engine_tier="PASS")]
 _bdk = ff_betlog.log_bet(525, 5.0, _dk, "draftkings")
 ff_betlog.log_edge(_ed52, "DK Metcalf", "player_rec_yds", 55.5, odds=-110,
-                   book="draftkings", acted_on=True, bet_id=_bdk["id"])
+                   book="draftkings", acted_on=True, bet_id=_bdk["id"],
+                   event_id=None)
 chk("a spelling difference in the player name is not a missing verdict",
     all(g["bet_id"] != _bdk["id"]
         for g in ff_betlog.unlogged_bet_verdicts()),
@@ -4017,7 +4020,8 @@ _tmp52 = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
 ff_betlog.log_edge(_ed52, "Travis Hunter", "player_rec_yds", 8.5, odds=-110,
-                   book="draftkings")          # verdict time: no bet yet
+                   book="draftkings",
+                   event_id=None)              # verdict time: no bet yet
 _lh = [ff_betlog.Leg(player="Travis Hunter", market="player_rec_yds",
                      line=8.5, side="OVER", odds=-110, book="draftkings",
                      engine_tier="PASS")]
@@ -4051,10 +4055,11 @@ chk("and nothing is reported as unbucketed",
 # print an empty calibration header. Refused at the door instead.
 chk("a model_p of 77.0 is refused, not silently dropped",
     _raises(lambda: ff_betlog.log_recommendation(
-        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110), ValueError))
+        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110,
+        event_id=None), ValueError))
 chk("and the error says what to pass instead",
     "0.7700" in str(_err(lambda: ff_betlog.log_recommendation(
-        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110))))
+        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110, event_id=None))))
 
 # F13. A direction asserted where there is none.
 shutil.rmtree(_tmp52, ignore_errors=True)
@@ -4132,6 +4137,68 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("53. event_id is required at the WRITE side (B113)")
+# The live test: 0 of 101 rec records carried an event_id, so every
+# calibration row printed CANNOT BE READ. The reading-side guard is INERT
+# until coverage exists — it refused for the weak reason (no id) rather than
+# the strong one (measured clustering), and would have refused identically
+# had those verdicts been genuinely independent. Nothing made the caller
+# decide, so nobody did.
+# ---------------------------------------------------------------------------
+_tmp53 = tempfile.mkdtemp()
+_old53 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp53)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+_ed53 = types.SimpleNamespace(side="OVER", tier="PASS", model_p=0.5,
+                              fair_p=0.5, fair_source="pinnacle",
+                              devig_method="shin", reasoning="x")
+chk("log_recommendation refuses an OMITTED event_id",
+    _raises(lambda: ff_betlog.log_recommendation(
+        "P", "m", 1.5, "OVER", "PASS", 0.5, 0.5, -110), TypeError))
+chk("log_edge refuses an OMITTED event_id",
+    _raises(lambda: ff_betlog.log_edge(_ed53, "P", "m", 1.5), TypeError))
+chk("and the error says what to pass and how",
+    "event_id=\"53178\"" in _err(lambda: ff_betlog.log_edge(
+        _ed53, "P", "m", 1.5)),
+    _err(lambda: ff_betlog.log_edge(_ed53, "P", "m", 1.5)))
+chk("and names the consequence, not just the rule",
+    "CANNOT BE READ" in _err(lambda: ff_betlog.log_edge(
+        _ed53, "P", "m", 1.5)))
+# An omission and a deliberate None are DIFFERENT FACTS (D16/B39). With
+# `= None` they were the same keystroke-free outcome.
+chk("an EXPLICIT None is accepted — a decision on record",
+    ff_betlog.log_recommendation("P", "m", 1.5, "OVER", "PASS", 0.5, 0.5,
+                                 -110, event_id=None)["event_id"] is None)
+chk("log_edge accepts an explicit None too",
+    ff_betlog.log_edge(_ed53, "P", "m", 1.5,
+                       event_id=None)["event_id"] is None)
+chk("a numeric id is normalised to a string on the way in",
+    ff_betlog.log_edge(_ed53, "P", "m", 1.5,
+                       event_id=53178)["event_id"] == "53178")
+chk("event_id is keyword-only, so it cannot be passed by position",
+    _raises(lambda: ff_betlog.log_recommendation(
+        "P", "m", 1.5, "OVER", "PASS", 0.5, 0.5, -110, "", "", "", "",
+        False, None, "53178"), TypeError))
+# The reason string the live run printed was near-unparseable.
+# B113. The instructions name `model_p=None` as the backfill path, so it has
+# to work — a documented call that raises is B106 again.
+chk("model_p=None is accepted for a backfilled verdict",
+    ff_betlog.log_recommendation("P", "m", 1.5, "OVER", "PASS", None, 0.5,
+                                 -110, event_id="53178")["model_p"] is None)
+chk("but a percentage is still refused",
+    _raises(lambda: ff_betlog.log_recommendation(
+        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110,
+        event_id="53178"), ValueError))
+chk("the zero-coverage reason reads as English",
+    ff_betlog._independence([{"player": f"P{_i}"} for _i in range(4)])[1]
+    == "no event ids recorded, so these 4 could all be one game or 4 "
+       "separate ones",
+    ff_betlog._independence([{"player": f"P{_i}"} for _i in range(4)])[1])
+shutil.rmtree(_tmp53, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old53
+
 
 _summary()
 raise SystemExit(1 if fails else 0)
