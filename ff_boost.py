@@ -114,6 +114,9 @@ from ff_backtest import (to_decimal, implied, breakeven_p, boosted_return,
 # keep working. One home, per lesson 7.
 try:
     from ff_props import norm_player  # noqa: F401  (re-export)
+    # B78. One definition of "which book is this", shared with the dropout
+    # detector. A second copy here is how B68's duplicate table happened.
+    from ff_props import book_key  # noqa: F401  (re-export)
 except ImportError as _e:               # pragma: no cover - torn repo only
     # B99. `norm_player` moved from here to ff_props on 2026-11-06 (B82),
     # which made this module depend on a NEW ff_props. The repo is updated
@@ -124,7 +127,8 @@ except ImportError as _e:               # pragma: no cover - torn repo only
     # Two of those three claims were wrong. A cryptic import error at module
     # load costs more than the refactor saved, so it says what to do.
     raise ImportError(
-        "ff_boost needs norm_player from ff_props, and this ff_props does "
+        "ff_boost needs norm_player AND book_key from ff_props, and this "
+        "ff_props does "
         "not have it.\n\n"
         "This is a HALF-UPDATED REPO, not a missing feature. norm_player "
         "moved from ff_boost to ff_props on 2026-11-06 (B82), so the two "
@@ -366,7 +370,13 @@ def book_liquidity_tiers(odds_response: dict,
     """
     out = {}
     for bk in odds_response.get("bookmakers") or []:
-        key = bk.get("key") or bk.get("title")
+        # B78. A manufactured display-name key cannot match ANCHOR_CHAIN, so
+        # a tier derived under it was unreachable by every caller that looks
+        # a book up by chain key — which is how B75's "no caller anywhere"
+        # and this fallback compound each other.
+        key = book_key(bk)
+        if key is None:
+            continue
         vals = [oc.get("liquidity")
                 for mk in bk.get("markets") or []
                 for oc in mk.get("outcomes") or []]
@@ -595,6 +605,17 @@ class BoostLeg:
     # measured per pull rather than remembered from a previous one. None
     # falls back to the constant, which is the stale-by-design path.
     opening_liquidity_tier: float | None = None
+    # B75. `opening_liquidity_tier is None` was doing two jobs: "the anchor
+    # book quotes no tier" and "nobody ever called `book_liquidity_tiers`".
+    # `describe()` printed the FIRST as fact — and the second is what is
+    # actually true on every run today, because that function has no caller
+    # anywhere in the repo or the instructions, so the wrong explanation was
+    # the output every time, naming Pinnacle as quoting no tier when the
+    # project's own notes say it quotes a uniform one. Set this to
+    # "measured" or "book quotes none" when a lookup has actually run; ""
+    # means it never did. D16 aimed at one field: the unchecked state must
+    # not look like the checked one.
+    tier_source: str = ""
 
     def __post_init__(self):
         if not (0.0 < float(self.fair_prob) < 1.0):
@@ -1473,6 +1494,12 @@ class Shortlist:
         return (sum(1 for l in legs if l.opening_liquidity_tier is None),
                 len(legs))
 
+    @property
+    def tier_never_looked_up(self) -> int:
+        """Legs whose tier was never looked up at all. B75."""
+        return sum(1 for c in self.candidates for l in c.legs
+                   if not l.tier_source)
+
     def describe(self) -> str:
         if not self.candidates:
             return f"NOTHING TO PRICE — {self.reason}"
@@ -1483,11 +1510,31 @@ class Shortlist:
                      f"{', '.join(self.immature_anchors)} — re-pull closer "
                      f"to kickoff before trusting any EV built on them")
         fb, tot = self.tier_fallbacks
+        # Count the two causes rather than inferring one from the other.
+        # The first cut compared `never >= fb` and then described ALL the
+        # fallbacks by whichever cause won, which over-claimed on a mixed
+        # shortlist — the same fault B75 is about, one level up.
+        _fbl = [l for c in self.candidates for l in c.legs
+                if l.opening_liquidity_tier is None]
+        never = sum(1 for l in _fbl if not l.tier_source)
+        asked = len(_fbl) - never
         if fb:
-            L.append(f"  anchor tier: {fb} of {tot} leg-slots fell back to "
-                     f"the hardcoded {OPENING_LIQUIDITY:g} because their "
-                     f"anchor book quotes no tier — `anchor_opening` on "
-                     f"those is only as current as that constant")
+            # B75. Say which of the two it is. The old text asserted the
+            # book quotes no tier, which was a claim about data nobody had
+            # fetched, on every run.
+            bits = []
+            if asked:
+                bits.append(f"{asked} because the anchor book quoted no "
+                            f"tier when asked")
+            if never:
+                bits.append(f"{never} NEVER LOOKED UP — nothing called "
+                            f"book_liquidity_tiers(), so that part is not a "
+                            f"finding about any book")
+            L.append(f"  anchor tier: {fb} of {tot} leg-slots are on the "
+                     f"hardcoded {OPENING_LIQUIDITY:g} — "
+                     + "; ".join(bits)
+                     + ". `anchor_opening` on those is only as current as "
+                       "that constant.")
         return "\n".join(L)
 
 

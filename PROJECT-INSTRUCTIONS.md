@@ -754,6 +754,16 @@ And `anchor_opening` / `anchor_thin` key on liquidity, which
 same moment and names any book that anchored nothing while live. Say the
 counts out loud in any write-up that quotes an EV.
 
+**`anchor_coverage` health now depends on identifying every live book
+(B78).** A book carrying two-sided lines but no `key`, whose `title` matches
+nothing in the chain, is reported as `LIVE BOOK(S) NOT IDENTIFIABLE` and
+makes `healthy` False. That is deliberate: the measured B60 signature is
+Pinnacle arriving with a `title` and no `key`, and the old code gave it a
+manufactured display-name key that could never match the lowercase chain —
+so `live={'Pinnacle': 14}`, `eligible=[]`, `silent_dropouts=[]`,
+**`healthy=True`** on a textbook dropout. If you see that block, you cannot
+rule out that the missing anchor is the one that dropped.
+
 **It has THREE verdicts, not two (B72).** If the `get_odds` control comes
 back empty or failed, `.describe()` prints **NO USABLE CONTROL** and
 `healthy` is False — nothing was measured about which books were live.
@@ -1306,6 +1316,15 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
   this on every intake** — nothing sets it automatically yet, so a leg
   built without it silently falls back to the hardcoded 500 and B59's
   failure is only pre-empted, not retired.
+  **Set `tier_source` on the same leg (B75).** `"measured"` when the lookup
+  returned a tier, `"book quotes none"` when it ran and the book had none.
+  Leaving it empty means "never looked up", and the report now says so
+  instead of blaming the book. This matters because a live round reported
+  *"tier_fallbacks is effectively 12/12 — bovada quotes no liquidity, so no
+  tier could be derived"* **without having called the function at all** —
+  asserting a cause about data nobody fetched, which is the exact fault
+  B75 records. If you did not call `book_liquidity_tiers`, say that, not
+  something about the book.
   **Three things the derivation deliberately refuses.** A book with fewer
   than three liquidity readings gets no tier. A book whose readings have
   no dominant value gets none either: Pinnacle quotes a discrete bet LIMIT

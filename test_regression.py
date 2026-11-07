@@ -2284,8 +2284,15 @@ _fb, _tot = _sl_fb.tier_fallbacks
 chk("the shortlist counts legs running on the hardcoded tier",
     _fb == _tot and _tot > 0, f"{_fb} of {_tot}")
 chk("and describe() says so rather than leaving it to be remembered",
-    "fell back to the hardcoded" in _sl_fb.describe(),
-    _sl_fb.describe()[-90:])
+    "are on the hardcoded" in _sl_fb.describe(), _sl_fb.describe()[-120:])
+# B75. These legs carry no `tier_source`, so nothing ever looked a tier up —
+# and describe() must say THAT, not blame a book for quoting none. The old
+# text asserted the book's behaviour on every run, naming Pinnacle, which
+# the project's own notes say does quote a uniform tier.
+chk("and names the real cause: nobody called book_liquidity_tiers",
+    "NEVER LOOKED UP" in _sl_fb.describe()
+    and "quoted no tier when asked" not in _sl_fb.describe(),
+    _sl_fb.describe()[-200:])
 
 # The scope bug the first version shipped with: fair_prob was tested FIRST
 # and returned early, so the liquidity check was unreachable for any line
@@ -4187,6 +4194,152 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("57. the four Sunday-path defects (B78/B75/B87/B66)")
+# Picked by asking what will MISLEAD on Sunday rather than off the backlog
+# order. All four were open and all four fire on live output.
+# ---------------------------------------------------------------------------
+_mk57 = lambda n=1: [{"key": "player_pass_yds", "outcomes": [
+    {"name": "Over", "price": -110}, {"name": "Under", "price": -110}]}
+    for _ in range(n)]
+
+# B78. The dropout detector reporting health on a textbook dropout. Measured
+# on the B60 signature: Pinnacle carrying `title` and no `key` became the
+# manufactured key "Pinnacle" against a lowercase ANCHOR_CHAIN, so
+# live={'Pinnacle': 14}, eligible=[], silent_dropouts=[], healthy=True.
+_ev57 = {"lines": [{"fair_source": "bovada"} for _ in range(14)]}
+_cov57 = ff_props.anchor_coverage(_ev57, {"bookmakers": [
+    {"title": "Pinnacle", "markets": _mk57()},
+    {"key": "bovada", "markets": _mk57()}]})
+chk("a chain book arriving with only a title is still identified",
+    "pinnacle" in _cov57.live, str(_cov57.live))
+chk("so the dropout is SEEN rather than reported healthy",
+    not _cov57.healthy, f"healthy={_cov57.healthy} live={_cov57.live}")
+chk("book_key prefers key, resolves a title, and refuses the rest",
+    ff_props.book_key({"key": "PINNACLE"}) == "pinnacle"
+    and ff_props.book_key({"title": "Pinnacle"}) == "pinnacle"
+    and ff_props.book_key({"title": "FanDuel"}) is None
+    and ff_props.book_key({}) is None)
+# An unidentifiable live book costs health, because it might BE the anchor.
+_cov57b = ff_props.anchor_coverage(_ev57, {"bookmakers": [
+    {"title": "FanDuel", "markets": _mk57()},
+    {"key": "bovada", "markets": _mk57()}]})
+chk("an unidentifiable live book is named, not given an invented key",
+    _cov57b.unidentified == ["FanDuel"]
+    and "FanDuel" not in _cov57b.live, str(_cov57b.unidentified))
+chk("and it costs health",
+    not _cov57b.healthy and "NOT IDENTIFIABLE" in _cov57b.describe(),
+    _cov57b.describe()[:150])
+# fair_source carries provenance text live; it must still match the chain.
+chk("a fair_source with provenance text still counts as that book",
+    ff_props.norm_fair_source("Pinnacle (via get_event_ev, unfiltered)")
+    == "pinnacle"
+    and ff_props.norm_fair_source("bovada") == "bovada"
+    and ff_props.norm_fair_source(None) is None)
+# One definition, shared. A second copy is how B68's duplicate table happened.
+chk("ff_boost uses ff_props' book_key rather than its own copy",
+    ff_boost.book_key is ff_props.book_key)
+chk("and a tier derived for a title-only chain book is reachable by key",
+    ff_boost.book_liquidity_tiers({"bookmakers": [
+        {"title": "Pinnacle", "markets": [
+            {"key": "m", "outcomes": [
+                {"name": "Over", "price": -110, "liquidity": 500},
+                {"name": "Under", "price": -110, "liquidity": 500}]}
+            for _ in range(6)]}]}).get("pinnacle") == 500.0)
+
+# B87. A fabricated price producing a confident steep-hold finding.
+chk("a dummy far outside the quote range refuses the hold",
+    ff_props.two_sided_hold(525, -10000)[0] != ff_props.two_sided_hold(
+        525, -10000)[0])
+chk("and says which side and why",
+    "UNDER price -10000 is outside"
+    in ff_props.two_sided_hold(525, -10000)[1],
+    ff_props.two_sided_hold(525, -10000)[1][:110])
+# The backlog expected -400 to give "a plausible-looking steep hold".
+# Measured, it gives -4.0% — an arb inside one book, impossible either way.
+chk("a dummy that implies a NEGATIVE hold is refused too",
+    ff_props.two_sided_hold(525, -400)[0]
+    != ff_props.two_sided_hold(525, -400)[0])
+chk("and is explained as an arb inside one book",
+    "arb inside one book" in ff_props.two_sided_hold(525, -400)[1],
+    ff_props.two_sided_hold(525, -400)[1][:110])
+for _o, _u, _exp in ((-110, -110, 0.0476), (-115, -105, 0.0471),
+                     (1800, -1900, 0.0026), (100, -100, 0.0)):
+    chk(f"a real {_o:+}/{_u:+} quote still gets its hold",
+        abs(ff_props.two_sided_hold(_o, _u)[0] - _exp) < 5e-4,
+        str(ff_props.two_sided_hold(_o, _u)))
+chk("a one-sided price has no hold and says so",
+    ff_props.two_sided_hold(525, None)[0]
+    != ff_props.two_sided_hold(525, None)[0]
+    and "one-sided" in ff_props.two_sided_hold(525, None)[1])
+# The refusal must reach the verdict, not just the helper: no steep-hold
+# reason may be built from a refused hold.
+# The refusal must reach the VERDICT, not just the helper: no steep-hold
+# reason may be built from a refused hold. `e` is the module-level estimate
+# fixture from section 5 — a real one, so this cannot pass vacuously.
+_e57 = threshold_prob(log, 90)
+_dummy57 = prop_edge(_e57, 525, -10000)
+chk("prop_edge still prices a leg whose hold was refused",
+    _dummy57 is not None and _dummy57.hold != _dummy57.hold,
+    f"hold={_dummy57.hold}")
+chk("and builds NO steep-hold reason from the fabricated side",
+    "is steep" not in str(_dummy57.reasoning), str(_dummy57.reasoning)[:120])
+# A real two-sided quote that IS steep must still say so, or the guard has
+# just deleted the signal instead of protecting it.
+_steep57 = prop_edge(_e57, -140, -140)
+chk("a genuinely steep REAL hold is still reported",
+    _steep57.hold > 0.06 and "is steep" in str(_steep57.reasoning),
+    f"hold={_steep57.hold:.4f} {str(_steep57.reasoning)[:90]}")
+
+# B66. A fixture counted as a real verdict.
+_tmp57 = tempfile.mkdtemp()
+_old57 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp57)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+# The two real B66 fixtures: a plausible player at a plausible price, and
+# the worked example straight out of PROJECT-INSTRUCTIONS.
+_rr57 = ff_betlog.log_recommendation(
+    "Tyreek Hill", "player_reception_yds", 54.5, "OVER", "MODERATE", 0.58,
+    0.50, -115, event_id="e1")
+ff_betlog.grade_rec(_rr57["id"], "WIN")
+_rt57 = ff_betlog.log_recommendation(
+    "Travis Kelce", "player_anytime_td", None, "OVER", "STRONG", 0.31,
+    0.248, 270, event_id="e1", is_test=True)
+chk("a test record is flagged structurally, not in prose",
+    ff_betlog.is_test_record(_rt57) and _rt57[ff_betlog.TEST_FLAG] is True)
+chk("a real record carries no flag at all, so old records read as real",
+    ff_betlog.TEST_FLAG not in _rr57)
+# grade_rec must still find it — a first cut filtered at the accessor and
+# could no longer grade a test record.
+ff_betlog.grade_rec(_rt57["id"], "LOSS")
+chk("a test record can still be graded",
+    any(ff_betlog.is_test_record(r) for r in ff_betlog.live_recs()))
+_o57 = ff_betlog.rec_summary()
+chk("the summary excludes it from the figures",
+    "ENGINE LOG — 1 verdicts" in _o57, _o57[:80])
+chk("and says it is there rather than excluding it silently",
+    "1 TEST record in the log, excluded from every figure" in _o57,
+    _o57[:200])
+chk("the test record's own tier does not appear in the table",
+    "STRONG" not in _o57, _o57[:400])
+chk("and the real record's does",
+    "MODERATE" in _o57, _o57[:400])
+# log_edge and log_bet take it too, or the flag is unreachable from the
+# paths a session actually uses.
+_ed57 = types.SimpleNamespace(side="OVER", tier="PASS", model_p=0.5,
+                              fair_p=0.5, fair_source="pinnacle",
+                              devig_method="shin", reasoning="x")
+chk("log_edge can flag a test record",
+    ff_betlog.is_test_record(ff_betlog.log_edge(
+        _ed57, "P", "m", 1.5, event_id="e1", is_test=True)))
+chk("log_bet can flag one too",
+    ff_betlog.is_test_record(ff_betlog.log_bet(
+        525, 5.0, [ff_betlog.Leg(player="P", market="m", line=1.5,
+                                 side="OVER", odds=-110, book="dk")],
+        "dk", is_test=True)))
+shutil.rmtree(_tmp57, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old57
 
 section("56. three defects a live four-slip round surfaced (B117/B118/B119)")
 # All three passed 784 checks first. The round built four Week 9 slips in the

@@ -724,3 +724,21 @@ reality.
     disagreement can be the most informative state there is, and here it
     was: the engine's lean was against the legs that got bet.
 
+68. **A detector that cannot name its subject reports health.**
+    `anchor_coverage` exists to catch a silent anchor dropout, and on the
+    measured dropout signature it returned `healthy=True` — because
+    `bk.get("key") or bk.get("title")` manufactured a display-name key
+    that could never match the lowercase chain. The book sat in `live`
+    looking accounted for and contributed nothing to `eligible`. When a
+    lookup falls back, ask what the fallback VALUE can still match; a key
+    that matches nothing is worse than None, because None can be
+    reported.
+
+69. **The fix for "nobody calls this" is not only a caller.** B75's wrong
+    explanation survived because `book_liquidity_tiers` had no caller, and
+    the instruction to call it existed but sat mid-paragraph. The code now
+    distinguishes never-looked-up from book-quoted-none, so a session that
+    skips the call cannot assert the wrong cause — the guard does not
+    depend on the instruction being read. Where an instruction and a field
+    default can disagree, make the field able to say which happened.
+

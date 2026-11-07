@@ -207,6 +207,32 @@ def _resolve_event_id(event_id, fn: str):
 MIN_INDEPENDENT_FOR_CALIBRATION = 5
 
 
+# B66. A structural marker for records that are not real bets or verdicts.
+# Verified 2026-11-05: all eight trashed logs were test data and the claim
+# held only because a HUMAN had written "delete me" in prose. Two of the
+# eight used real players at plausible prices — Tyreek Hill reception yards
+# 54.5 OVER at -115 for $10, and the Travis Kelce anytime-TD example straight
+# out of PROJECT-INSTRUCTIONS reused as a fixture. On player, market, price,
+# stake and boost alone both are indistinguishable from a bet Dustin would
+# place. Nothing validated, grepped for, or filtered on the free-text note.
+#
+# So: a flag on the record, excluded from every summary by default, and a
+# loud line when any are present. The flag is the ONLY thing that makes a
+# record test data — a note saying "test" does not, which is the whole point.
+TEST_FLAG = "is_test"
+
+
+def is_test_record(r: dict) -> bool:
+    return bool(r.get(TEST_FLAG))
+
+
+def _real(rs: list[dict]) -> list[dict]:
+    """Records that are not flagged test data."""
+    return [r for r in rs if not is_test_record(r)]
+
+
+
+
 def live_recs() -> list[dict]:
     """Current state of every engine verdict: superseded versions dropped.
 
@@ -216,6 +242,11 @@ def live_recs() -> list[dict]:
     """
     recs = [r for r in _recs() if r.get("kind") == "rec"]
     dead = {r["supersedes"] for r in recs if r.get("supersedes")}
+    # B66. Deliberately NOT filtered here. `grade_rec` and the gap detector
+    # look records up by id and must see every one of them — a first cut
+    # filtered at this accessor and grade_rec could no longer find a test
+    # record to grade. The exclusion belongs where the NUMBERS are computed,
+    # which is rec_summary, and nowhere else.
     return [r for r in recs if r["id"] not in dead]
 
 
@@ -619,6 +650,7 @@ def log_bet(slip_odds: float,
             boost_type: str = "",
             slip_type: str = "sgp",
             note: str = "",
+            is_test: bool = False,
             placed_at: str | None = None) -> dict:
     """Record a placed bet. Call this WHEN THE BET IS PLACED, not afterwards.
 
@@ -642,6 +674,7 @@ def log_bet(slip_odds: float,
         "boost_type": boost_type,
         "legs": [asdict(l) for l in legs],
         "note": note,
+        **({TEST_FLAG: True} if is_test else {}),
         "result": None,
         "payout": None,
     }
@@ -663,7 +696,8 @@ def log_recommendation(player: str,
                        acted_on: bool = False,
                        bet_id: str | None = None,
                        *,
-                       event_id: str | None = _MUST_PASS) -> dict:
+                       event_id: str | None = _MUST_PASS,
+                       is_test: bool = False) -> dict:
     """Record an engine verdict — INCLUDING PASS and COIN-FLIP.
 
     This is the half that makes the engine gradeable. Log every verdict the
@@ -696,6 +730,9 @@ def log_recommendation(player: str,
         # from four on one. Optional, because older records do not have it
         # and backfilling would be inventing data.
         "event_id": _resolve_event_id(event_id, "log_recommendation"),
+        # B66. Structural, not prose. Omitted entirely when False so the
+        # 101 existing records are unchanged and still read as real.
+        **({TEST_FLAG: True} if is_test else {}),
         "result": None,
         "actual": None,
     }
@@ -705,7 +742,8 @@ def log_recommendation(player: str,
 def log_edge(edge, player: str, market: str, line: float | None,
              odds: float | None = None, book: str = "",
              acted_on: bool = False, bet_id: str | None = None,
-             *, event_id: str | None = _MUST_PASS) -> dict:
+             *, event_id: str | None = _MUST_PASS,
+             is_test: bool = False) -> dict:
     """Convenience: log an `ff_props.Edge` straight from prop_edge()."""
     return log_recommendation(
         player=player, market=market, line=line, side=edge.side,
@@ -713,7 +751,8 @@ def log_edge(edge, player: str, market: str, line: float | None,
         odds=odds, book=book, fair_source=edge.fair_source,
         devig_method=getattr(edge, "devig_method", ""),
         reasoning=edge.reasoning, acted_on=acted_on, bet_id=bet_id,
-        event_id=_resolve_event_id(event_id, "log_edge"))
+        event_id=_resolve_event_id(event_id, "log_edge"),
+        is_test=is_test)
 
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1303,7 @@ def rec_summary() -> str:
     rate and engine accuracy are reported separately, because a model graded
     only on the calls Dustin agreed with is graded on his filter, not its own.
     """
-    recs = live_recs()
+    recs = _real(live_recs())
     if not recs:
         # The gap still has to show here. No recs at all, with bets carrying
         # engine verdicts, is the worst version of B108, not an exemption.
@@ -1274,7 +1313,14 @@ def rec_summary() -> str:
              "  only the ones you bet measures your filter, not the model."]
             + _unlogged_note())
 
-    L = [f"ENGINE LOG — {len(recs)} verdicts"] + _unlogged_note()
+    _tests = [r for r in live_recs() if is_test_record(r)]
+    _tn = ([f"  note: {len(_tests)} TEST record"
+            f"{'s' if len(_tests) != 1 else ''} in the log, excluded from "
+            f"every figure below",
+            "     (flagged with is_test=True; delete them from Drive when "
+            "you are done with them)"] if _tests else [])
+    L = ([f"ENGINE LOG — {len(recs)} verdicts"] + _tn
+         + _unlogged_note())
     tiers: dict[str, list[dict]] = {}
     for r in recs:
         tiers.setdefault(r.get("tier") or "(no tier)", []).append(r)

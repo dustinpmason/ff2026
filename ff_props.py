@@ -1117,6 +1117,52 @@ class Edge:
     devig_method: str = "unspecified"
 
 
+# B87. The widest and narrowest a single side of a TWO-SIDED prop quote can
+# be before a hold computed from it stops meaning anything. Not a measurement
+# of any market — a plausibility bound on a QUOTE, which is why it is this
+# loose. A live thread passed a dummy `-10000` for a side it did not have;
+# `prop_edge` computed a hold from it and `boost_verdict` reported
+# **"hold 52.3% is steep"** as a reason against the leg — a finding derived
+# entirely from a number nobody quoted. It was caught only because 52.3% is
+# absurd on its face; a dummy of -400 would have produced a plausible steep
+# hold and stood (B24's family).
+#
+# This refuses the HOLD, not the edge: a genuinely long two-sided quote still
+# gets priced, it just gets no steep-hold claim attached to a price that
+# cannot support one.
+TWO_SIDED_QUOTE_RANGE = (-2000.0, 2000.0)
+
+
+def two_sided_hold(over_odds: float, under_odds: float | None,
+                   *, method: str = "multiplicative") -> tuple[float, str]:
+    """(hold, why) for a two-sided prop, or (nan, why) when it is refused."""
+    if under_odds is None:
+        return float("nan"), "one-sided price, no hold to compute"
+    lo, hi = TWO_SIDED_QUOTE_RANGE
+    for label, o in (("OVER", over_odds), ("UNDER", under_odds)):
+        if o is None or not lo <= float(o) <= hi:
+            return float("nan"), (
+                f"hold NOT computed: the {label} price {o} is outside "
+                f"{lo:+.0f}..{hi:+.0f}, the range where a two-sided hold is "
+                f"meaningful. A dummy or placeholder on one side produces a "
+                f"confident steep-hold 'finding' from a number nobody "
+                f"quoted — pass the real price for both sides or neither.")
+    h = devig(over_odds, under_odds, method)[2]
+    # A NEGATIVE hold means the two prices imply a booksum below 1 — an arb
+    # inside a single book, which does not happen. The backlog worried that a
+    # dummy of -400 "would have produced a plausible-looking steep hold";
+    # measured, it produces -4.0%, implausible in the other direction. Either
+    # way one of the two prices is not from this book. -0.005 tolerates
+    # rounding rather than treating it as a signal.
+    if h < -0.005:
+        return float("nan"), (
+            f"hold NOT computed: {over_odds:+.0f}/{under_odds:+.0f} implies "
+            f"a hold of {h*100:.1f}%, an arb inside one book, which does not "
+            f"happen — one of these two prices is not this book's. Check "
+            f"which side you actually have a quote for.")
+    return h, "two-sided, measured"
+
+
 def prop_edge(est: Estimate,
               over_odds: float,
               under_odds: float | None = None,
@@ -1161,8 +1207,7 @@ def prop_edge(est: Estimate,
         # pinned rather than forwarded because on this path devig_method is a
         # free-text LABEL describing the upstream choice ("shin
         # (get_event_ev)"), which devig() would rightly reject.
-        hold = (devig(over_odds, under_odds, "multiplicative")[2]
-                if under_odds is not None else float("nan"))
+        hold, hold_note = two_sided_hold(over_odds, under_odds)
         # On this path the de-vig happened UPSTREAM, in whatever produced
         # `fair_over` — get_event_ev(devig="shin"), say. prop_edge did not
         # choose it and must not claim to have. Pass the upstream choice as
@@ -1174,11 +1219,17 @@ def prop_edge(est: Estimate,
         # No two-way price and no external fair line: fall back to the raw
         # vigged number. The edge will read better than it is.
         fair_over = american_to_prob(over_odds)
-        hold = float("nan")
+        hold, hold_note = float("nan"), "one-sided price, no hold to compute"
         used_devig = "none (one-sided price, still vigged)"
     else:
         m = "shin" if devig_method == "auto" else devig_method
-        fair_over, _, hold = devig(over_odds, under_odds, m)
+        hold, hold_note = two_sided_hold(over_odds, under_odds, method=m)
+        if hold != hold:                                     # refused
+            # The de-vig itself is still needed for fair_over, but the hold
+            # it would yield is the fabricated one, so it is dropped.
+            fair_over = devig(over_odds, under_odds, m)[0]
+        else:
+            fair_over, _, hold = devig(over_odds, under_odds, m)
         used_devig = m
 
     p = est.blended
@@ -1804,10 +1855,23 @@ class AnchorCoverage:
     # from a measurement that did not happen: B46's shape, in the function
     # whose entire purpose is to be the paired control.
     control_usable: bool = True
+    # B78. Live books whose identity could not be established — no `key`,
+    # and a `title` that resolves to no chain book. Previously each was
+    # given its display name as a manufactured key, which could never match
+    # the lowercase chain, so it sat in `live` looking accounted for while
+    # contributing nothing to `eligible`. An unidentifiable book may BE the
+    # anchor, so it is named here and it costs `healthy`.
+    unidentified: list = field(default_factory=list)
 
     @property
     def healthy(self) -> bool:
         if not self.control_usable:
+            return False
+        # B78. An unidentifiable live book may BE the anchor, so health
+        # cannot be claimed over it. On the measured B60 payload — Pinnacle
+        # carrying `title` and no `key` — this was the difference between
+        # `healthy=True` and the dropout being seen at all.
+        if self.unidentified:
             return False
         return not self.silent_dropouts and not self.blank
 
@@ -1815,6 +1879,18 @@ class AnchorCoverage:
         a = ", ".join(f"{b} {n}" for b, n in
                       sorted(self.anchored.items(), key=lambda kv: -kv[1])) or "none"
         L = [f"anchored {self.total_lines} line(s): {a}"]
+        if self.unidentified:
+            L.append(
+                "  *** LIVE BOOK(S) NOT IDENTIFIABLE: "
+                + ", ".join(self.unidentified)
+                + ". Each carries two-sided lines but no `key`, and its "
+                "`title` matches no book in the anchor chain — so nothing "
+                "here can tell whether one of them is the anchor that "
+                "dropped out. This is NOT a clean bill of health: the "
+                "measured B60 signature is exactly this (Pinnacle with a "
+                "title and no key), and an earlier version gave each a "
+                "manufactured key that could never match the chain, which "
+                "made this case read as healthy.")
         if not self.control_usable:
             L.append(
                 "  *** NO USABLE CONTROL. The get_odds pull carried no "
@@ -1878,6 +1954,56 @@ def _two_sided_lines(bookmaker: dict) -> int:
             if s & OVER_NAMES and s & UNDER_NAMES:
                 lines.add((mk.get("key"), key))
     return len(lines)
+
+
+def book_key(bk: dict) -> str | None:
+    """A book's CHAIN-COMPARABLE key, or None when it cannot be identified.
+
+    B78. Every site did `bk.get("key") or bk.get("title")`. `title` is by
+    construction the DISPLAY name, so on the B60 signature — Pinnacle
+    carrying `title` and no `key` — the fallback manufactured `"Pinnacle"`
+    against a lowercase `ANCHOR_CHAIN`, an entry that can never match
+    anything. Measured on that exact payload: `live={'Pinnacle': 14}`,
+    `eligible=[]`, `silent_dropouts=[]`, **`healthy=True`** — the detector
+    written to catch B60 reporting health on a textbook B60 dropout, which
+    is the worst possible place for this fault to live.
+
+    So: take `key` when it is there; otherwise normalise `title` and accept
+    it ONLY if it resolves to a chain book. Anything else returns None,
+    because a manufactured key that cannot match is worse than an admitted
+    unknown — it looks like coverage.
+    """
+    k = (bk.get("key") or "").strip().lower()
+    if k:
+        return k
+    t = "".join(ch for ch in (bk.get("title") or "").lower()
+                if ch.isalnum())
+    if not t:
+        return None
+    for chain in ANCHOR_CHAIN:
+        if t == "".join(ch for ch in chain if ch.isalnum()):
+            return chain
+    return None
+
+
+def norm_fair_source(src) -> str | None:
+    """`fair_source` as a chain-comparable key. B78.
+
+    The anchored side keyed on the raw string, so a payload spelling
+    `fair_source: "Pinnacle"` counted separately from `pinnacle` and the
+    book read as having anchored nothing.
+    """
+    if not src:
+        return None
+    t = str(src).strip().lower()
+    # Live payloads carry trailing provenance, e.g.
+    # "bovada (via get_event_ev, unfiltered)".
+    t = t.split("(")[0].strip()
+    flat = "".join(ch for ch in t if ch.isalnum())
+    for chain in ANCHOR_CHAIN:
+        if flat == "".join(ch for ch in chain if ch.isalnum()):
+            return chain
+    return t or None
 
 
 def anchor_coverage(ev_response: dict, odds_response: dict,
@@ -1945,16 +2071,24 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     """
     anchored: dict = {}
     for ln in ev_response.get("lines") or []:
-        src = ln.get("fair_source")
+        src = norm_fair_source(ln.get("fair_source"))
         if src:
             anchored[src] = anchored.get(src, 0) + 1
 
     live: dict = {}
+    unidentified: list[str] = []
     for bk in odds_response.get("bookmakers") or []:
-        key = bk.get("key") or bk.get("title")
         n = _two_sided_lines(bk)
-        if n:
-            live[key] = n
+        if not n:
+            continue
+        key = book_key(bk)
+        if key is None:
+            # B78. Not silently given an invented key. An unidentifiable
+            # book could BE the anchor, so it is named and it costs health.
+            unidentified.append(str(bk.get("title") or bk.get("key")
+                                    or "<no name>"))
+            continue
+        live[key] = n
 
     # Only chain books can anchor, and the chain is tried IN ORDER per line.
     # So a LOWER-priority book anchoring nothing is correct behaviour — the
@@ -1996,6 +2130,7 @@ def anchor_coverage(ev_response: dict, odds_response: dict,
     return AnchorCoverage(anchored=anchored, live=live,
                           silent_dropouts=dropouts, blank=blank,
                           eligible=eligible, control_usable=control_usable,
+                          unidentified=unidentified,
                           total_lines=len(ev_response.get("lines") or []))
 
 
@@ -2078,7 +2213,10 @@ def flatten_odds(response: dict,
     """
     out: list[dict] = []
     for bk in response.get("bookmakers") or []:
-        book = bk.get("key") or bk.get("title") or "?"
+        # B78. `book_key` first so a chain book carrying only a `title`
+        # is named the way the chain names it; the raw title is kept as a
+        # last resort because this one is for the reader, not for a match.
+        book = book_key(bk) or bk.get("title") or bk.get("key") or "?"
         for mk in bk.get("markets") or []:
             if line_type and mk.get("line_type") != line_type:
                 continue
@@ -2386,7 +2524,8 @@ def field_from_odds(response: dict, *, market: str, book: str,
                                     market=market)
             if r["book"] == book]
     if not rows:
-        books = sorted({(bk.get("key") or bk.get("title") or "?")
+        books = sorted({(book_key(bk) or bk.get("title")
+                         or bk.get("key") or "?")
                         for bk in response.get("bookmakers") or []})
         raise LookupError(
             f"no {market} outcomes for book {book!r} in this payload. Books "
