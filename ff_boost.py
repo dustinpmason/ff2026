@@ -427,6 +427,84 @@ OPPOSING_CORR = {("RB", "RB"): -0.14}
 # correlation_factor, which the instructions tell a session to make.
 SAME_TEAM_CORR_PROVISIONAL = {("QB", "RB_RECV"): 0.20}
 
+# Every {PASS, RUSH, RECV} x {same team, opposing} pair, measured in one pass
+# so that the gate below rests on numbers rather than on which branch a pair
+# happened to fall through. Keyed (relation, side_a, side_b) with sides
+# sorted, value = (joint-crossing LIFT, continuous r, n).
+#
+#   nflverse 2023-2026 REG, the stat behind each market (QB passing yards,
+#   RB rushing yards, WR/TE receiving yards), z-scored per player-season,
+#   min 6 games, pairs within one game, deduped.
+#   Re-derive: python3 measurements/e6_full_pair_sweep.py
+#
+# CONTROL, same script and method: same-team PASS x RECV recovered r=+0.2462
+# against the canonical table's +0.31 — inside band, so the method
+# reproduces a pair the table claims to know and the rest is admissible. The
+# script VOIDS its own run if that control fails.
+#
+# LIFT, not r, is what a parlay needs: it is P(both cross) over the product
+# of the singles, which is exactly what multiplying two de-vigged legs
+# assumes. Two findings worth knowing because they contradict the mechanism
+# stories told about them:
+#   * SAME-TEAM RB x RB is POSITIVE (+9.92%). The carry-pool argument — two
+#     backs splitting fixed carries should be negative, more so than the
+#     -0.14 given OPPOSING backs — is wrong. Game script dominates: a team
+#     that runs 35 times feeds both, a team that runs 18 feeds neither.
+#   * SAME-TEAM RUSH x RECV, the commonest same-game shape there is, is
+#     -1.22% over 28,499 pairs — effectively independent. Gating it on the
+#     assumption that same-team means correlated would have refused an EV on
+#     a large share of real slips for no measured reason.
+MEASURED_PAIR_LIFT = {
+    ("same", "PASS", "RECV"): (1.1993, +0.2462, 11556),
+    ("same", "RUSH", "RUSH"): (1.0992, +0.0902, 3815),
+    ("same", "PASS", "RUSH"): (0.9344, -0.0765, 4666),
+    ("same", "RECV", "RUSH"): (0.9878, -0.0228, 28499),
+    ("same", "RECV", "RECV"): (0.9983, +0.0125, 30764),
+    ("opp", "RUSH", "RUSH"): (0.9163, -0.0804, 5744),
+    ("opp", "PASS", "PASS"): (1.0722, +0.0622, 952),
+    ("opp", "PASS", "RUSH"): (0.9540, -0.0223, 4671),
+    ("opp", "PASS", "RECV"): (1.0175, +0.0161, 11543),
+    ("opp", "RECV", "RUSH"): (0.9950, -0.0044, 28463),
+    ("opp", "RECV", "RECV"): (0.9993, +0.0107, 35147),
+}
+# ("same","PASS","PASS") is deliberately absent: n=140, below the script's
+# 200-pair floor, so it is NOT MEASURABLE and must refuse rather than
+# default. Two quarterbacks on one team is barely a real slip anyway.
+
+# Above this deviation from independence, multiplying the de-vigged legs is
+# not an approximation and no EV is reported. Set at 3% because that is
+# where the EMPIRICAL GAP is: the eleven measured pairs split into five
+# between 4.60% and 19.93% and six at or below 1.75%, with nothing in
+# between. A round 5% would have sat inside no gap and put opposing
+# PASS x RUSH (-4.60%) on the permissive side by coincidence of rounding.
+# This is a threshold on measured magnitude, not a claim about any pair.
+CORR_GATE_LIFT_DEV = 0.03
+
+# The sweep's own floor, named here so the refusal text can cite it.
+MIN_SWEEP_PAIRS = 200
+
+
+# A pair is unordered, so the lookup sorts the two sides — which means every
+# KEY must already be sorted or it is unreachable. Two were not: RECV sorts
+# before RUSH, so ("same","RUSH","RECV") could never be found and the
+# commonest same-game shape in this project, a back's rushing yards with a
+# teammate receiver's, fell to "never measured" and refused an EV. A
+# lookup-order bug reads exactly like an honest refusal, which is why this
+# asserts at import rather than waiting to be noticed on a Sunday.
+_unsorted = [k for k in MEASURED_PAIR_LIFT if list(k[1:]) != sorted(k[1:])]
+if _unsorted:
+    raise AssertionError(
+        f"MEASURED_PAIR_LIFT keys must have their two sides in sorted order "
+        f"or pair_lift() cannot find them: {_unsorted}")
+del _unsorted
+
+
+def pair_lift(relation: str, side_a: str, side_b: str):
+    """(lift, r, n) for a market-side pair, or None if never measured."""
+    lo, hi = sorted((side_a, side_b))
+    return MEASURED_PAIR_LIFT.get((relation, lo, hi))
+
+
 # The measured table was built on YARDS — QB passing, RB rushing, WR/TE
 # receiving. So the side of a pair is decided by the MARKET being bet, not
 # by the player's roster label.
@@ -696,6 +774,13 @@ class Structure:
     # on purpose: a measured +0.31 and an unmeasured unknown both block an
     # EV, but only one of them is a number.
     unmeasured: list[tuple] = field(default_factory=list)
+    # B81. Pairs the table measured and found independent to within the
+    # gate. A third list, because `_pair_r` now returns three different
+    # answers and a MEASURED zero used to be indistinguishable from an
+    # unexamined fall-through — same 0.0, same empty label. Keeping the
+    # provenance here is what lets `reason` name which measurement cleared
+    # each pair, instead of asserting independence in general terms.
+    zeros: list[tuple] = field(default_factory=list)
 
     @property
     def cross_game(self) -> bool:
@@ -746,7 +831,9 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
     # Different games. This is the one the measurement is emphatic about,
     # and it holds whatever the markets are.
     if a.event_id != b.event_id:
-        return 0.0, ""
+        return 0.0, ("different games — measured independent, and the "
+                     "measurement is emphatic about this one whatever the "
+                     "markets are")
 
     # Same event: team decides same-side vs opposing, so an unknown team
     # makes the pair unmeasurable rather than independent.
@@ -833,11 +920,58 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
             return r, f"same team passing x receiving ({lbl})"
         if {sa, sb} == {"PASS", "RUSH"}:
             return SAME_TEAM_CORR[("QB", "RB")], "same team passing x rushing"
-        return 0.0, ""
+        return _from_measured("same", sa, sb, a, b)
 
     if sa == "RUSH" and sb == "RUSH":
         return OPPOSING_CORR[("RB", "RB")], "opposing rushing in one event"
-    return 0.0, ""
+    return _from_measured("opp", sa, sb, a, b)
+
+
+def _from_measured(relation: str, sa: str, sb: str,
+                   a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
+    """Resolve a pair the canonical table does not cover, off MEASURED_PAIR_LIFT.
+
+    B81. Every non-zero branch of `_pair_r` named itself and every
+    `return 0.0, ""` did not, so a MEASURED zero and an unexamined
+    fall-through were the same value with the same empty label — B53's
+    family, and the caller could not tell them apart. Three distinct
+    answers now, each of which says which:
+
+      * a non-zero r, when the measured deviation clears the gate
+      * a LABELLED 0.0, when it is measured and inside the gate
+      * None, when the pair was never measured at all
+
+    The canonical `SAME_TEAM_CORR`/`OPPOSING_CORR` entries keep priority
+    upstream of this: B68 is explicit that pasting one filter's levels over
+    them is how that table became unreproducible, and E3 owns re-deriving
+    it. This function only answers for the pairs they never covered.
+    """
+    rel_word = "same team" if relation == "same" else "opposing"
+    m = pair_lift(relation, sa, sb)
+    if m is None:
+        return None, (
+            f"{rel_word} {sa.lower()} x {sb.lower()} is not a pair this "
+            f"project has measured — the full sweep could not reach "
+            f"{MIN_SWEEP_PAIRS} pairs for it, so there is no number, and "
+            f"independence here would be an assumption rather than a "
+            f"finding ({a.player} x {b.player})")
+    lift, r, n = m
+    dev = abs(lift - 1.0)
+    extra = (" — note E6 measured WR x WR alone at 0.9817x over 12,622 "
+             "pairs; this cell is WR/TE x WR/TE, a wider population, so "
+             "the two are different measurements rather than a revision"
+             if (sa, sb) == ("RECV", "RECV") or (sb, sa) == ("RECV", "RECV")
+             else "")
+    if dev > CORR_GATE_LIFT_DEV:
+        return r, (f"{rel_word} {sa.lower()} x {sb.lower()} — MEASURED "
+                   f"lift {lift:.4f}x ({(lift-1)*100:+.2f}% from "
+                   f"independence) over {n:,} pairs, r={r:+.4f}. Past the "
+                   f"{CORR_GATE_LIFT_DEV:.0%} gate, so the product of the "
+                   f"de-vigged legs is not the joint and no EV is reported")
+    return 0.0, (f"{rel_word} {sa.lower()} x {sb.lower()} — MEASURED "
+                 f"independent to within {dev*100:.2f}% (lift {lift:.4f}x "
+                 f"over {n:,} pairs, r={r:+.4f}), inside the "
+                 f"{CORR_GATE_LIFT_DEV:.0%} gate{extra}")
 
 
 def classify(legs, meta=None) -> Structure:
@@ -855,13 +989,15 @@ def classify(legs, meta=None) -> Structure:
             if l.team is None or l.pos is None:
                 l.team, l.pos = meta.get(l.player, (None, None))
 
-    pairs, unmeasured = [], []
+    pairs, unmeasured, zeros = [], [], []
     for a, b in combinations(legs, 2):
         r, why = _pair_r(a, b)
         if r is None:
             unmeasured.append((a.player, b.player, why))
         elif r:
             pairs.append((a.player, b.player, r, why))
+        else:
+            zeros.append((a.player, b.player, why))
 
     events = {l.event_id for l in legs}
     if len(events) == len(legs):
@@ -874,9 +1010,18 @@ def classify(legs, meta=None) -> Structure:
 
     priceable = not pairs and not unmeasured
     if priceable:
-        reason = ("fair joint is the product of the de-vigged legs — every "
-                  "pair in this slip is established-independent by the "
-                  "measured table")
+        # B81. "established-independent by the measured table" was true and
+        # useless: it named no measurement, so a pair cleared by a 35,147-
+        # pair sweep and a pair cleared by falling through a branch read
+        # identically. Each one now cites what cleared it.
+        detail = "; ".join(f"{a} x {b}: {why}" for a, b, why in zeros)
+        reason = (("fair joint is the product of the de-vigged legs. Every "
+                   "pair is independent to within the "
+                   f"{CORR_GATE_LIFT_DEV:.0%} gate, and this is the "
+                   f"measurement that says so for each — {detail}")
+                  if zeros else
+                  "fair joint is the product of the de-vigged legs — a "
+                  "one-leg slip has no pair to correlate")
     elif pairs:
         detail = "; ".join(f"{a} x {b} r={r:+.2f} ({why})"
                            for a, b, r, why in pairs)
@@ -891,7 +1036,7 @@ def classify(legs, meta=None) -> Structure:
                   f"assumption, not a measurement, and assuming it is what "
                   f"hands a correlated slip an EV it should never get.")
     return Structure(kind=kind, pairs=pairs, priceable=priceable,
-                     reason=reason, unmeasured=unmeasured)
+                     reason=reason, unmeasured=unmeasured, zeros=zeros)
 
 
 def independent_odds(legs) -> float:
@@ -1099,86 +1244,61 @@ class Candidate:
 
     @property
     def hold_vs_band(self) -> str | None:
-        """Where this slip's realised hold sits against its own band.
+        """Which side of its own band this slip's hold falls on.
 
-        B93. `report()` already printed both numbers one line apart and said
-        nothing when they disagreed, which is how a live slip holding 18.79%
-        against a same-game band of 23.1-37.2% got read as a +1.83% edge and
-        placed. A fact presented without a verdict is indistinguishable from
-        a fact that was checked.
-
-        Returns "below", "within", "above", or None when not priceable.
+        B93. `report()` printed `this slip's hold: 18.8% (reference band
+        23.1%-37.2%)` — both numbers, one line apart, and no verdict. A live
+        slip holding 18.79% against the same-game band was read as a +1.83%
+        edge and placed. Both numbers were already on this object; what was
+        missing was the sentence.
         """
-        h = self.slip_hold
-        if h is None:
+        if self.slip_hold is None:
             return None
         lo, hi = self.hold_band
-        return "below" if h < lo else ("above" if h > hi else "within")
+        if self.slip_hold < lo:
+            return "below"
+        if self.slip_hold > hi:
+            return "above"
+        return "within"
 
     @property
     def hold_band_note(self) -> str | None:
-        """The sentence to print when the hold falls outside its band.
+        """The sentence, for the cases that need one — and only those.
 
-        BELOW is the dangerous direction and the two structures mean
-        different things by it:
+        B93b. The first cut noted every direction, including cross-game, and
+        the firing-rate check before shipping killed it: a soft "this beats
+        the population" line fired on NEARLY EVERY well-shopped slip. Three
+        legs at -110 hold 13.03% against a 17.7% floor, and all three
+        cross-game slips measured in the 2026-11-05 session (15.1%, 14.5%,
+        4.9%) sat below it. A flag that fires on 100% of a class is not a
+        flag.
 
-        * **same-game** — `p_cash` is `fair_joint`, a PRODUCT, and for a
-          same-game slip the product is not the joint. Whatever correlation
-          is not in the table is missing from it, and the band encodes what
-          real same-game slips actually hold. So a product-based hold under
-          the band says the product is probably OVERSTATING P(cash) and the
-          EV is flattered. Measured instance: a slip of three receiving legs,
-          two of them same-team, held 18.79% against a 23.1-37.2% band; the
-          same-team receiver joint-crossing lift is 0.9817x (E6, n=12,622),
-          which alone took that slip from +1.83% to -0.04%.
-        * **cross-game** — the product IS the joint, so `slip_hold` is exact
-          and below-band just means this slip is priced better than the
-          population. Worth saying, not worth worrying about.
+        CROSS-GAME gets no note in either direction, because the measured
+        table puts different events at ~0.00 — the product IS the joint
+        there, so `slip_hold` is exact and the band adds nothing to it. The
+        direction is still reported on the object; it is just not narrated.
 
-        ABOVE the band is a worse price than expected in both cases, which
-        is self-correcting: it makes the EV look worse, not better.
+        SAME-GAME below band is the dangerous one and is marked loud: there
+        `p_cash` is a product of de-vigged singles, which is NOT the joint
+        for correlated legs, so a low hold is as likely to mean the product
+        is wrong as to mean the price is good. Above band understates the EV
+        instead, which is self-correcting and gets the same facts in a
+        quieter voice.
         """
-        where = self.hold_vs_band
-        if where in (None, "within"):
+        d = self.hold_vs_band
+        if d is None or d == "within" or self.structure.cross_game:
             return None
-        # B93b. NO NOTE FOR A CROSS-GAME SLIP, in either direction.
-        #
-        # The first cut printed a soft "this beats the population" line, and
-        # checking the firing rate before shipping it showed that is noise by
-        # construction. Two reasons, and the second is the real one:
-        #
-        #   * It would fire on nearly every well-shopped slip. Three legs at
-        #     -110/-110 hold 13.03%, against a band floor of 17.7% — the band
-        #     implies ~-115/-115 legs. All three cross-game slips measured
-        #     this session (15.1%, 14.5%, 4.9%) sat below it. A note that
-        #     fires on good execution is a note that gets ignored, which is
-        #     the lesson B91 was written for.
-        #   * For a cross-game slip `slip_hold` is EXACT — the product IS the
-        #     joint — and its own docstring says so: "a better number than
-        #     the measured band". Remarking that an exact number differs from
-        #     a population reference adds nothing to it.
-        #
-        # The band earns its keep only where the slip's own number is
-        # incomplete, which is same-game.
-        if self.structure.cross_game:
-            return None
-        lo, hi = self.hold_band
-        h = self.slip_hold
-        if where == "above":
-            return (f"hold {h:.1%} is ABOVE the {lo:.1%}-{hi:.1%} band for a "
-                    f"same-game slip — a worse price than the population, "
-                    f"which understates rather than flatters the EV.")
-        return (f"*** hold {h:.1%} is BELOW the {lo:.1%}-{hi:.1%} band for a "
-                f"SAME-GAME slip, and that flatters the EV. P(cash) here is "
-                f"a PRODUCT of the legs, and for a same-game slip the "
-                f"product is not the joint — it is missing whatever "
-                f"correlation the table does not carry. The band is what "
-                f"real same-game slips actually hold, so a product-based "
-                f"hold beneath it says the product is probably overstating "
-                f"P(cash). Do not quote this EV without saying so. For "
-                f"scale: two same-team receivers cross together at 0.9817x "
-                f"independence (E6, n=12,622), which is worth about 2 points "
-                f"of EV on a three-leg slip.")
+        if d == "below":
+            return ("*** this slip's hold is BELOW its own same-game band, "
+                    "which flatters the EV: p_cash here is the PRODUCT of "
+                    "the de-vigged legs and that is not the joint for "
+                    "correlated legs, so a cheap-looking hold can be the "
+                    "product being wrong rather than the price being good. "
+                    "Do not quote the EV without saying so.")
+        return ("this slip's hold is ABOVE its own same-game band, which "
+                "understates rather than flatters the EV — the product of "
+                "the de-vigged legs is giving away edge here, so the real "
+                "number is no worse than the one reported.")
 
     @property
     def payout(self) -> float:
@@ -1519,21 +1639,7 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
     the truth only at its bottom edge. Honest EV on a $10 token is **$2-4**,
     not the $4-5 first quoted.
 
-    **`fair_prob` overrides the hold derivation, and you should pass it
-    whenever you have one (B95).** `market_hold` backs p out of the price
-    by assuming the leg carries the FIELD'S AVERAGE margin. Real per-leg
-    margins do not behave: measured on a live First TD board, they ran from
-    **+0.01pp to -3.52pp** across one game. For Chase Brown at +525, whose
-    BetMGM price carried almost no margin, the uniform derivation gives
-    p = 0.1213 against a measured fair of **0.1601 — 24% low** — and the
-    $10 token EV comes out **$3.29 instead of $5.47**. The error is always
-    in the same direction: **a well-shopped leg is the one the uniform
-    assumption punishes hardest**, because shopping is precisely what makes
-    its margin unrepresentative. If you de-vigged the field, you already
-    have the right number; pass it.
-
-    **The raw bet's EV does not depend on the odds — UNDER UNIFORM HOLD,
-    which is a premise, not a property of the bet (B95).** Substituting
+    **The raw bet's EV does not depend on the odds at all.** Substituting
     p = 1/(d*(1+h)) into the first term collapses it:
 
         base = S * (1/(1 + h) - 1)
@@ -1557,66 +1663,54 @@ def stake_back_ev(odds: float, *, stake: float = 10.0,
       of `v`, not the one-fifth first recorded here — that figure measured
       +900 upward and missed the steepest part of the board.
 
-    **But that substitution IS the uniform-hold assumption**, so the
-    result holds only where it does. With measured per-leg fair
-    probabilities the base EV is not constant at all — on one live board it
-    ran -$1.41 at +300 (McCaffrey), **+$0.01 at +525** (Chase Brown, a
-    price carrying no margin) and -$0.37 at +1450. So **price QUALITY
-    beats price LENGTH once margins vary**: Chase Brown at +525 paying
-    ~0pp returns $5.47 on a $10 token while Tee Higgins at +800 paying
-    2.05pp returns $4.07, shorter odds and better EV. Read the
-    odds-independence result as what it is — a statement about a model of
-    the market, useful for bounding the question, and not a licence to
-    ignore which price you are taking.
-
     Both the hold and v are one book, one market, one night. Re-measure the
-    booksum rather than inheriting 0.39 — D16. Measured 2026-11-06 across
-    three Sunday First TD boards, overrounds ran **+29.8% to +34.5%**,
-    materially tighter than the 39.4% and 54.2% recorded above, which is
-    exactly why the default is a last resort.
+    booksum rather than inheriting 0.39 — D16.
 
     Returns the components rather than one number, because the headline is
     almost entirely the refund and that should be visible, not buried.
     """
+    # B95. `implied(odds)/(1+hold)` assumes this leg carries the FIELD'S
+    # AVERAGE margin. Measured on a live First TD board, per-leg margins ran
+    # +0.01pp to -3.52pp inside ONE game: Chase Brown's BetMGM +525 carried
+    # almost none, so the uniform derivation put him 24% low and his $10
+    # token at $3.29 instead of $5.47. The error has a direction — the
+    # better you shopped a leg, the more it understates you — so a measured
+    # per-leg fair probability must override the derivation when there is
+    # one.
     d = to_decimal(odds)
-    if fair_prob is not None:
+    if fair_prob is None:
+        p = implied(odds) / (1.0 + float(market_hold))
+        p_source = (f"derived from a uniform {float(market_hold):.1%} hold, "
+                    f"so it assumes this leg carries the field's average "
+                    f"margin — measured per-leg margins varied by 3.5pp "
+                    f"inside one board, see B95")
+    else:
         p = float(fair_prob)
         if not 0.0 < p < 1.0:
             raise ValueError(
-                f"fair_prob must be a probability in (0, 1), got {fair_prob!r}")
-        # B99b. `market_hold` is INERT once fair_prob is given, and used to
-        # be silently so — a live session headlined "measured hold 0.3195,
-        # not the 0.39 default" and then found the figure identical at
-        # every hold from 0.10 to 0.542, because it had also passed
-        # fair_prob. Say it, so a caller cannot credit a number to an
-        # argument that did nothing.
-        p_source = ("measured (fair_prob given, so market_hold "
+                f"fair_prob={fair_prob} is not a probability in (0,1). This "
+                f"is a de-vigged per-leg number, not a price and not a "
+                f"percentage — refused rather than clamped, because a "
+                f"clamped 1.0 would silently report the EV of a certainty.")
+        # B99b. `market_hold` is INERT once fair_prob is given, and it used
+        # to be silently inert: a session headlined "measured hold, not the
+        # default" and then found the figure identical at every hold from
+        # 0.10 to 0.542. Say so in the result.
+        p_source = (f"measured (fair_prob given, so market_hold "
                     f"{float(market_hold):.1%} was NOT used)")
-    else:
-        p = implied(odds) / (1.0 + float(market_hold))
-        p_source = f"derived from a uniform {float(market_hold):.1%} hold"
     base = p * (d - 1.0) * stake - (1.0 - p) * stake
     refund = (1.0 - p) * stake * float(bonus_value)
     return {"odds": float(odds), "p_true": p, "stake": float(stake),
             "bonus_value": float(bonus_value), "market_hold": float(market_hold),
+            "p_source": p_source, "fair_prob": fair_prob,
             "base_ev": base, "refund_ev": refund, "ev": base + refund,
-            "roi": (base + refund) / stake,
-            # B95. Which p was used, said out loud. A derived p can be 24%
-            # low on a well-shopped leg, and the result used to carry no
-            # way to tell the two apart.
-            "p_source": p_source}
+            "roi": (base + refund) / stake}
 
 
 def stake_back_band(odds: float, *, stake: float = 10.0,
                     market_hold: float = 0.39,
                     fair_prob: float | None = None) -> dict:
     """`stake_back_ev` across a pessimistic/central/optimistic bonus value.
-
-    **Pass `fair_prob` whenever you de-vigged the field (B95)** — it goes
-    straight through to `stake_back_ev` and replaces the uniform-hold
-    derivation, which runs up to 24% low on a leg whose price carries
-    less margin than the board's average. The whole band shifts with it:
-    Chase Brown at +525 is $3.29 central derived, $5.47 measured.
 
     Never quote a stake-back token as one number. `bonus_value` is an
     assumption, not a measurement, and it moves the answer about three times
@@ -1626,9 +1720,13 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
     than guessed — see `stake_back_ev`. The first version used
     0.60/0.70/0.80, whose top end this market cannot reach.
     """
+    # B95. Must pass fair_prob through, or the band silently reverts to the
+    # uniform-hold derivation the caller just overrode — three numbers that
+    # look like the measured ones and are not.
     return {lab: stake_back_ev(odds, stake=stake, bonus_value=v,
                                market_hold=market_hold, fair_prob=fair_prob)
-            for lab, v in zip(STAKE_BACK_V_LABELS, STAKE_BACK_V_OBSERVED)}
+            for lab, v in (("pessimistic", 0.58), ("central", 0.65),
+                           ("optimistic", 0.71))}
 
 
 # ---------------------------------------------------------------------------
@@ -1664,12 +1762,12 @@ def report(cands, boost_label: str = "") -> str:
                 out.append(f"  this slip's hold: {c.slip_hold:.1%}  "
                            f"(observed, not assumed — reference band "
                            f"{c.hold_band[0]:.1%}-{c.hold_band[1]:.1%})")
-                # B93. These two numbers used to sit here with no verdict
-                # between them, and a slip holding 18.79% against a
-                # 23.1-37.2% band got read as an edge and placed.
-                _note = c.hold_band_note
-                if _note:
-                    out.append(f"  {_note}")
+                # B93. Both numbers were already printed, one line apart,
+                # with no verdict — and a slip holding 18.79% against the
+                # same-game band got read as a +1.83% edge and placed. A
+                # note that stays on the object is a note nobody reads.
+                if c.hold_band_note:
+                    out.append(f"  {c.hold_band_note}")
             else:
                 out.append(f"  anticipated ROI : {c.ev_band[0]:+.1%} to "
                            f"{c.ev_band[1]:+.1%} across the measured hold "

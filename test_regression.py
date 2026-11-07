@@ -328,7 +328,7 @@ except TypeError:
         "still raises TypeError from american_to_prob")
 
 section("13. bet log (E2+P6)")
-import shutil, tempfile, types, pathlib
+import shutil, tempfile, types, pathlib, itertools
 _tmp = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
@@ -4137,6 +4137,126 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("54. every market-side pair is measured, not fallen through (E6/B81)")
+# `_pair_r` gated four canonical pairs and returned a bare `(0.0, "")` for
+# everything else, so a MEASURED zero and an unexamined fall-through were the
+# same value with the same empty label (B53's family). E6's receiving half
+# was measured 2026-11-05; the rest on 2026-11-06 in one sweep, because
+# closing the gate on an unmeasured pair is correct but useless if it refuses
+# half the real slips.
+#   measurements/e6_full_pair_sweep.py — nflverse 2023-2026 REG, z-scored
+#   per player-season, min 6 games, min 200 pairs, CONTROL: same-team
+#   PASS x RECV recovered r=+0.2462 against the table's +0.31.
+# ---------------------------------------------------------------------------
+_SIDEMK = {"PASS": ("player_pass_yds", "QB"),
+           "RUSH": ("player_rush_yds", "RB"),
+           "RECV": ("player_reception_yds", "WR")}
+
+
+def _pleg(name, side, team, event="e1"):
+    mk, pos = _SIDEMK[side]
+    return BoostLeg(player=name, market=mk, line=50.5, side="OVER",
+                    odds=-110, book="draftkings", fair_prob=0.5,
+                    fair_source="pinnacle", devig_method="shin",
+                    event_id=event, team=team, pos=pos)
+
+
+# A pair is unordered, so the lookup sorts the sides — which means every KEY
+# must already be sorted or it is unreachable. Two were not: RECV sorts
+# before RUSH, so ("same","RUSH","RECV") could never be found and the
+# commonest same-game shape in this project — a back's rushing yards with a
+# teammate receiver's — fell to "never measured" and refused an EV. A
+# lookup-order bug reads exactly like an honest refusal.
+chk("every MEASURED_PAIR_LIFT key has its sides in sorted order",
+    all(list(k[1:]) == sorted(k[1:]) for k in ff_boost.MEASURED_PAIR_LIFT),
+    str([k for k in ff_boost.MEASURED_PAIR_LIFT
+         if list(k[1:]) != sorted(k[1:])]))
+chk("and the lookup is order-independent for every pair",
+    all(ff_boost.pair_lift(rel, a, b) == ff_boost.pair_lift(rel, b, a)
+        for rel in ("same", "opp") for a in _SIDEMK for b in _SIDEMK))
+# All 12 cells resolve to SOMETHING deliberate. Before this, 8 of them
+# resolved to a silent zero.
+for _rel, _t2 in (("same", "BAL"), ("opp", "JAX")):
+    for _a in _SIDEMK:
+        for _b in _SIDEMK:
+            _r, _w = ff_boost._pair_r(_pleg("A", _a, "BAL"),
+                                      _pleg("B", _b, _t2))
+            chk(f"{_rel} {_a}x{_b} gives a reason, whatever the verdict",
+                bool(_w) and len(_w) > 20, f"{_r!r}: {_w!r}")
+# The two findings that contradict the mechanism stories told about them.
+chk("same-team RB x RB is POSITIVE, not the negative carry-pool story",
+    ff_boost.pair_lift("same", "RUSH", "RUSH")[0] > 1.0,
+    str(ff_boost.pair_lift("same", "RUSH", "RUSH")))
+chk("and it is past the gate, so no EV is reported for such a slip",
+    ff_boost._pair_r(_pleg("A", "RUSH", "BAL"),
+                     _pleg("B", "RUSH", "BAL"))[0] != 0.0)
+# The commonest same-game shape. Measuring it beat refusing it: a -1.22%
+# deviation over 28,499 pairs is independence, and gating it would have
+# refused an EV on a large share of real slips for no measured reason.
+_rr = ff_boost._pair_r(_pleg("Henry", "RUSH", "BAL"),
+                       _pleg("Flowers", "RECV", "BAL"))
+chk("same-team rushing x receiving is PRICEABLE, and says why",
+    _rr[0] == 0.0 and "MEASURED independent" in _rr[1] and "28,499" in _rr[1],
+    str(_rr))
+# The shootout stack: never measured before, and material.
+_qq = ff_boost._pair_r(_pleg("Lamar", "PASS", "BAL"),
+                       _pleg("Trevor", "PASS", "JAX"))
+chk("two opposing quarterbacks are gated, not priced as independent",
+    _qq[0] != 0.0 and "+7.22%" in _qq[1], str(_qq))
+# Not measurable is still a third answer, distinct from both.
+chk("same-team PASS x PASS refuses — n=140, below the sweep's floor",
+    ff_boost._pair_r(_pleg("A", "PASS", "BAL"),
+                     _pleg("B", "PASS", "BAL"))[0] is None)
+chk("and the refusal cites the floor rather than implying independence",
+    str(ff_boost.MIN_SWEEP_PAIRS) in ff_boost._pair_r(
+        _pleg("A", "PASS", "BAL"), _pleg("B", "PASS", "BAL"))[1])
+# The gate threshold sits in the EMPIRICAL GAP, which is the only defence of
+# any threshold. If a future measurement lands between 1.75% and 4.60%, this
+# fails and the number has to be argued again rather than inherited.
+_devs = sorted(abs(v[0] - 1.0) for v in ff_boost.MEASURED_PAIR_LIFT.values())
+_below = [d for d in _devs if d <= ff_boost.CORR_GATE_LIFT_DEV]
+_above = [d for d in _devs if d > ff_boost.CORR_GATE_LIFT_DEV]
+chk("the gate threshold sits in a real gap in the measurements",
+    min(_above) - max(_below) > 0.02,
+    f"largest passing {max(_below):.4f}, smallest gated {min(_above):.4f}")
+# B81: the provenance has to REACH the reader, or the label is dead code and
+# the report still asserts independence in terms it never names.
+_ok = [_pleg("Henry", "RUSH", "BAL"), _pleg("Flowers", "RECV", "BAL"),
+       _pleg("Bateman", "RECV", "BAL")]
+_st = classify(_ok, {})
+chk("a priceable slip records which measurement cleared each pair",
+    len(_st.zeros) == 3 and _st.priceable, str(_st.zeros)[:120])
+chk("and the reason names them instead of citing 'the measured table'",
+    "MEASURED independent" in _st.reason
+    and "established-independent by the measured table" not in _st.reason,
+    _st.reason[:160])
+# Firing rate, measured before shipping (lesson 51). Gating four pair types
+# halved the priceable set; what remains is the dominant real shape.
+_slots = [(sd, tm) for sd in _SIDEMK for tm in ("A", "B")]
+_tot = _priced = _refused = 0
+for _c in itertools.combinations_with_replacement(_slots, 3):
+    if sum(1 for sd, tm in _c if sd == "PASS" and tm == "A") > 1:
+        continue
+    if sum(1 for sd, tm in _c if sd == "PASS" and tm == "B") > 1:
+        continue
+    _tot += 1
+    _lg = [_pleg(f"P{_i}", sd, tm) for _i, (sd, tm) in enumerate(_c)]
+    _rs = [ff_boost._pair_r(x, y) for x, y in itertools.combinations(_lg, 2)]
+    if any(r is None for r, _ in _rs):
+        _refused += 1
+    elif all(r == 0.0 for r, _ in _rs):
+        _priced += 1
+chk("3-leg same-event slips: about a quarter still price as independent",
+    0.20 <= _priced / _tot <= 0.40, f"{_priced}/{_tot}")
+chk("and NONE are refused as unmeasured — measuring beat refusing",
+    _refused == 0, f"{_refused}/{_tot} refused")
+# Receiver-heavy slips are the shape that actually gets bet, so they are the
+# ones that must survive the gate.
+_recv3 = [_pleg("A", "RECV", "JAX"), _pleg("B", "RECV", "JAX"),
+          _pleg("C", "RECV", "BAL")]
+chk("a receiver-heavy same-game slip is still priceable",
+    classify(_recv3, {}).priceable)
 
 section("53. event_id is required at the WRITE side (B113)")
 # The live test: 0 of 101 rec records carried an event_id, so every

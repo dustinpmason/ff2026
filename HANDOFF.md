@@ -672,3 +672,22 @@ reality.
     the project doc containing a function call is a claim about behaviour;
     execute it before shipping it, in the same pass that writes it.
 
+62. **Never replace a slice that runs to end of file.** A patch script
+    did `old = s[s.index(marker):]` and deleted 537 lines of
+    `ff_boost.py` — `classify`, `price_candidate`, `report`,
+    `stake_back_ev` and most of `Candidate`. The module still IMPORTED
+    cleanly, because what remained was valid Python, so the smoke test
+    passed. Anchor a replacement on both ends, or use Edit with an exact
+    old_string, and check the line count after any scripted edit:
+    `wc -l` before and after costs nothing and would have caught this
+    immediately.
+
+63. **`git show HEAD:` is not a backup.** Recovering that truncation from
+    HEAD restored a tail that predated the same day's work, so B95, B99b,
+    B93 and B93b came back silently missing. The suite sections for each
+    were what specified them well enough to rebuild — which is the real
+    argument for writing the failure into the check text rather than just
+    asserting a value. When restoring from any older copy, diff what you
+    restored against what the suite expects, and treat equal check COUNTS
+    as the parity signal.
+

@@ -1385,6 +1385,45 @@ cross-game does not make a slip cross-game — two legs in one event make it
   table. **Unpriceable is not a verdict against the slip** — the 30.2%
   same-game figure was measured on independent legs and does not apply.
 
+#### Which pairs are independent, and which only looked it (B114)
+
+All twelve {passing, rushing, receiving} × {same team, opposing} pairs are
+now measured. Before this, four were in the table and the other eight
+returned a bare `0.0` — priced as independent because no branch claimed
+them, which is not the same as having been measured. **Expect more same-game
+slips to come back unpriceable than before**: 3-leg same-event slips that
+price as independent went from 50% to 27%, every one of those removals driven
+by a measured deviation past 3%.
+
+Two results are worth knowing before you reason about a slip, because both
+contradict the obvious story:
+
+- **Two same-team backs are POSITIVELY correlated** (lift 1.0992x). The
+  carry-pool argument — they split fixed carries, so they should fight each
+  other — is wrong. Game script dominates: a team that runs 35 times feeds
+  both, one that runs 18 feeds neither. Such a slip now gets **no EV**.
+- **A back's rushing yards with a teammate receiver's is effectively
+  independent** (−1.22% over 28,499 pairs), and so are receiver pairs on
+  either side. Receiver-heavy slips still price. Do not assume "same team"
+  means correlated.
+
+Newly gated: **two opposing quarterbacks** (+7.22%), the shootout stack.
+
+The gate is 3% deviation from independence, which sits in the empirical gap —
+five pairs measured between 4.6% and 19.9%, six at or below 1.75%, nothing in
+between. A priceable slip's `reason` now **names the measurement that cleared
+each pair** rather than citing "the measured table", so read it: a pair
+cleared by a 35,147-pair sweep and a pair cleared by a fall-through used to
+look identical. Re-derive any of it with
+`python3 measurements/e6_full_pair_sweep.py`, which voids its own run if its
+control fails to recover the table's known QB × WR value.
+
+The canonical `SAME_TEAM_CORR` / `OPPOSING_CORR` numbers are **deliberately
+unchanged** by this. The sweep recovered opposing RB × RB at −0.0804 against
+the table's −0.14 — right sign, roughly 1.7× overstated — but B68 records
+that pasting one filter's levels over that table is how it became
+unreproducible in the first place, and E3 owns re-deriving it properly.
+
 ### Reading the output
 
 - **`ev_pct` is None until the slip is priced.** Before pricing, the only
