@@ -240,6 +240,26 @@ the fix is to pass `bet_id=`, **not** to log it again, which double-counts.
 The match is on player, market, line and side, so two rungs of a ladder
 (Flowers 47.5 and 48.5) are tracked separately.
 
+**A `!!` line in a report is a fact about the log, not a bug — and not an
+invitation to repair it (B112).** The log is many schema generations deep and
+has hand-written records in it, so the reports tolerate what they cannot parse
+and name it rather than raising: a leg whose `line` reads `"n/a"` is printed
+as written, and `!! 2 of 9 graded verdicts have no usable model_p and are in
+NO bucket` means those two carry a missing or out-of-range value and were left
+out of calibration. **Report the line and move on.** Do not edit, re-write or
+"clean up" old records to clear a warning — that is the same rule as not
+backfilling `event_id`: a value you reconstruct is one you invented, and it
+would enter the calibration figures as if it had been measured. The one line
+that IS a bug is `!! N of M graded verdicts fell in NO bucket — this is a bug,
+not data`; say so if you ever see it.
+
+`model_p` and `fair_p` are **fractions, not percentages** — `0.77`, never
+`77.0`. `log_recommendation` now refuses a value outside [0,1] rather than
+accepting it, because a percentage landed in no calibration bucket and
+vanished from the report without a word. `log_edge` takes these from the
+`Edge` object and is already correct; the refusal only bites a hand-built
+call.
+
 Weekly: `bl.pending()` lists what needs grading. Pull closing lines with
 `propline_get_odds_closing` and grade with
 `bl.grade_leg(rec["id"], i, result, closing_odds=...,
