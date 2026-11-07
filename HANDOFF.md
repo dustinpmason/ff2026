@@ -594,3 +594,58 @@ reality.
     sits behind the moved and unmoved prices alike, and the old reasoning
     does not survive. Keep the distinction the old check was protecting
     (moved and unmoved ARE different) and change only the verdict.
+
+53. **A count of observations is not a count of independent
+    observations.** `rec_summary` printed `n=4 ... overconfident by 77%`
+    and three of the four were Baltimore pass-catchers in one game, on the
+    night both Baltimore quarterbacks went to IR. One injury, read as
+    three model failures. Anywhere a rate is printed beside an `n`, ask
+    what the unit of independence actually is and print THAT beside it —
+    and refuse the verdict when the unit is too small, rather than
+    printing a verdict and a caveat. A reader takes the number; the caveat
+    is decoration.
+
+54. **A field written by one path and read by another is a silent
+    subset.** `log_bet` stored `engine_tier` on the leg; `rec_summary`
+    read only `kind == "rec"` records. Every number in the engine
+    scorecard was computed on an incomplete set, and it happened to
+    flatter the model. When two writers feed one reader, make the reader
+    name what it cannot see — do not merge them silently, because a
+    session that calls both would then be double-counted.
+
+55. **"Not present in the data" is a state, not an answer.** A missing
+    nflverse weekly row makes an active receiver with zero targets
+    indistinguishable from a scratch, and the two grade differently
+    (LOSS vs VOID, and a VOID drops out of the scorecard entirely). When
+    absence is ambiguous, go find the measurement that disambiguates it —
+    snap counts, here — rather than picking the reading that looks
+    safer.
+
+56. **A guard that reads "unmeasured" as "fine" is worse than no guard.**
+    The B107 clustering gate returned the player count whenever event
+    coverage was partial or absent. Five verdicts from ONE game printed
+    "TOO CLUSTERED" with all five ids present and "overconfident by 77%"
+    once three ids were deleted — strictly less information, strictly more
+    confident. And partial coverage was the NORMAL state, because old
+    records have no id. Any guard that can fail to measure needs a THIRD
+    answer — yes, no, and could-not-tell — and the could-not-tell must
+    refuse, not fall back to the weaker proxy it was built to distrust.
+
+57. **Measure the thing the claim is about.** I wrote "it still fires at
+    n=46 from a single slate" into two documents as a firing-rate
+    measurement. The test behind it gave all 46 verdicts ONE event id,
+    which is one GAME. A real 13-game slate reads fine. The number was
+    real, the label was wrong, and it was wrong in the permissive
+    direction — it argued the gate was stricter than it is. Before writing
+    a measurement down, state what the input actually was in the words the
+    claim uses.
+
+58. **A test written in the same pass as the fix pins the fix's blind
+    spot.** Three of the checks written alongside the B107 gate asserted
+    the broken behaviour as correct, including one that said in so many
+    words that falling back to the player count was right. The independent
+    reviewer found eleven defects in code that had just passed 684 checks,
+    four in the betting path and two inside that hour's fix. The checks
+    were not weak — they were aimed by the same misunderstanding that
+    wrote the code. This is why SHIP GATE item 6 is not optional.
+

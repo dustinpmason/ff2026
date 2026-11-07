@@ -181,11 +181,64 @@ the file to a Google Doc and the JSONL comes back reflowed. Call
 failed upload look like pulled history and the records would never reach Drive.
 
 **Log every engine verdict, including PASS** — `bl.log_edge(edge, player,
-market, line, odds, book, acted_on=...)`. Logging only the bets that were
-placed measures Dustin's filter, not the model: a model that is right 80% of
-the time but only logged when he agrees looks identical to a model that is
-right 80% of the time *because* he filtered it. The PASSes are what separate
-those two, and `rec_summary()` reports calibration and PASS hit rate off them.
+market, line, odds, book, acted_on=..., event_id=...)`. Logging only the bets
+that were placed measures Dustin's filter, not the model: a model that is
+right 80% of the time but only logged when he agrees looks identical to a
+model that is right 80% of the time *because* he filtered it. The PASSes are
+what separate those two, and `rec_summary()` reports calibration and PASS hit
+rate off them.
+
+**Pass `event_id` (B107) — and pass it as a string.** Verdicts cluster by
+game, and without the id nothing downstream can tell four verdicts on four
+games from four on one. PropLine's ids are numeric, so pass `str(event_id)`
+or let the logger normalise it; a log mixing `"53166"` and `53166` counted
+one game as two. The
+line that forced this read `70%-85% n=4 said 77% went 0% overconfident by
+77%`, and three of the four were Baltimore pass-catchers on the night Lamar
+Jackson and Huntley both went to IR — one injury, three correlated legs,
+printed as three independent model failures. `rec_summary()` now prints the
+distinct player and event counts beside `n`, and refuses a confidence verdict
+two different ways:
+
+- **TOO CLUSTERED TO READ** — coverage is complete and the bucket holds fewer
+  than 5 distinct games.
+- **CANNOT BE READ** — some or all of the bucket's verdicts carry no
+  `event_id`, so clustering was never measured. This is not a weaker version
+  of the first one; it is the honest statement that one game cannot be told
+  from five.
+
+The threshold is **per bucket**, so what matters is how many distinct games
+land in each: 9 verdicts over 1 game refuses everything, 15 over 5 games
+still refuses one bucket, **24 over 8 games reads** — one or two Sundays of
+logging — and 46 verdicts from a single game never read, at any volume. *(An
+earlier version of this paragraph claimed it "still fires at n=46 from one
+slate". That measurement used one event id for all 46, which is one GAME. A
+13-game slate reads. The claim was wrong in the permissive direction — B111.)*
+
+Older records have no `event_id` and are **not** to be backfilled — guessing
+the game from a date is inventing data. They will read CANNOT BE READ until
+new verdicts replace them, which is correct. `bl.Leg` carries the same
+field — set it there too, so a bet and its verdicts agree on which game they
+came from.
+
+**Slip legs need `log_edge` too, not just `log_bet` (B108).** `log_bet`
+stores `engine_tier` as a field on the leg, while `rec_summary` reads records
+with `kind == "rec"`, so a leg bet on the engine's say-so never reaches the
+engine's own scorecard. The three legs of slip `7a5f4b8e` all carried
+`engine_tier: PASS` and all three lost: the PASS column read 2/7 (29%) when
+the honest figure was 2/10 (20%), and the omission **flattered** the model by
+hiding three correct PASSes. Call both, with `acted_on=True` and `bet_id` set
+on the `log_edge` call so the two records link instead of double-counting.
+`bl.unlogged_bet_verdicts()` lists any leg whose rec is missing or unlinked,
+and `rec_summary()` prints the gap at the top rather than quietly computing on
+a subset. **It distinguishes two states and they need different responses:**
+`!! ... NOT in this log` means no rec exists, every figure in the report is
+computed on an incomplete set, and the fix is to call `log_edge`. `note: ...
+not linked to the bet` means the verdict **is** here and **is** counted — the
+documented flow logs it before the bet exists, so it carries no `bet_id` — and
+the fix is to pass `bet_id=`, **not** to log it again, which double-counts.
+The match is on player, market, line and side, so two rungs of a ladder
+(Flowers 47.5 and 48.5) are tracked separately.
 
 Weekly: `bl.pending()` lists what needs grading. Pull closing lines with
 `propline_get_odds_closing` and grade with
@@ -1723,6 +1776,21 @@ id that will not resolve comes back UNGRADED with the reason.
 An UNGRADED leg counts as a **LOSS**, never a drop. A player who did not play
 did not clear his line, and dropping those inflates the hit rate — what fails
 to grade is dominated by scratches, which is not random.
+
+**A missing nflverse weekly row is NOT evidence of inactivity (B109).** The
+weekly table only carries players with a recorded stat, so an active receiver
+who drew zero targets and a scratch look identical in it — absence is
+ambiguous, and it is the one place where a VOID and a LOSS diverge. Measured
+2026-11-06: Brian Thomas Jr. had no Week 9 row, which reads as a scratch, and
+**snap counts showed 19 offensive snaps (34%)**. He played and caught nothing,
+so the real number is 0 and the Over is a LOSS. Grading it VOID would have
+dropped it from `rec_summary()` entirely — which counts only WIN/LOSS — and it
+was a PASS the veto got right, so the silent drop would have cost the model
+credit it had earned. **Settle it with snap counts, not the roster status
+field**: ACT means dressed, not that he took a snap. One row away sat Bryan
+Thomas Jr., a Jacksonville DE with 0 offensive snaps — the same name trap,
+separated only by distinct PropLine ids, which is why the join never runs on
+names.
 
 ### Run `audit()` before quoting any backtest number
 

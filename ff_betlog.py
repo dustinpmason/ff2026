@@ -157,6 +157,32 @@ def _recs() -> list[dict]:
     return [r for r in _read_all() if r.get("kind") in REC_KINDS]
 
 
+# B107. Below this many INDEPENDENT UNITS — distinct events where every
+# verdict carries an id, and nothing at all otherwise, per `_independence` —
+# a calibration bucket is reporting one game rather than a sample, and
+# printing "overconfident by 77%" beside it reads as a finding. The name said
+# DISTINCT PLAYERS while the code compared something else; one name, two
+# meanings (lesson 23), so the comment now points at the one function that
+# decides it. Set at 5 because the live case had 4 verdicts over 3 players in
+# 1 event — Baltimore pass-catchers on the night both their quarterbacks went
+# to IR. This is a READABILITY threshold, not a statistical one: it decides
+# whether a VERDICT is printed, never what the numbers are.
+#
+# Measured firing rate, full event coverage (lesson 51 — and the FIRST set of
+# these numbers was wrong, in the permissive direction; see B111). The
+# threshold is PER BUCKET, so what matters is how many distinct games land in
+# each one, not how many verdicts are in the log:
+#   9 verdicts over 1 game  (the real log)  -> every bucket refuses
+#   15 verdicts over 5 games                -> 1 of 2 buckets still refuses
+#   24 verdicts over 8 games                -> reads
+#   46 verdicts over 1 game                 -> every bucket refuses
+# So roughly 8 games' worth of logged verdicts clears it, which is one or two
+# Sundays, and no amount of volume from a single game ever does. Partial or
+# absent coverage does not refuse for clustering — it reports that clustering
+# was not measurable, which is a different claim.
+MIN_INDEPENDENT_FOR_CALIBRATION = 5
+
+
 def live_recs() -> list[dict]:
     """Current state of every engine verdict: superseded versions dropped.
 
@@ -611,7 +637,8 @@ def log_recommendation(player: str,
                        devig_method: str = "",
                        reasoning: str = "",
                        acted_on: bool = False,
-                       bet_id: str | None = None) -> dict:
+                       bet_id: str | None = None,
+                       event_id: str | None = None) -> dict:
     """Record an engine verdict — INCLUDING PASS and COIN-FLIP.
 
     This is the half that makes the engine gradeable. Log every verdict the
@@ -628,7 +655,10 @@ def log_recommendation(player: str,
         "line": line,
         "side": side,
         "tier": tier,
-        "model_p": float(model_p),
+        # B110. Unvalidated, a model_p of 77.0 (a percentage, not a
+        # fraction) landed in no calibration bucket at all and printed a
+        # header with nothing beneath it. Refused at the door instead.
+        "model_p": _check_prob(model_p, "model_p"),
         "fair_p": None if fair_p is None else float(fair_p),
         "odds": None if odds is None else float(odds),
         "book": book,
@@ -637,6 +667,10 @@ def log_recommendation(player: str,
         "reasoning": reasoning,
         "acted_on": bool(acted_on),
         "bet_id": bet_id,
+        # B107. Without this, nothing can tell four verdicts on four games
+        # from four on one. Optional, because older records do not have it
+        # and backfilling would be inventing data.
+        "event_id": event_id,
         "result": None,
         "actual": None,
     }
@@ -645,14 +679,16 @@ def log_recommendation(player: str,
 
 def log_edge(edge, player: str, market: str, line: float | None,
              odds: float | None = None, book: str = "",
-             acted_on: bool = False, bet_id: str | None = None) -> dict:
+             acted_on: bool = False, bet_id: str | None = None,
+             event_id: str | None = None) -> dict:
     """Convenience: log an `ff_props.Edge` straight from prop_edge()."""
     return log_recommendation(
         player=player, market=market, line=line, side=edge.side,
         tier=edge.tier, model_p=edge.model_p, fair_p=edge.fair_p,
         odds=odds, book=book, fair_source=edge.fair_source,
         devig_method=getattr(edge, "devig_method", ""),
-        reasoning=edge.reasoning, acted_on=acted_on, bet_id=bet_id)
+        reasoning=edge.reasoning, acted_on=acted_on, bet_id=bet_id,
+        event_id=event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +867,18 @@ def bet_summary() -> str:
         L.append(f"  returned    : ${returned:,.2f}")
         L.append(f"  net         : ${returned-staked:+,.2f}  "
                  f"(ROI {(returned-staked)/staked:+.1%})" if staked else "")
+        # B110. The "record is not the signal" caution lived inside the CLV
+        # branch below, so with no closing lines recorded — the log's actual
+        # state — a 33% hit rate and a +108% ROI printed with no caution of
+        # any kind. The caution belongs to the RECORD, which is right here.
+        _u, _why = _bet_independence(graded)
+        if _u is not None:
+            L.append(f"  spread      : {_u} distinct "
+                     f"{'game' if _u == 1 else 'games'} across "
+                     f"{len(graded)} graded slips")
+        if _u is None or _u < MIN_INDEPENDENT_FOR_CALIBRATION:
+            L.append(f"  NOT A RATE YET — {_why}. Slips on the same game "
+                     "are one observation, not several.")
 
     # CLV — the number that actually means something at this sample size.
     vals = [clv(l["odds"], l["closing_odds"])
@@ -843,7 +891,8 @@ def bet_summary() -> str:
         L.append(f"  beat close  : {(v > 0).mean():.0%} of legs")
         L.append("")
         L.append("  CLV is the signal to trust at this sample size. Record is not:")
-        L.append(f"  {len(graded)} graded slips says essentially nothing about skill,")
+        L.append(f"  {len(graded)} graded slips says essentially nothing "
+                 "about skill,")
         L.append("  while positive CLV across 30+ legs does.")
     else:
         L.append("")
@@ -865,6 +914,260 @@ def bet_summary() -> str:
     return "\n".join(x for x in L if x != "")
 
 
+def _check_prob(p, name: str) -> float:
+    """A probability, or a refusal. B110."""
+    v = float(p)
+    if not 0.0 <= v <= 1.0:
+        raise ValueError(
+            f"{name}={p} is not a probability in [0,1]. A percentage "
+            f"(77.0 for 77%) lands in no calibration bucket and vanishes "
+            f"from the report without a word — pass {v/100:.4f} instead.")
+    return v
+
+
+def _norm_event(e) -> str | None:
+    """An event id as a comparable string, or None when there isn't one.
+
+    B110. Stored raw, `event_id` broke the count two ways at once: PropLine's
+    ids are numeric, so `{"53166", 53166}` is TWO events to a set, and the
+    integer `0` is falsy, so a real id read as no id at all. Three games typed
+    inconsistently reported as "5+ events" and the bucket flipped from a
+    refusal to a confidence claim.
+    """
+    if e is None:
+        return None
+    t = str(e).strip()
+    return t or None
+
+
+def _norm_player_local(name) -> str | None:
+    """Case- and punctuation-insensitive player key, for comparing two strings
+    THIS MODULE WROTE.
+
+    Deliberately not `ff_props.norm_player`. This is not a join across data
+    sources — both sides are written by the same session in the same
+    conversation, so the only mismatches possible are its own typing
+    ("DK Metcalf" vs "D.K. Metcalf"). Importing the real one would put
+    `ff_props` — and transitively its own imports — into `ff_betlog`'s
+    shipset, which is lesson 41 and the B99/B100 failure, for the file that
+    changes most often. A suite check asserts the two still agree on the
+    cases that matter, so a divergence fails by name (B68's remedy) rather
+    than quietly.
+    """
+    if not name:
+        return None
+    return "".join(c for c in str(name).lower() if c.isalnum()) or None
+
+
+def _bet_independence(bets: list[dict]) -> tuple[int | None, str]:
+    """Independent units across SLIPS. B110.
+
+    A slip's game lives on its legs, not on the bet record, so the rec-level
+    `_independence` reads the wrong shape here and reported "0 players +
+    3 unnamed". The unit for a slip is the set of games it touches: two
+    same-game slips on one game are one observation, and a cross-game slip
+    is its own set.
+    """
+    sets, missing = set(), 0
+    for b in bets:
+        evs = {_norm_event(l.get("event_id")) for l in (b.get("legs") or [])}
+        evs.discard(None)
+        if not evs:
+            missing += 1
+        else:
+            sets.add(frozenset(evs))
+    if missing == len(bets):
+        return None, (f"no event ids recorded, so {len(bets)} slips on one "
+                      f"game cannot be told from {len(bets)} on {len(bets)}")
+    if missing:
+        return None, (f"only {len(bets) - missing} of {len(bets)} slips "
+                      f"carry an event id")
+    return len(sets), (f"{len(sets)} distinct "
+                       f"{'game' if len(sets) == 1 else 'games or game sets'}"
+                       f" across {len(bets)} slips")
+
+
+def _independence(rs: list[dict]) -> tuple[int | None, str]:
+    """How many INDEPENDENT observations a set of verdicts holds, or None.
+
+    B107/B110. Verdicts cluster by game: three Baltimore pass-catchers on the
+    night both their quarterbacks went to IR are one event, not three samples.
+
+    Returns `(None, why)` when independence CANNOT BE MEASURED, which is a
+    third state and not a synonym for "plenty". The first version of this
+    returned the player count whenever event coverage was partial or absent,
+    and that made the function non-monotone in the worst possible direction:
+    five verdicts from ONE game reported `1 independent — TOO CLUSTERED`
+    with all five ids present, and `overconfident by 77%` once three of the
+    ids were deleted. Strictly less information produced a strictly more
+    confident claim. Worse, partial coverage is the NORMAL state for the next
+    several weeks, because pre-B107 records have no id and backfilling one
+    from a date would be inventing data — so the gate would have been inert
+    for exactly the transition it was written for.
+
+    Players are keyed loosely and only ever as a FALLBACK bound: two players
+    sharing a name collapse into one, which can only understate independence,
+    and unnamed verdicts all collapse together for the same reason. Both
+    errors make the gate more cautious, never less.
+    """
+    evs = [_norm_event(r.get("event_id")) for r in rs]
+    carried = sum(1 for e in evs if e)
+    keys = [_norm_player_local(r.get("player")) for r in rs]
+    # Unnamed verdicts might all be the same player, so they count as one.
+    players = len({k for k in keys if k}) + (1 if any(k is None
+                                                      for k in keys) else 0)
+    if not rs:
+        return 0, "no verdicts"
+    if carried == 0:
+        return None, f"no event ids recorded, so {len(rs)} verdicts on one game cannot be told from {len(rs)} on {len(rs)}"
+    if carried < len(rs):
+        return None, f"only {carried} of {len(rs)} verdicts carry an event id"
+    events = len({e for e in evs if e})
+    return min(players, events), (
+        f"{players} player{'s' if players != 1 else ''} over "
+        f"{events} event{'s' if events != 1 else ''}")
+
+
+def _spread_note(rs: list[dict]) -> str:
+    """"N players, M events" — what a count is actually made of."""
+    keys = [_norm_player_local(r.get("player")) for r in rs]
+    named = len({k for k in keys if k})
+    unnamed = sum(1 for k in keys if k is None)
+    pl = f"{named} player{'s' if named != 1 else ''}"
+    if unnamed:
+        pl += f" + {unnamed} unnamed"
+    evs = [_norm_event(r.get("event_id")) for r in rs]
+    carried = sum(1 for e in evs if e)
+    events = len({e for e in evs if e})
+    if carried == 0:
+        # Say so. Silence here reads as "no clustering", which is the claim
+        # nothing measured (B39).
+        ev = ", no event ids"
+    elif carried == len(evs):
+        ev = f", {events} event{'s' if events != 1 else ''}"
+    else:
+        ev = f", {events}+ events ({carried} of {len(evs)} carry one)"
+    return pl + ev
+
+
+def unlogged_bet_verdicts() -> list[dict]:
+    """Bet legs that carry an engine verdict no rec record knows about.
+
+    B108. `log_bet` stores `engine_tier` as a FIELD ON THE LEG, while
+    `rec_summary` reads `live_recs()`, which filters `kind == "rec"`. A leg
+    bet on the engine's say-so therefore never reaches the engine's own
+    scorecard unless `log_edge` was called separately. This is not a cosmetic
+    gap: the three legs of slip 7a5f4b8e all carried `engine_tier: PASS` and
+    all three lost, so the PASS column read 2/7 (29%) when the honest figure
+    was 2/10 (20%) — the omission flattered the model by hiding three
+    correct PASSes. Reported rather than silently merged, because a session
+    that calls both `log_bet` and `log_edge` for the same leg would otherwise
+    be double-counted.
+    """
+    bets = _apply_grades(_bets())
+    recs = live_recs()
+
+    def _key(d, bet_id):
+        # B110. `line` and `side` are part of the identity. Without them one
+        # rec suppressed EVERY leg for that player and market on the slip —
+        # and a ladder (Flowers at 47.5 and 48.5, Bateman at 15.5 and 14.5,
+        # which the live log has) is exactly where two legs share both and
+        # carry different tiers.
+        return (bet_id, _norm_player_local(d.get("player")),
+                d.get("market"),
+                None if d.get("line") is None else float(d["line"]),
+                (d.get("side") or "").upper())
+
+    # Two separate states, and the message must not merge them (B39): a
+    # verdict with no rec at all, and a verdict whose rec exists but was
+    # logged before the bet and so carries no bet_id. The documented flow
+    # produces the second one, and the first version called it "NOT in this
+    # log" and told the session to log it again — which is the double count
+    # this function exists to avoid.
+    linked = {_key(r, r.get("bet_id")) for r in recs if r.get("bet_id")}
+    unlinked = {_key(r, None) for r in recs}
+    out = []
+    for b in bets:
+        for i, leg in enumerate(b.get("legs") or []):
+            # A leg carrying the engine's PROBABILITY is a leg bet on the
+            # engine, tier or no tier. Keying only on engine_tier made that
+            # leg invisible to the detector built to find invisible legs.
+            if not leg.get("engine_tier") \
+                    and leg.get("engine_model_p") is None:
+                continue
+            if _key(leg, b["id"]) in linked:
+                continue
+            state = ("unlinked" if _key(leg, None) in unlinked
+                     else "missing")
+            out.append({"bet_id": b["id"], "leg_index": i,
+                        "state": state,
+                        "player": leg.get("player"),
+                        "market": leg.get("market"),
+                        "line": leg.get("line"),
+                        "side": leg.get("side"),
+                        "tier": leg.get("engine_tier"),
+                        "model_p": leg.get("engine_model_p"),
+                        "result": leg.get("result")})
+    return out
+
+
+def _unlogged_note() -> list[str]:
+    """The B108 gap, as report lines. Empty when there is no gap.
+
+    Two states, reported separately (B110). MISSING means no rec record
+    exists for that leg at all, so every figure in this report is computed on
+    an incomplete set and the remedy is to call `log_edge`. UNLINKED means
+    the verdict IS here and IS counted — it was logged before the bet
+    existed, which is what the documented flow produces — and the only thing
+    absent is the `bet_id` tying the two together. Merging them told a
+    session to re-log a verdict it had already logged, which is the double
+    count this exists to prevent.
+    """
+    gap = unlogged_bet_verdicts()
+    if not gap:
+        return []
+    missing = [g for g in gap if g["state"] == "missing"]
+    unlinked = [g for g in gap if g["state"] == "unlinked"]
+
+    def _who(g):
+        bits = [x for x in (g["player"], g["market"]) if x]
+        if g.get("line") is not None:
+            bits.append(f"{g['side'] or ''} {g['line']}".strip())
+        return " ".join(bits) or \
+            f"(unnamed leg {g['leg_index']} of bet {g['bet_id']})"
+
+    L = []
+    if missing:
+        graded = [g for g in missing if g["result"] in ("WIN", "LOSS")]
+        L += ["",
+              f"  !! {len(missing)} bet leg"
+              f"{'s' if len(missing) != 1 else ''} "
+              f"{'carry' if len(missing) != 1 else 'carries'} an engine "
+              f"verdict that is NOT in this log",
+              "     (log_bet stores engine_tier on the leg; this scorecard "
+              "reads log_edge records)"]
+        for g in missing:
+            L.append(f"       {g['tier'] or '(no tier)':<10} {_who(g)}"
+                     f"  {g['result'] or 'ungraded'}")
+        if graded:
+            L.append(f"     {len(graded)} of them already graded, so every "
+                     "figure in this report is")
+            L.append("     computed on an incomplete set. Call log_edge() "
+                     "for slip legs too.")
+    if unlinked:
+        L += ["",
+              f"  note: {len(unlinked)} bet leg"
+              f"{'s' if len(unlinked) != 1 else ''} "
+              f"{'have' if len(unlinked) != 1 else 'has'} a verdict in this "
+              "log that is not linked to the bet",
+              "     (counted in every figure below — pass bet_id= and "
+              "acted_on=True to log_edge to link it;",
+              "      do NOT log it again, that double-counts)"]
+        for g in unlinked:
+            L.append(f"       {g['tier'] or '(no tier)':<10} {_who(g)}")
+    return L
+
+
 def rec_summary() -> str:
     """How the ENGINE did — on every verdict, not just the ones that were bet.
 
@@ -874,11 +1177,15 @@ def rec_summary() -> str:
     """
     recs = live_recs()
     if not recs:
-        return ("No engine recommendations logged yet.\n"
-                "  Log EVERY verdict with log_edge(), including PASS. Logging\n"
-                "  only the ones you bet measures your filter, not the model.")
+        # The gap still has to show here. No recs at all, with bets carrying
+        # engine verdicts, is the worst version of B108, not an exemption.
+        return "\n".join(
+            ["No engine recommendations logged yet.",
+             "  Log EVERY verdict with log_edge(), including PASS. Logging",
+             "  only the ones you bet measures your filter, not the model."]
+            + _unlogged_note())
 
-    L = [f"ENGINE LOG — {len(recs)} verdicts"]
+    L = [f"ENGINE LOG — {len(recs)} verdicts"] + _unlogged_note()
     tiers: dict[str, list[dict]] = {}
     for r in recs:
         tiers.setdefault(r["tier"], []).append(r)
@@ -890,8 +1197,13 @@ def rec_summary() -> str:
         acted = sum(1 for r in rs if r.get("acted_on"))
         hit = (f"{sum(1 for r in g if r['result']=='WIN')/len(g):.0%}"
                if g else "—")
-        L.append(f"  {tier:<12}{len(rs):>5}{acted:>8}{len(g):>8}{hit:>8}")
+        L.append(f"  {tier:<12}{len(rs):>5}{acted:>8}{len(g):>8}{hit:>8}"
+                 f"   {_spread_note(g) if g else ''}")
 
+    # The hit column is a raw tally, deliberately ungated — `graded` and the
+    # spread of players and events sit beside every figure, so nothing in the
+    # table claims to be a rate. Everything below it that says what a number
+    # MEANS is gated instead (B107).
     graded = [r for r in recs if r.get("result") in ("WIN", "LOSS")]
     if graded:
         # Calibration: does a 70% call win 70% of the time? This is the only
@@ -900,24 +1212,70 @@ def rec_summary() -> str:
         L.append("")
         L.append("  calibration (model probability vs realised)")
         buckets = [(0.0, .4), (.4, .55), (.55, .7), (.7, .85), (.85, 1.0)]
+        placed = 0
+        # B107. `n` is a count of VERDICTS, and verdicts cluster hard. A live
+        # example: a 0-for-4 bucket read as four failures, and three of the
+        # four were Baltimore pass-catchers on the night Lamar Jackson and
+        # Huntley both went to IR — one event driving three legs. Across the
+        # whole graded set, 9 verdicts covered 6 distinct players, with three
+        # players appearing at two lines each. Printing `n=4` next to
+        # "overconfident by 77%" invites reading one game as four
+        # observations, so the independent counts are printed beside it and
+        # a bucket that cannot support a verdict says so instead of giving
+        # one.
         for lo, hi in buckets:
-            b = [r for r in graded if lo <= r["model_p"] < hi]
+            # The top bucket must INCLUDE 1.0, or a verdict at exactly 1.0
+            # is counted in the header and the tier table and appears in no
+            # bucket, with nothing saying so.
+            b = [r for r in graded
+                 if lo <= r["model_p"] < hi
+                 or (hi == 1.0 and r["model_p"] == 1.0)]
+            placed += len(b)
             if not b:
                 continue
             exp = float(np.mean([r["model_p"] for r in b]))
             act = sum(1 for r in b if r["result"] == "WIN") / len(b)
-            L.append(f"    {lo:.0%}-{hi:.0%}  n={len(b):<4} "
-                     f"said {exp:.0%}  went {act:.0%}  "
-                     f"{'over' if exp > act else 'under'}confident by "
-                     f"{abs(exp-act):.0%}")
+            spread = f"n={len(b)} over {_spread_note(b)}"
+            units, why = _independence(b)
+            if units is None:
+                L.append(f"    {lo:.0%}-{hi:.0%}  {spread}  said {exp:.0%}  "
+                         f"went {act:.0%}  — CANNOT BE READ: {why}")
+            elif units < MIN_INDEPENDENT_FOR_CALIBRATION:
+                L.append(f"    {lo:.0%}-{hi:.0%}  {spread}  said {exp:.0%}  "
+                         f"went {act:.0%}  — TOO CLUSTERED TO READ "
+                         f"({units} independent, "
+                         f"need {MIN_INDEPENDENT_FOR_CALIBRATION})")
+            else:
+                L.append(f"    {lo:.0%}-{hi:.0%}  {spread}  "
+                         f"said {exp:.0%}  went {act:.0%}  "
+                         + ("calibrated (no gap at this rounding)"
+                            if round(abs(exp - act), 2) == 0 else
+                            f"{'over' if exp > act else 'under'}confident "
+                            f"by {abs(exp-act):.0%}"))
+        # Reconcile, so the section can report that it could not measure
+        # rather than quietly showing less than it was given (lesson 13).
+        if placed != len(graded):
+            L.append(f"    !! {len(graded) - placed} of {len(graded)} graded "
+                     f"verdicts fell in NO bucket — model_p outside [0,1]?")
         passes = [r for r in graded if r["tier"] == "PASS"]
         if passes:
             w = sum(1 for r in passes if r["result"] == "WIN") / len(passes)
+            # B107 applies here too. This line ends in a sentence telling the
+            # reader what the rate MEANS for the guard, which is a verdict on
+            # the same clustered handful the buckets above refuse to read.
+            n_ind, why = _independence(passes)
             L.append("")
-            L.append(f"  PASSes that would have won: {w:.0%} of {len(passes)}")
-            L.append("  A PASS rate near the market's implied probability means")
-            L.append("  the vetoes are not costing anything. Well above it means")
-            L.append("  the guard is too tight.")
+            L.append(f"  PASSes that would have won: {w:.0%} of {len(passes)}"
+                     f"  ({_spread_note(passes)})")
+            if n_ind is None or n_ind < MIN_INDEPENDENT_FOR_CALIBRATION:
+                L.append(f"  NOT READABLE YET ({why}) — this does not say "
+                         "anything about the guard.")
+            else:
+                L.append("  A PASS rate near the market's implied probability "
+                         "means")
+                L.append("  the vetoes are not costing anything. Well above "
+                         "it means")
+                L.append("  the guard is too tight.")
     else:
         L.append("")
         L.append("  Nothing graded yet. Grade with grade_rec() after each slate.")

@@ -328,7 +328,7 @@ except TypeError:
         "still raises TypeError from american_to_prob")
 
 section("13. bet log (E2+P6)")
-import shutil, tempfile
+import shutil, tempfile, types, pathlib
 _tmp = tempfile.mkdtemp()
 ff_betlog.LOG_DIR = pathlib.Path(_tmp)
 ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
@@ -3124,6 +3124,16 @@ def _raises(fn, exc=Exception) -> bool:
         return True
 
 
+def _err(fn) -> str:
+    """The message fn() raises, or "" — so asserting on wording cannot crash
+    the section (lesson 14)."""
+    try:
+        fn()
+        return ""
+    except Exception as e:                                   # noqa: BLE001
+        return str(e)
+
+
 section("50. the anchor flag gap a slip gets built from (B86)")
 # anchor_thin fires at liquidity <= 25 and anchor_opening needs an exact
 # 0.5000, so a line at the book's OPENING LIMIT whose price has moved got
@@ -3668,6 +3678,406 @@ chk("every same-team QB/RB pair takes one value, whatever the back's role",
     abs(_C[0, 1] - _C[0, 2]) < 1e-12, f"{_C[0,1]} vs {_C[0,2]}")
 chk("and that value is still the market table's rushing figure",
     abs(_C[0, 1] - ff_guillotine.SAME_TEAM_CORR[("QB", "RB")]) < 1e-12)
+
+section("51. a calibration bucket cannot pass off one game as a sample (B107/B108)")
+# Measured 2026-11-06 on the real log. rec_summary printed
+#     70%-85%  n=4  said 77%  went 0%  overconfident by 77%
+# and three of those four were Baltimore pass-catchers on the night Lamar
+# Jackson and Huntley both went to IR. One event, three correlated legs, read
+# as three failures of the model. Across the whole graded set, 9 verdicts
+# covered 6 distinct players. Separately, the three legs actually bet carried
+# engine_tier PASS inside the BET record, which rec_summary never reads, so
+# the PASS column said 2/7 when the honest figure was 2/10.
+# ---------------------------------------------------------------------------
+_tmp51 = tempfile.mkdtemp()
+_old51 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+
+
+def _rec51(player, event_id, result, p=0.77, market="player_rec_yds"):
+    r = ff_betlog.log_recommendation(
+        player, market, 10.5, "OVER", "MODERATE", p, 0.50, -110,
+        book="draftkings", event_id=event_id)
+    ff_betlog.grade_rec(r["id"], result)
+    return r
+
+
+# Exactly the live shape: one bucket, four verdicts, three players, one game.
+for _pl, _res in (("Zay Flowers", "LOSS"), ("Zay Flowers", "LOSS"),
+                  ("Rashod Bateman", "LOSS"), ("Mark Andrews", "LOSS")):
+    _rec51(_pl, "evt-jaxbal", _res)
+_out51 = ff_betlog.rec_summary()
+chk("the bucket reports distinct players, not just the verdict count",
+    "over 3 players" in _out51, _out51)
+chk("and the single event it all came from",
+    "1 event" in _out51 and "1 events" not in _out51, _out51)
+chk("a bucket this clustered refuses to give a confidence verdict",
+    "TOO CLUSTERED" in _out51, _out51)
+chk("so the overconfident-by figure is NOT printed for it",
+    "overconfident by" not in _out51, _out51)
+# The numbers themselves must still be visible — hiding them would be worse
+# than the misreading this guards against.
+chk("the said/went figures are still shown",
+    "said 77%" in _out51 and "went 0%" in _out51, _out51)
+# Five distinct players spread over five games is a real, if small, sample.
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(5):
+    _rec51(f"Player {_i}", f"evt-{_i}", "WIN" if _i < 4 else "LOSS")
+_out51b = ff_betlog.rec_summary()
+chk("five players over five games DOES get read",
+    "TOO CLUSTERED" not in _out51b, _out51b)
+chk("and gets its confidence verdict",
+    "confident by" in _out51b, _out51b)
+# D16/B39: the EVENT is the tighter unit. Five distinct players in ONE game
+# is one game. Player count alone would wave this through.
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(5):
+    _rec51(f"Player {_i}", "evt-one", "LOSS")
+_out51c = ff_betlog.rec_summary()
+chk("five players in ONE game is still refused",
+    "TOO CLUSTERED" in _out51c, _out51c)
+# Partial event coverage must not read as measured coverage (B39). Two of
+# four carrying an event_id is not "2 events".
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(5):
+    _rec51(f"Player {_i}", f"evt-{_i}" if _i < 2 else None, "LOSS")
+_out51d = ff_betlog.rec_summary()
+chk("partial event coverage is marked as partial, not stated as fact",
+    "2+ events" in _out51d and "2 of 5 carry one" in _out51d, _out51d)
+# B110, and this check used to assert the OPPOSITE. Falling back to the
+# player count made the function non-monotone in the worst direction: delete
+# three event ids from five verdicts on ONE game and the refusal became
+# "overconfident by 77%". Strictly less information, strictly more confident.
+chk("partial coverage REFUSES rather than falling back to player count",
+    "CANNOT BE READ" in _out51d, _out51d)
+chk("and says which coverage it is missing",
+    "only 2 of 5 verdicts carry an event id" in _out51d, _out51d)
+# The monotonicity property itself, stated directly: removing event ids can
+# never turn a refusal into a verdict.
+_mono = [{"player": f"P{i}", "event_id": "g1"} for i in range(5)]
+_mono_partial = [dict(r) for r in _mono]
+for _r in _mono_partial[2:]:
+    _r["event_id"] = None
+chk("full coverage on one game is 1 independent unit",
+    ff_betlog._independence(_mono)[0] == 1,
+    str(ff_betlog._independence(_mono)))
+chk("deleting event ids does NOT raise the independent count",
+    ff_betlog._independence(_mono_partial)[0] is None,
+    str(ff_betlog._independence(_mono_partial)))
+# Records written before B107 have no event_id at all. They must still
+# report, with no event claim either way.
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(5):
+    _rec51(f"Player {_i}", None, "LOSS")
+_out51e = ff_betlog.rec_summary()
+# Also rewritten (B110): silence about events read as "no clustering", which
+# is the claim nothing measured. The old check PINNED that silence.
+chk("a pre-B107 log says event ids are absent rather than staying silent",
+    "no event ids" in _out51e and "over 5 players" in _out51e, _out51e)
+chk("and refuses the verdict, since one game is indistinguishable from five",
+    "CANNOT BE READ" in _out51e, _out51e)
+# The REASON has to name zero coverage specifically. Without this check, the
+# zero-coverage branch could be deleted entirely and nothing would fail —
+# the partial branch catches it and refuses too, just for the wrong stated
+# reason, and a wrong reason is what a reader acts on.
+chk("the reason names zero coverage, not 'only 0 of 5'",
+    "no event ids recorded" in _out51e and "only 0 of" not in _out51e,
+    _out51e)
+chk("and spells out what cannot be distinguished",
+    ff_betlog._independence(
+        [{"player": f"P{_i}"} for _i in range(5)])[1]
+    == "no event ids recorded, so 5 verdicts on one game cannot be told "
+       "from 5 on 5",
+    ff_betlog._independence([{"player": f"P{_i}"} for _i in range(5)])[1])
+# log_edge must carry event_id through. It is the call the engine actually
+# uses, and a parameter that is accepted and dropped is worse than one that
+# does not exist.
+_ed51 = types.SimpleNamespace(
+    side="OVER", tier="MODERATE", model_p=0.6, fair_p=0.5,
+    fair_source="pinnacle", devig_method="shin", reasoning="x")
+_r51 = ff_betlog.log_edge(_ed51, "Somebody", "player_rec_yds", 10.5,
+                          odds=-110, book="draftkings", event_id="evt-xyz")
+chk("log_edge passes event_id through to the record",
+    _r51.get("event_id") == "evt-xyz", str(_r51.get("event_id")))
+# B108: a verdict logged only inside a bet record is invisible to the engine
+# scorecard, and its absence flatters the model.
+_legs51 = [ff_betlog.Leg(player="Brenton Strange", market="player_rec_yds",
+                         line=33.5, side="OVER", odds=-115,
+                         book="draftkings", engine_tier="PASS",
+                         engine_model_p=0.44)]
+_b51 = ff_betlog.log_bet(525, 5.0, _legs51, "draftkings")
+ff_betlog.grade_leg(_b51["id"], 0, "LOSS", actual=22.0)
+_gap51 = ff_betlog.unlogged_bet_verdicts()
+chk("a bet leg carrying engine_tier with no rec record is found",
+    len(_gap51) == 1 and _gap51[0]["player"] == "Brenton Strange",
+    str(_gap51))
+chk("and its grade comes with it, so the cost of the gap is visible",
+    _gap51[0]["result"] == "LOSS", str(_gap51))
+chk("rec_summary says so instead of quietly computing on a subset",
+    "NOT in this log" in ff_betlog.rec_summary())
+chk("and names the leg",
+    "Brenton Strange" in ff_betlog.rec_summary())
+# A leg that WAS logged through log_edge must not be double-counted as a gap.
+_legs51b = [ff_betlog.Leg(player="Travis Hunter", market="player_rec_yds",
+                          line=8.5, side="OVER", odds=-110,
+                          book="draftkings", engine_tier="MODERATE")]
+_b51b = ff_betlog.log_bet(525, 5.0, _legs51b, "draftkings")
+_r51b = ff_betlog.log_edge(_ed51, "Travis Hunter", "player_rec_yds", 8.5,
+                           odds=-110, book="draftkings", acted_on=True,
+                           bet_id=_b51b["id"])
+chk("a leg already in the rec log is not reported as a gap",
+    all(g["player"] != "Travis Hunter"
+        for g in ff_betlog.unlogged_bet_verdicts()),
+    str(ff_betlog.unlogged_bet_verdicts()))
+# A leg with no engine verdict is not a gap either — most legs are hand-made.
+_legs51c = [ff_betlog.Leg(player="Nobody", market="player_rec_yds", line=1.5,
+                          side="OVER", odds=-110, book="draftkings")]
+ff_betlog.log_bet(525, 5.0, _legs51c, "draftkings")
+chk("a leg with no engine verdict is not counted as a missing one",
+    all(g["player"] != "Nobody" for g in ff_betlog.unlogged_bet_verdicts()))
+# And the gap must show even when NOTHING is in the rec log — that is the
+# worst version of it, not an exemption.
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.log_bet(525, 5.0, _legs51, "draftkings")
+_out51f = ff_betlog.rec_summary()
+chk("an empty rec log with bet verdicts still reports the gap",
+    "No engine recommendations logged yet" in _out51f
+    and "NOT in this log" in _out51f, _out51f)
+# The PASS line ends in a sentence about what the rate MEANS for the guard,
+# so it is a verdict on the same clustered handful, and must be gated by the
+# same rule. One definition of independence, used by both.
+shutil.rmtree(_tmp51, ignore_errors=True)
+_tmp51 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp51)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _pl in ("Zay Flowers", "Zay Flowers", "Rashod Bateman"):
+    _r = ff_betlog.log_recommendation(_pl, "player_rec_yds", 10.5, "OVER",
+                                      "PASS", 0.44, 0.50, -110,
+                                      event_id="evt-jaxbal")
+    ff_betlog.grade_rec(_r["id"], "LOSS")
+_out51g = ff_betlog.rec_summary()
+chk("the PASS line shows what its sample is made of",
+    "2 players, 1 event" in _out51g, _out51g)
+chk("and refuses to say what it means for the guard",
+    "TOO CLUSTERED" in _out51g and "the guard is too tight" not in _out51g,
+    _out51g)
+for _i in range(5):
+    _r = ff_betlog.log_recommendation(f"Other {_i}", "player_rec_yds", 10.5,
+                                      "OVER", "PASS", 0.44, 0.50, -110,
+                                      event_id=f"evt-{_i}")
+    ff_betlog.grade_rec(_r["id"], "WIN")
+chk("and reads it once the PASSes span enough games",
+    "the guard is too tight" in ff_betlog.rec_summary(),
+    ff_betlog.rec_summary())
+# One definition, not two. A bucket and the PASS line must agree about the
+# same set, or the report contradicts itself.
+_set51 = [{"player": "A", "event_id": "e1"}, {"player": "B", "event_id": "e1"},
+          {"player": "C", "event_id": "e1"}]
+chk("independence counts the event when coverage is complete",
+    ff_betlog._independence(_set51)[0] == 1,
+    str(ff_betlog._independence(_set51)))
+_set51b = [{"player": "A", "event_id": "e1"}, {"player": "B"},
+           {"player": "C"}]
+chk("and reports partial coverage as unmeasurable, not as 3 players",
+    ff_betlog._independence(_set51b)[0] is None,
+    str(ff_betlog._independence(_set51b)))
+chk("a shared player name can only ever understate independence",
+    ff_betlog._independence(
+        [{"player": "A", "event_id": "e1"},
+         {"player": "A", "event_id": "e2"}])[0] == 1)
+chk("and so does a differently-typed spelling of the same name",
+    ff_betlog._independence(
+        [{"player": "D.K. Metcalf", "event_id": "e1"},
+         {"player": "DK Metcalf", "event_id": "e2"}])[0] == 1)
+shutil.rmtree(_tmp51, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old51
+
+section("52. what the independent reviewer found in section 51's own code (B110)")
+# Eleven findings against code that had just passed 684 checks, four of them
+# in the betting path and two inside the B107 fix itself. The pattern is the
+# SHIP GATE's reason for existing: three of section 51's checks PINNED the
+# wrong behaviour, because the test and the fix were written in one pass.
+# ---------------------------------------------------------------------------
+_tmp52 = tempfile.mkdtemp()
+_old52 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+
+# F10. Event ids arrive numeric from PropLine. A set treats "53166" and 53166
+# as two events, and integer 0 is falsy so a real id read as no id at all.
+# Three games were reported as "5+ events" and the bucket flipped from a
+# refusal to a confidence claim.
+chk("an int and a str event id are the same event",
+    ff_betlog._independence(
+        [{"player": "A", "event_id": "53166"},
+         {"player": "B", "event_id": 53166}])[0] == 1,
+    str(ff_betlog._independence(
+        [{"player": "A", "event_id": "53166"},
+         {"player": "B", "event_id": 53166}])))
+chk("event id 0 is an id, not an absence",
+    ff_betlog._norm_event(0) == "0")
+chk("but an empty or whitespace id is an absence",
+    ff_betlog._norm_event("") is None
+    and ff_betlog._norm_event("  ") is None
+    and ff_betlog._norm_event(None) is None)
+
+# F3/F4. The gap detector's own blind spots. Both are FALSE NEGATIVES, which
+# is the direction that flatters the model.
+_leg_p = ff_betlog.Leg(player="Mark Andrews", market="player_rec_yds",
+                       line=24.5, side="OVER", odds=-110, book="draftkings",
+                       engine_model_p=0.44)
+_bp = ff_betlog.log_bet(525, 5.0, [_leg_p], "draftkings")
+chk("a leg with engine_model_p but no tier is still a missing verdict",
+    any(g["player"] == "Mark Andrews"
+        for g in ff_betlog.unlogged_bet_verdicts()),
+    str(ff_betlog.unlogged_bet_verdicts()))
+# A ladder: two legs, same player, same market, different lines and tiers.
+# One rec must not suppress the other.
+_ladder = [ff_betlog.Leg(player="Zay Flowers", market="player_rec_yds",
+                         line=47.5, side="OVER", odds=-110, book="draftkings",
+                         engine_tier="PASS"),
+           ff_betlog.Leg(player="Zay Flowers", market="player_rec_yds",
+                         line=48.5, side="OVER", odds=-105, book="draftkings",
+                         engine_tier="MODERATE")]
+_bl52 = ff_betlog.log_bet(525, 5.0, _ladder, "draftkings")
+_ed52 = types.SimpleNamespace(side="OVER", tier="PASS", model_p=0.44,
+                              fair_p=0.50, fair_source="pinnacle",
+                              devig_method="shin", reasoning="x")
+ff_betlog.log_edge(_ed52, "Zay Flowers", "player_rec_yds", 47.5, odds=-110,
+                   book="draftkings", acted_on=True, bet_id=_bl52["id"])
+_lad_gap = [g for g in ff_betlog.unlogged_bet_verdicts()
+            if g["bet_id"] == _bl52["id"]]
+chk("logging one rung of a ladder does not suppress the other",
+    len(_lad_gap) == 1 and _lad_gap[0]["line"] == 48.5, str(_lad_gap))
+chk("and the line is named, so the report says WHICH rung",
+    "48.5" in ff_betlog.rec_summary(), ff_betlog.rec_summary())
+chk("the logged rung is not reported",
+    all(g["line"] != 47.5 for g in _lad_gap), str(_lad_gap))
+# F7. The names on both sides are written by this module; a spelling
+# difference is not a missing verdict.
+_dk = [ff_betlog.Leg(player="D.K. Metcalf", market="player_rec_yds",
+                     line=55.5, side="OVER", odds=-110, book="draftkings",
+                     engine_tier="PASS")]
+_bdk = ff_betlog.log_bet(525, 5.0, _dk, "draftkings")
+ff_betlog.log_edge(_ed52, "DK Metcalf", "player_rec_yds", 55.5, odds=-110,
+                   book="draftkings", acted_on=True, bet_id=_bdk["id"])
+chk("a spelling difference in the player name is not a missing verdict",
+    all(g["bet_id"] != _bdk["id"]
+        for g in ff_betlog.unlogged_bet_verdicts()),
+    str(ff_betlog.unlogged_bet_verdicts()))
+# The local normaliser is a second copy of a job ff_props already does
+# (lesson 7 / B68). It is deliberate — importing the real one would put
+# ff_props in ff_betlog's shipset — so assert the two still agree, and this
+# check is the thing that fails if they drift.
+for _a, _b in (("D.K. Metcalf", "DK Metcalf"),
+               ("Brian Thomas Jr.", "Brian Thomas Jr"),
+               ("Ja'Marr Chase", "JaMarr Chase")):
+    chk(f"local and ff_props normalisers agree on {_a!r}",
+        (ff_betlog._norm_player_local(_a)
+         == ff_betlog._norm_player_local(_b))
+        == (ff_props.norm_player(_a) == ff_props.norm_player(_b)),
+        f"{_a} / {_b}")
+
+# F5. Two states that must not share a message. The documented flow logs the
+# verdict BEFORE the bet exists, so the rec carries no bet_id — and the first
+# version called that "NOT in this log" and told the session to log it again,
+# which is the double count the function exists to prevent.
+shutil.rmtree(_tmp52, ignore_errors=True)
+_tmp52 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.log_edge(_ed52, "Travis Hunter", "player_rec_yds", 8.5, odds=-110,
+                   book="draftkings")          # verdict time: no bet yet
+_lh = [ff_betlog.Leg(player="Travis Hunter", market="player_rec_yds",
+                     line=8.5, side="OVER", odds=-110, book="draftkings",
+                     engine_tier="PASS")]
+ff_betlog.log_bet(525, 5.0, _lh, "draftkings")
+_g52 = ff_betlog.unlogged_bet_verdicts()
+chk("a verdict logged before the bet is UNLINKED, not missing",
+    len(_g52) == 1 and _g52[0]["state"] == "unlinked", str(_g52))
+_o52 = ff_betlog.rec_summary()
+chk("and the report does not claim it is absent",
+    "NOT in this log" not in _o52, _o52)
+chk("it says the figures already count it",
+    "counted in every figure below" in _o52, _o52)
+chk("and warns against logging it twice",
+    "double-counts" in _o52, _o52)
+
+# F9. A verdict that lands in no bucket must not vanish.
+shutil.rmtree(_tmp52, ignore_errors=True)
+_tmp52 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(5):
+    _r = ff_betlog.log_recommendation(f"P{_i}", "m", 1.5, "OVER", "PASS",
+                                      1.0, 0.5, -110, event_id=f"g{_i}")
+    ff_betlog.grade_rec(_r["id"], "WIN")
+_o52b = ff_betlog.rec_summary()
+chk("five verdicts at p=1.0 appear in a bucket, not nowhere",
+    "85%-100%" in _o52b and "n=5" in _o52b, _o52b)
+chk("and nothing is reported as unbucketed",
+    "fell in NO bucket" not in _o52b, _o52b)
+# A percentage passed where a fraction belongs used to drop every verdict and
+# print an empty calibration header. Refused at the door instead.
+chk("a model_p of 77.0 is refused, not silently dropped",
+    _raises(lambda: ff_betlog.log_recommendation(
+        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110), ValueError))
+chk("and the error says what to pass instead",
+    "0.7700" in str(_err(lambda: ff_betlog.log_recommendation(
+        "P", "m", 1.5, "OVER", "PASS", 77.0, 0.5, -110))))
+
+# F13. A direction asserted where there is none.
+shutil.rmtree(_tmp52, ignore_errors=True)
+_tmp52 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(10):
+    _r = ff_betlog.log_recommendation(f"P{_i}", "m", 1.5, "OVER", "PASS",
+                                      0.60, 0.5, -110, event_id=f"g{_i}")
+    ff_betlog.grade_rec(_r["id"], "WIN" if _i < 6 else "LOSS")
+_o52c = ff_betlog.rec_summary()
+chk("a perfectly calibrated bucket claims no direction",
+    "confident by 0%" not in _o52c and "calibrated" in _o52c, _o52c)
+
+# F11. bet_summary's caution lived in the CLV branch, so with no closing
+# lines — the log's actual state — a 33% hit rate and +108% ROI printed with
+# no caution at all.
+shutil.rmtree(_tmp52, ignore_errors=True)
+_tmp52 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+for _i in range(3):
+    _bb = ff_betlog.log_bet(525, 5.0, [ff_betlog.Leg(
+        player=f"P{_i}", market="m", line=1.5, side="OVER", odds=-110,
+        book="draftkings", event_id="g1")], "draftkings")
+    ff_betlog.grade_bet(_bb["id"], "WIN" if _i == 0 else "LOSS")
+_o52d = ff_betlog.bet_summary()
+chk("a record with no closing lines still carries its caution",
+    "NOT A RATE YET" in _o52d and "No closing lines" in _o52d, _o52d)
+chk("and names how many distinct games the slips covered",
+    "1 distinct game across 3 graded slips" in _o52d, _o52d)
+chk("a slip's game comes from its LEGS, not the bet record",
+    "0 players" not in _o52d, _o52d)
+shutil.rmtree(_tmp52, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
 
 _summary()
 raise SystemExit(1 if fails else 0)
