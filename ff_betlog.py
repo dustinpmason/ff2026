@@ -882,8 +882,9 @@ def bet_summary() -> str:
 
     # CLV — the number that actually means something at this sample size.
     vals = [clv(l["odds"], l["closing_odds"])
-            for b in bets for l in b["legs"]
-            if l.get("closing_odds") is not None]
+            for b in bets for l in _legs(b)
+            if l.get("closing_odds") is not None
+            and _num(l.get("odds")) is not None]
     if vals:
         v = np.array(vals)
         L.append(f"  legs w/ CLV : {len(v)}")
@@ -923,6 +924,28 @@ def _check_prob(p, name: str) -> float:
             f"(77.0 for 77%) lands in no calibration bucket and vanishes "
             f"from the report without a word — pass {v/100:.4f} instead.")
     return v
+
+
+def _num(v):
+    """A float, or None when the value is not one. B112.
+
+    The log is six schema generations deep and hand-written records are in
+    it. `float(leg["line"])` on a historical `"n/a"` raised ValueError out of
+    `unlogged_bet_verdicts` and took down the WHOLE of rec_summary — a report
+    that cannot survive one malformed record it is reporting on is worse than
+    no report, because it fails at the moment it is needed.
+    """
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _legs(b: dict) -> list[dict]:
+    """A bet's legs, skipping anything that is not a record. B112."""
+    return [l for l in (b.get("legs") or []) if isinstance(l, dict)]
 
 
 def _norm_event(e) -> str | None:
@@ -970,7 +993,7 @@ def _bet_independence(bets: list[dict]) -> tuple[int | None, str]:
     """
     sets, missing = set(), 0
     for b in bets:
-        evs = {_norm_event(l.get("event_id")) for l in (b.get("legs") or [])}
+        evs = {_norm_event(l.get("event_id")) for l in _legs(b)}
         evs.discard(None)
         if not evs:
             missing += 1
@@ -1019,7 +1042,11 @@ def _independence(rs: list[dict]) -> tuple[int | None, str]:
     if not rs:
         return 0, "no verdicts"
     if carried == 0:
-        return None, f"no event ids recorded, so {len(rs)} verdicts on one game cannot be told from {len(rs)} on {len(rs)}"
+        n = len(rs)
+        tail = ("" if n == 1 else
+                f", so {n} verdicts on one game cannot be told from "
+                f"{n} on {n}")
+        return None, f"no event ids recorded{tail}"
     if carried < len(rs):
         return None, f"only {carried} of {len(rs)} verdicts carry an event id"
     events = len({e for e in evs if e})
@@ -1074,8 +1101,7 @@ def unlogged_bet_verdicts() -> list[dict]:
         # which the live log has) is exactly where two legs share both and
         # carry different tiers.
         return (bet_id, _norm_player_local(d.get("player")),
-                d.get("market"),
-                None if d.get("line") is None else float(d["line"]),
+                d.get("market"), _num(d.get("line")),
                 (d.get("side") or "").upper())
 
     # Two separate states, and the message must not merge them (B39): a
@@ -1088,7 +1114,7 @@ def unlogged_bet_verdicts() -> list[dict]:
     unlinked = {_key(r, None) for r in recs}
     out = []
     for b in bets:
-        for i, leg in enumerate(b.get("legs") or []):
+        for i, leg in enumerate(_legs(b)):
             # A leg carrying the engine's PROBABILITY is a leg bet on the
             # engine, tier or no tier. Keying only on engine_tier made that
             # leg invisible to the detector built to find invisible legs.
@@ -1188,7 +1214,7 @@ def rec_summary() -> str:
     L = [f"ENGINE LOG — {len(recs)} verdicts"] + _unlogged_note()
     tiers: dict[str, list[dict]] = {}
     for r in recs:
-        tiers.setdefault(r["tier"], []).append(r)
+        tiers.setdefault(r.get("tier") or "(no tier)", []).append(r)
 
     L.append("")
     L.append(f"  {'tier':<12}{'n':>5}{'acted':>8}{'graded':>8}{'hit':>8}")
@@ -1213,6 +1239,13 @@ def rec_summary() -> str:
         L.append("  calibration (model probability vs realised)")
         buckets = [(0.0, .4), (.4, .55), (.55, .7), (.7, .85), (.85, 1.0)]
         placed = 0
+        # B112. `_check_prob` guards the WRITE path only; records already in
+        # the log predate it, so the read path has to cope with a missing or
+        # out-of-range model_p instead of raising mid-report.
+        usable = [r for r in graded
+                  if _num(r.get("model_p")) is not None
+                  and 0.0 <= _num(r["model_p"]) <= 1.0]
+        unusable = len(graded) - len(usable)
         # B107. `n` is a count of VERDICTS, and verdicts cluster hard. A live
         # example: a 0-for-4 bucket read as four failures, and three of the
         # four were Baltimore pass-catchers on the night Lamar Jackson and
@@ -1227,7 +1260,7 @@ def rec_summary() -> str:
             # The top bucket must INCLUDE 1.0, or a verdict at exactly 1.0
             # is counted in the header and the tier table and appears in no
             # bucket, with nothing saying so.
-            b = [r for r in graded
+            b = [r for r in usable
                  if lo <= r["model_p"] < hi
                  or (hi == 1.0 and r["model_p"] == 1.0)]
             placed += len(b)
@@ -1254,10 +1287,13 @@ def rec_summary() -> str:
                             f"by {abs(exp-act):.0%}"))
         # Reconcile, so the section can report that it could not measure
         # rather than quietly showing less than it was given (lesson 13).
-        if placed != len(graded):
-            L.append(f"    !! {len(graded) - placed} of {len(graded)} graded "
-                     f"verdicts fell in NO bucket — model_p outside [0,1]?")
-        passes = [r for r in graded if r["tier"] == "PASS"]
+        if unusable:
+            L.append(f"    !! {unusable} of {len(graded)} graded verdicts "
+                     f"have no usable model_p and are in NO bucket")
+        if placed != len(usable):
+            L.append(f"    !! {len(usable) - placed} of {len(usable)} graded "
+                     f"verdicts fell in NO bucket — this is a bug, not data")
+        passes = [r for r in graded if r.get("tier") == "PASS"]
         if passes:
             w = sum(1 for r in passes if r["result"] == "WIN") / len(passes)
             # B107 applies here too. This line ends in a sentence telling the

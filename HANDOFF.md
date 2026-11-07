@@ -621,7 +621,15 @@ reality.
     snap counts, here — rather than picking the reading that looks
     safer.
 
-56. **A guard that reads "unmeasured" as "fine" is worse than no guard.**
+56. **A report must survive the data it reports on.** `float(leg["line"])`
+    met a hand-written `"n/a"` in a two-week-old bet and killed the entire
+    engine scorecard — not the one leg, the whole report, at the one moment
+    it gets read. The log is many schema generations deep and every
+    synthetic test fixture was written today, by me, to the current shape.
+    Read paths need `_num`-style tolerance and must NAME what they could
+    not use; write-path validators do nothing for records already stored.
+
+57. **A guard that reads "unmeasured" as "fine" is worse than no guard.**
     The B107 clustering gate returned the player count whenever event
     coverage was partial or absent. Five verdicts from ONE game printed
     "TOO CLUSTERED" with all five ids present and "overconfident by 77%"
@@ -631,7 +639,7 @@ reality.
     answer — yes, no, and could-not-tell — and the could-not-tell must
     refuse, not fall back to the weaker proxy it was built to distrust.
 
-57. **Measure the thing the claim is about.** I wrote "it still fires at
+58. **Measure the thing the claim is about.** I wrote "it still fires at
     n=46 from a single slate" into two documents as a firing-rate
     measurement. The test behind it gave all 46 verdicts ONE event id,
     which is one GAME. A real 13-game slate reads fine. The number was
@@ -640,7 +648,7 @@ reality.
     a measurement down, state what the input actually was in the words the
     claim uses.
 
-58. **A test written in the same pass as the fix pins the fix's blind
+59. **A test written in the same pass as the fix pins the fix's blind
     spot.** Three of the checks written alongside the B107 gate asserted
     the broken behaviour as correct, including one that said in so many
     words that falling back to the player count was right. The independent

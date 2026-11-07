@@ -3124,6 +3124,15 @@ def _raises(fn, exc=Exception) -> bool:
         return True
 
 
+def _out(fn) -> str:
+    """fn()'s output, or its error message — so a check that asserts on report
+    text cannot crash the run when the report itself breaks (lesson 14)."""
+    try:
+        return str(fn())
+    except Exception as e:                                   # noqa: BLE001
+        return f"*** RAISED {type(e).__name__}: {e}"
+
+
 def _err(fn) -> str:
     """The message fn() raises, or "" — so asserting on wording cannot crash
     the section (lesson 14)."""
@@ -3794,6 +3803,9 @@ chk("and refuses the verdict, since one game is indistinguishable from five",
 # zero-coverage branch could be deleted entirely and nothing would fail —
 # the partial branch catches it and refuses too, just for the wrong stated
 # reason, and a wrong reason is what a reader acts on.
+chk("at n=1 the reason drops the cannot-be-told clause",
+    ff_betlog._independence([{"player": "A"}])[1] == "no event ids recorded",
+    ff_betlog._independence([{"player": "A"}])[1])
 chk("the reason names zero coverage, not 'only 0 of 5'",
     "no event ids recorded" in _out51e and "only 0 of" not in _out51e,
     _out51e)
@@ -4076,6 +4088,48 @@ chk("and names how many distinct games the slips covered",
     "1 distinct game across 3 graded slips" in _o52d, _o52d)
 chk("a slip's game comes from its LEGS, not the bet record",
     "0 players" not in _o52d, _o52d)
+# F12 (B112). The log is six schema generations deep and holds hand-written
+# records. `float(leg["line"])` on a historical "n/a" raised out of
+# unlogged_bet_verdicts and took down ALL of rec_summary — a report that dies
+# on one malformed record it is reporting on fails exactly when it is needed.
+# None of the synthetic logs above cover this, because I wrote them all today.
+shutil.rmtree(_tmp52, ignore_errors=True)
+_tmp52 = tempfile.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp52)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+(ff_betlog.LOG_DIR / "ff-betlog-20261101T000000Z.jsonl").write_text(
+    "\n".join(json.dumps(r) for r in [
+        {"id": "b1", "kind": "bet", "book": "dk", "stake": 5.0,
+         "slip_odds": 525, "legs": [{"player": "A", "market": "m",
+                                     "line": "33.5", "side": "over",
+                                     "engine_tier": "PASS"}]},
+        {"id": "b2", "kind": "bet", "book": "dk", "stake": 5.0,
+         "slip_odds": 525, "legs": [{"player": "B", "market": "m",
+                                     "line": "n/a",
+                                     "engine_tier": "PASS"}]},
+        {"id": "b3", "kind": "bet", "book": "dk", "stake": 5.0,
+         "slip_odds": 525, "legs": ["not-a-dict"]},
+        {"id": "r1", "kind": "rec", "player": "C", "market": "m",
+         "tier": "PASS", "model_p": 77.0, "result": "LOSS"},
+        {"id": "r2", "kind": "rec", "player": "D", "market": "m",
+         "tier": "PASS", "result": "LOSS"},
+        {"id": "r3", "kind": "rec", "player": "E", "market": "m",
+         "tier": None, "model_p": 0.6, "result": "WIN"},
+    ]) + "\n")
+for _fn in ("unlogged_bet_verdicts", "rec_summary", "bet_summary"):
+    chk(f"{_fn} survives a six-generation log",
+        not _err(getattr(ff_betlog, _fn)), _err(getattr(ff_betlog, _fn)))
+_o52e = _out(ff_betlog.rec_summary)
+chk("a non-numeric line does not hide the leg, it is shown as written",
+    "n/a" in _o52e, _o52e)
+chk("a rec with no model_p is NAMED, not silently dropped",
+    "have no usable model_p and are in NO bucket" in _o52e, _o52e)
+chk("an out-of-range model_p written before the validator is counted there",
+    "2 of 3 graded verdicts" in _o52e, _o52e)
+chk("a rec with no tier gets a row rather than a KeyError",
+    "(no tier)" in _o52e, _o52e)
+chk("and the one usable verdict still gets its bucket",
+    "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
 
