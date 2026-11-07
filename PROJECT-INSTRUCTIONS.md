@@ -1060,8 +1060,24 @@ pure rusher get the same entry; and nothing distinguishes a WR1 from a WR4.
 moved best P(elim) by under 0.01pp and chose the same lineup — so keep
 passing `meta` and keep reporting P(elim). Just describe a stack's effect
 qualitatively ("stacking your QB with his own receiver raises your variance
-slightly") rather than attaching a number to it. E3 will rebuild both
-tables; until then the magnitudes are not quotable.
+slightly") rather than attaching a number to it. E3 will rebuild the
+guillotine's table; until then the magnitudes are not quotable. (The two
+tables are *not* being merged — the import would be circular, and they
+describe different quantities, so sharing values would make the wrong sign
+permanent. B68(a)'s original "import from one place" was wrong and is
+corrected in the backlog.)
+
+**Read the `! NOT CORRELATED` block if the report prints one (B68b).** It
+names players whose team and position could not be resolved, so every pair
+involving them was drawn as **independent** — which is not a measurement,
+it is a miss. A QB and his own receiver sit at +0.31, and removing the
+correlation signal entirely moves best P(elim) by about 2pp against a 0.1pp
+noise floor, so those lineups' spread is understated. The usual cause is a
+name the roster source spells differently: 96 of 1,732 nflverse 2026 players
+carry a suffix whose plain spelling is not a meta key, which is why the
+lookup normalises. If you see a name there, check it with `search_players`
+before reading anything into that team's numbers — and do **not** patch
+`meta` by hand to clear the warning, which invents a position.
 
 It returns P(eliminated) for every legal lineup. Report that number, not a
 point total — elimination risk is the thing that matters in this format.

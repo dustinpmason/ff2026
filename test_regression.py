@@ -4138,6 +4138,117 @@ chk("and the one usable verdict still gets its bucket",
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
 
+section("55. the guillotine's correlation join, and its borrowed table (B68b)")
+# `correlation_matrix` guarded TEAM and had no position equivalent, then did
+# `SAME_TEAM_CORR.get(key, 0.0)` — so a player whose meta was ("KC", None),
+# which is what a partial build_meta join produces, yielded a silent 0.0 for
+# what may be a QB/WR pair at +0.31. Worse, the lookup was `meta.get(name)`
+# on a RAW NAME, in the module whose own normalize_name docstring reads
+# "THIRD occurrence of a name-join bug in this project. Never match player
+# data on a raw name" — while `_correlated_draws` two lines away resolves the
+# same player through resolve(), which normalises. One function, two join
+# policies.
+#
+# Measured before fixing (measurements/b68b_position_join_effect.py, 10
+# deliberately QB-stacked teams, 60,000 sims, 2026):
+#   every position dropped     P(elim) -2.05pp, max shift 4.15pp
+#   measured 5.5% miss rate    P(elim) +0.21pp, max shift 0.59pp
+#   one receiver dropped       P(elim) -0.25pp, max shift 0.55pp
+#   simulation noise 1 se      0.10pp
+# So the sim IS sensitive to correlation, the headline shift at the real
+# miss rate is about 2 se, and the recommended lineup was identical in every
+# case. Real silent bug, low stakes today — same verdict B68 reached about
+# its own sign error, reached the same way.
+# ---------------------------------------------------------------------------
+_gm = {"Brian Thomas Jr.": ("JAX", "WR"),
+       "Trevor Lawrence": ("JAX", "QB"),
+       "Nan Pos": ("JAX", float("nan")),
+       "Blank Pos": ("JAX", "   "),
+       "Nan Team": (float("nan"), "WR"),
+       "Other QB": ("KC", "QB")}
+# The join must behave like every other join in the module.
+chk("a suffix spelling difference resolves instead of dropping the pair",
+    ff_guillotine.correlation_matrix(
+        ["Trevor Lawrence", "Brian Thomas"], _gm)[0, 1] == 0.31,
+    str(ff_guillotine.correlation_matrix(
+        ["Trevor Lawrence", "Brian Thomas"], _gm)[0, 1]))
+chk("an exact name still resolves",
+    ff_guillotine.correlation_matrix(
+        ["Trevor Lawrence", "Brian Thomas Jr."], _gm)[0, 1] == 0.31)
+# NaN is not None and is not falsy in the way an `is None` guard expects —
+# B73 in ff_boost, same shape, module next door.
+for _who in ("Nan Pos", "Blank Pos", "Nan Team"):
+    chk(f"{_who} is treated as ABSENT, not as a position",
+        ff_guillotine.correlation_matrix(
+            ["Trevor Lawrence", _who], _gm)[0, 1] == 0.0)
+chk("_meta_field maps NaN, blank and None alike to absent",
+    all(ff_guillotine._meta_field(v) is None
+        for v in (None, float("nan"), "", "   ")))
+chk("and leaves a real value alone, stripped",
+    ff_guillotine._meta_field("  WR ") == "WR")
+# Different teams stay independent — the behaviour the 27-line comment
+# defends must survive this change.
+chk("two QBs on different teams are still independent",
+    ff_guillotine.correlation_matrix(
+        ["Trevor Lawrence", "Other QB"], _gm)[0, 1] == 0.0)
+# A miss must be REPORTED. An ndarray has nowhere to say so, which is how
+# the silence happened.
+_cov = ff_guillotine.correlation_coverage(
+    ["Trevor Lawrence", "Brian Thomas", "Nan Pos", "Nan Team", "Ghost"], _gm)
+chk("coverage names the players with no position",
+    _cov["no_position"] == ["Nan Pos"], str(_cov))
+chk("and separates them from those with no team at all",
+    sorted(_cov["no_team"]) == ["Ghost", "Nan Team"], str(_cov))
+chk("and counts the ones it did resolve",
+    _cov["resolved"] == 2, str(_cov))
+# A name collision must not silently pick a winner: B44's two Brian Thomases
+# are different players.
+# Two keys that BOTH normalise to the queried name, and the queried name is
+# not itself a key — otherwise the exact-match fast path answers and the
+# canon map is never exercised, which is what the first cut of this check
+# did.
+_dupe = {"Brian Thomas Jr.": ("JAX", "WR"), "Brian Thomas II": ("KC", "TE")}
+chk("both spellings really do collide under normalisation",
+    ff_guillotine.normalize_name("Brian Thomas Jr.")
+    == ff_guillotine.normalize_name("Brian Thomas II"))
+chk("a normalised-name collision keeps the FIRST spelling, not an arbitrary one",
+    ff_guillotine.meta_lookup("Brian Thomas", _dupe) == ("JAX", "WR"),
+    str(ff_guillotine.meta_lookup("Brian Thomas", _dupe)))
+# B68(a). The tables are duplicated and must NOT be merged: the import would
+# be circular (ff_guillotine is the leaf of ff_guillotine <- ff_props <-
+# ff_boost) and B68(b) established they are different quantities wearing the
+# same keys. What must stay in step is the KEY SET — a pair added to one and
+# not the other is the divergence B68(a) actually feared. Values are E3's
+# business and are EXPECTED to diverge once it lands, so this deliberately
+# does not compare them.
+chk("both correlation tables carry the same PAIRS",
+    set(ff_guillotine.SAME_TEAM_CORR) == set(ff_boost.SAME_TEAM_CORR)
+    and set(ff_guillotine.OPPOSING_CORR) == set(ff_boost.OPPOSING_CORR),
+    f"guillotine {sorted(ff_guillotine.SAME_TEAM_CORR)} vs "
+    f"boost {sorted(ff_boost.SAME_TEAM_CORR)}")
+# The coverage has to reach the Result and the printed report, or it is a
+# dict nobody reads — which is the same silence in a new place.
+_bad_meta = dict(_meta2)
+_firstp = sorted({p for t in _teams_g
+                  for names in t["roster"].values() for p in names})[0]
+_bad_meta[_firstp] = (_bad_meta.get(_firstp, ("KC", "WR"))[0], float("nan"))
+_rbad = ff_guillotine.run(_teams_g, _shared, my_team_id="0", n_sims=4_000,
+                          meta=_bad_meta, week=9)
+chk("run() carries the unresolved-correlation players out on the Result",
+    _rbad.correlation_unresolved.get("no_position") == [_firstp],
+    str(_rbad.correlation_unresolved))
+chk("and a clean meta reports nothing, so it is not noise",
+    ff_guillotine.run(_teams_g, _shared, my_team_id="0", n_sims=4_000,
+                      meta=_meta2, week=9).correlation_unresolved == {},
+    str(ff_guillotine.run(_teams_g, _shared, my_team_id="0", n_sims=4_000,
+                          meta=_meta2, week=9).correlation_unresolved))
+_rpt = _rbad.report()
+chk("the printed report says those players were NOT correlated",
+    "NOT CORRELATED" in _rpt and _firstp in _rpt, _rpt[:200])
+chk("and the guillotine copy is documented as borrowed, pending E3",
+    "BORROWED" in open("ff_guillotine.py").read()
+    and "E3" in open("ff_guillotine.py").read())
+
 section("54. every market-side pair is measured, not fallen through (E6/B81)")
 # `_pair_r` gated four canonical pairs and returned a bare `(0.0, "")` for
 # everything else, so a MEASURED zero and an unexamined fall-through were the

@@ -126,6 +126,29 @@ STALE_VARIANCE_INFLATION = 1.35
 # picked the same lineup both times. And dropping one filter's levels in here
 # is precisely how the existing table became unreproducible (E3) — the fix is
 # E3 rebuilding BOTH tables on one documented filter, from one home.
+# B68(a) recorded this as a duplicate of `ff_boost`'s tables that ought to be
+# imported from one place. It should NOT be, for two separate reasons, and
+# this comment exists so nobody mechanically merges them.
+#
+# 1. It CANNOT be imported from ff_boost: the chain runs
+#    ff_guillotine <- ff_props <- ff_boost, so this module is the leaf and
+#    the import would be circular. That is why the copy exists at all.
+# 2. It SHOULD NOT share values anyway. B68(b) established that these are
+#    DIFFERENT QUANTITIES wearing the same keys. `ff_boost`'s table is
+#    MARKET-level — ("QB","RB") = -0.10 is QB *passing yards* x RB *rushing
+#    yards*, where the negative is a game-script effect. This one is applied
+#    to FANTASY SCORES, which include receptions, receiving yards and TDs.
+#    Measured QB x RB same-team fantasy-score correlation came out POSITIVE
+#    under all six filter variants (+0.033 to +0.089), so the sign here is
+#    wrong, and merging the tables would make that error permanent and
+#    invisible instead of fixing it.
+#
+# The real fix is E3: give this module its own fantasy-score table measured
+# on a documented filter. Until then the values are BORROWED and known
+# wrong in at least one entry. The divergence B68(a) actually feared — a
+# pair added to one table and not the other — is pinned by a suite check on
+# the KEY SETS, which is the part that must stay in step; the values are
+# E3's business and are expected to differ once it lands.
 SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
 OPPOSING_CORR = {("RB", "RB"): -0.14}
 
@@ -206,6 +229,94 @@ def build_meta(weekly: pd.DataFrame) -> dict[str, tuple[str, str]]:
     return {k: (v.team, v.pos) for k, v in d.iterrows()}
 
 
+def _meta_field(v) -> str | None:
+    """A meta field as a clean string, or None when it is absent.
+
+    B68b. `build_meta` aggregates a pandas frame with `agg("last")`, so a
+    missing field arrives as `float('nan')` — and NaN is not None, nor is it
+    falsy in the way a guard like `if not v` expects. This is B73 in
+    `ff_boost` all over again, in the module next door: there a NaN team
+    passed an `is None` check and routed a same-team pair to the OPPOSING
+    branch, producing a confident wrong SIGN.
+    """
+    if v is None:
+        return None
+    if isinstance(v, float) and v != v:                      # NaN
+        return None
+    t = str(v).strip()
+    return t or None
+
+
+def meta_lookup(name: str,
+                meta: dict[str, tuple[str, str]]) -> tuple[str | None,
+                                                           str | None]:
+    """(team, position) for a roster name, matched the way every other join
+    in this module is.
+
+    B68b. `correlation_matrix` did `meta.get(name, (None, None))` — a RAW
+    NAME lookup, in the module whose own `normalize_name` docstring reads
+    "THIRD occurrence of a name-join bug in this project. Never match player
+    data on a raw name." Two lines away, `_correlated_draws` resolves the
+    same player against the pool through `resolve()`, which DOES normalise.
+    One function, two join policies.
+
+    Measured 2026 weekly: `build_meta` yields 1,732 players with no missing
+    field, so the NaN path does not fire from that source today — but 96 of
+    those names carry a suffix whose plain spelling is not a meta key, so any
+    roster source spelling "Brian Thomas" for "Brian Thomas Jr." misses, and
+    a miss silently dropped a QB x WR pair from +0.31 to 0.00.
+    """
+    if name in meta:
+        t, p = meta[name]
+    else:
+        t, p = _meta_canon(meta).get(normalize_name(name), (None, None))
+    return _meta_field(t), _meta_field(p)
+
+
+_META_CANON_CACHE: dict[int, dict[str, tuple[str, str]]] = {}
+
+
+def _meta_canon(meta: dict) -> dict[str, tuple[str, str]]:
+    """Normalised-name index over a meta dict, cached by identity like
+    `_canon` does for a pool. A collision keeps the FIRST spelling rather
+    than letting an arbitrary one win — B44's two Brian Thomases are
+    different players, and silently preferring one is how that bug worked."""
+    key = id(meta)
+    if key not in _META_CANON_CACHE:
+        idx: dict[str, tuple[str, str]] = {}
+        for k, v in meta.items():
+            idx.setdefault(normalize_name(k), v)
+        _META_CANON_CACHE[key] = idx
+    return _META_CANON_CACHE[key]
+
+
+def correlation_coverage(players: list[str],
+                         meta: dict[str, tuple[str, str]]) -> dict:
+    """Which players could not be resolved well enough to correlate.
+
+    B68b. `correlation_matrix` returns a bare ndarray, so an unresolved
+    player had nowhere to be reported and became a silent 0.0 — which is
+    indistinguishable from a measured independence. Measured effect of that
+    silence on the simulation (`measurements/b68b_position_join_effect.py`,
+    10 deliberately QB-stacked teams, 60,000 sims): removing the correlation
+    signal entirely moves the best lineup's P(elim) by -2.05pp with a 4.15pp
+    max shift across lineups, against a 0.10pp simulation-noise se — so the
+    sim IS sensitive to this. At the measured 5.5% name-miss rate the shift
+    is +0.21pp, roughly 2 se, and the recommended lineup was identical in
+    every case tested. Real bug, low stakes today, reported rather than
+    assumed harmless.
+    """
+    no_team, no_pos = [], []
+    for p in players:
+        t, pos = meta_lookup(p, meta)
+        if t is None:
+            no_team.append(p)
+        elif pos is None:
+            no_pos.append(p)
+    return {"n": len(players), "no_team": no_team, "no_position": no_pos,
+            "resolved": len(players) - len(no_team) - len(no_pos)}
+
+
 def correlation_matrix(players: list[str],
                        meta: dict[str, tuple[str, str]]) -> np.ndarray:
     """Build the correlation matrix for a set of players from the measured
@@ -214,11 +325,26 @@ def correlation_matrix(players: list[str],
     n = len(players)
     C = np.eye(n)
     for i in range(n):
-        ti, pi = meta.get(players[i], (None, None))
+        ti, pi = meta_lookup(players[i], meta)
         for j in range(i + 1, n):
-            tj, pj = meta.get(players[j], (None, None))
+            tj, pj = meta_lookup(players[j], meta)
             if ti is None or tj is None:
                 continue
+            # B68b. The original complaint was that the TEAM guard above
+            # had no position equivalent, so a player whose meta was
+            # ("KC", None) — team joined, position did not — fell to
+            # `SAME_TEAM_CORR.get(key, 0.0)` and got a silent 0.0 for what
+            # may be a QB/WR pair at +0.31. An explicit `if pi is None`
+            # guard here is REDUNDANT, because `_meta_field` maps NaN,
+            # blank and None alike to None and no table key contains None,
+            # so the keyed lookup below already misses — and a guard whose
+            # removal changes no behaviour cannot be tested, which in this
+            # project is worse than no guard because it reads as coverage.
+            # The two real fixes are therefore elsewhere: `_meta_field`
+            # normalising the absent cases, and `correlation_coverage`
+            # making the miss VISIBLE instead of silent. That silence was
+            # the actual defect — the 0.0 itself is the right number once
+            # the position is genuinely unknown.
             # ONLY same-NFL-team pairs correlate here. The measured
             # opposing-RB figure (-0.14) applies to backs FACING EACH OTHER in
             # one game; two backs on unrelated teams are independent, and this
@@ -643,6 +769,12 @@ class Result:
     excluded: list[str] = field(default_factory=list)
     short_rosters: list[str] = field(default_factory=list)
     stale_projections: dict[str, list[str]] = field(default_factory=dict)
+    # B68b. Players the correlation lookup could not resolve. These were
+    # silently dropped to a 0.0 entry, indistinguishable from a measured
+    # independence, in a simulation whose output moves 2.05pp when the
+    # correlation signal is removed entirely. An ndarray has nowhere to
+    # report a miss, so the miss is reported here instead.
+    correlation_unresolved: dict[str, list[str]] = field(default_factory=dict)
 
     def se(self, i: int | None = None) -> float:
         """Standard error on P(eliminated) for lineup `i` (default: the best)."""
@@ -739,6 +871,16 @@ class Result:
             L.append("    would make a waiver add):")
             for x in self.short_rosters:
                 L.append(f"     {x}")
+        if self.correlation_unresolved:
+            L.append("")
+            L.append("  ! NOT CORRELATED — these players could not be matched")
+            L.append("    to a team and position, so every pair involving them")
+            L.append("    was drawn as INDEPENDENT. That is not a measurement:")
+            L.append("    a QB and his own receiver sit at +0.31, and removing")
+            L.append("    the correlation signal entirely moves P(elim) by about")
+            L.append("    2pp, so treat their lineups' spread as understated.")
+            for k, names in sorted(self.correlation_unresolved.items()):
+                L.append(f"     {k.replace('_', ' ')}: {', '.join(names)}")
         if self.excluded:
             L.append("")
             L.append(f"  excluded as unavailable (bye / out / IR): "
@@ -839,6 +981,19 @@ def run(teams: list[dict],
         opp_mean[t["team_name"]] = float(tot.mean())
     opp_min = opp_tot.min(axis=0)
 
+    # B68b. Coverage over every player the correlation path touched, not just
+    # mine — an opponent's unresolved QB stack understates HIS variance,
+    # which moves opp_min and so moves my P(elim) too.
+    corr_unres: dict[str, list[str]] = {}
+    if use_corr:
+        _seen = sorted({p for t in teams
+                        for names in t["roster"].values() for p in names})
+        _cov = correlation_coverage(_seen, meta)
+        if _cov["no_team"]:
+            corr_unres["no_team"] = _cov["no_team"]
+        if _cov["no_position"]:
+            corr_unres["no_position"] = _cov["no_position"]
+
     # My side: draw each candidate player once, reuse across all lineups.
     lineups = enumerate_lineups(me["roster"], pool)
     players = sorted({p for L in lineups for p in L})
@@ -869,4 +1024,5 @@ def run(teams: list[dict],
                   variance_inflation=variance_inflation, week=week,
                   flagged=flagged or [],
                   unresolved_names=unres, excluded=sorted(out_set),
-                  short_rosters=short, stale_projections=stale)
+                  short_rosters=short, stale_projections=stale,
+                  correlation_unresolved=corr_unres)

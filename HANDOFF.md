@@ -691,3 +691,18 @@ reality.
     restored against what the suite expects, and treat equal check COUNTS
     as the parity signal.
 
+64. **A guard whose removal changes nothing is not a guard.** B68b was
+    filed as a missing `if pi is None` beside an existing `if ti is None`.
+    Adding it changed no behaviour, because the absent cases already
+    missed the keyed lookup — so no check could fail on it, and in this
+    project a check that cannot fail is worse than none, because it reads
+    as coverage. Before writing a guard, revert it and confirm a check
+    fails; if none can, the defect is somewhere else.
+
+65. **Measure the filed premise, not just the filed fix.** B68b named
+    `build_meta` as the source of `("KC", None)`. Over 2026 weekly,
+    `build_meta` produces zero missing fields — the premise did not hold.
+    The real hole was the RAW-NAME lookup one line above it, which the
+    module's own docstring forbids in so many words. A backlog entry is a
+    hypothesis with a date on it; re-measure it before building on it.
+
