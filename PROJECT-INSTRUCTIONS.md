@@ -229,6 +229,16 @@ new verdicts replace them, which is correct. `bl.Leg` carries the same
 field — set it there too, so a bet and its verdicts agree on which game they
 came from.
 
+**`log_edge` records the side the MODEL prefers, not the side you bet
+(B117).** Those differ often — 5 of 12 legs in one round. `rec_summary()`
+reports such a leg as *"takes the side the ENGINE DID NOT PREFER"*, loud and
+first, because it is the most actionable line on the slip: **a CLEAR verdict
+means the veto found nothing wrong with the leg, NOT that the model likes
+the side you bet.** Say that plainly when it happens rather than letting a
+CLEAR read as endorsement. Do not re-log the leg with the slip's side to
+"fix" the report — the verdict is already there and counted, and a second
+record double-counts it.
+
 **Slip legs need `log_edge` too, not just `log_bet` (B108).** `log_bet`
 stores `engine_tier` as a field on the leg, while `rec_summary` reads records
 with `kind == "rec"`, so a leg bet on the engine's say-so never reaches the
@@ -1449,6 +1459,15 @@ unreproducible in the first place, and E3 owns re-deriving it properly.
   factor. An EV computed against the product is an EV for a bet that does
   not exist, and an early build of this module printed a cheerful "+15.7%"
   next to a NEGATIVE verdict for exactly that reason.
+**A below-band hold points at the ANCHOR, not at correlation (B118).** If a
+priceable slip holds under its same-game band, every pair in it is measured
+independent by definition — so the product IS the joint and the hold is
+arithmetically right. What is usually soft is the fair numbers underneath.
+The note names the immature-anchor legs when there are any and tells you to
+re-pull before quoting the EV; with mature anchors it says plainly that the
+price beats the population band. Either way, do not explain a cheap hold by
+correlation the structure has already ruled out.
+
 - **`slip_hold` beats the reference band once priced.** The band is a
   population figure; `slip_hold` is the hold observed on the slip in front
   of you.

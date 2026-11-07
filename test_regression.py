@@ -3578,14 +3578,61 @@ chk("the hold is detected as BELOW its band", _rc.hold_vs_band == "below")
 _rn = str(_rc.hold_band_note)
 chk("a below-band same-game slip gets a note at all",
     bool(_rc.hold_band_note))
-chk("the note says the EV is FLATTERED, not merely different",
-    "flatters the EV" in _rn, _rn[:120])
-chk("and it explains WHY: p_cash is a product, not the joint",
-    "PRODUCT" in _rn and "not the joint" in _rn, _rn[:160])
-chk("and it refuses to let the EV be quoted bare",
-    "without saying so" in _rn, _rn[:200])
+# B118. These four used to assert the note's ORIGINAL reasoning — "p_cash is
+# the PRODUCT of the de-vigged legs and that is not the joint for CORRELATED
+# legs". That text could only ever print on a PRICEABLE slip, and priceable
+# means every pair is measured INDEPENDENT, so the stated reason was false in
+# 100% of reachable cases. These checks pinned it as correct. Rewritten to
+# assert what actually drives a below-band hold: the anchor.
+chk("the note names the immature anchor that the hold rests on",
+    "immature anchors" in _rn and "Travis Hunter" in _rn, _rn[:160])
+chk("and does NOT blame correlation the structure has ruled out",
+    "for correlated legs" not in _rn and "not the joint" not in _rn,
+    _rn[:200])
+chk("it says the product IS the joint here, because the pairs are measured",
+    "product IS the joint" in _rn, _rn[:200])
+chk("and tells you what to do rather than just warning",
+    "Re-pull closer to kickoff" in _rn, _rn[:240])
 chk("report() actually prints it, rather than leaving it on the object",
-    "flatters the EV" in ff_boost.report([_rc]))
+    "immature anchors" in ff_boost.report([_rc]))
+# The same slip with MATURE anchors is a different statement, not a quieter
+# version of the same one: there is nothing wrong with it.
+_mat = [_rleg(p, fp, o, t) for p, fp, o, t in
+        (("A", 0.4892, -109, "BAL"), ("B", 0.4950, -115, "JAX"),
+         ("C", 0.5108, -110, "JAX"))]
+for _l in _mat:
+    _l.anchor_liquidity = 4000
+chk("the mature-anchor fixture really has no immature leg",
+    not any(l.anchor_immature for l in _mat),
+    str([(l.player, l.anchor_immature) for l in _mat]))
+_mc = price_candidate(
+    ff_boost.Candidate(legs=_mat, structure=classify(_mat, {}),
+                       boost_pct=0.30, independent_odds=584.0, stake=5.13),
+    book_odds=550.0)
+chk("a below-band hold on mature anchors is below band",
+    _mc.hold_vs_band == "below", f"hold {_mc.slip_hold:.4f}")
+chk("and is reported as a better-than-population price, not a warning",
+    "better-than-population" in str(_mc.hold_band_note)
+    and not str(_mc.hold_band_note).startswith("***"),
+    str(_mc.hold_band_note)[:160])
+# The firing-rate split B93b never checked: INDEPENDENT against CORRELATED,
+# rather than cross-game against same-game. A correlated slip is unpriceable,
+# so slip_hold is None and the note cannot fire at all — which is why the
+# old text's premise was unreachable.
+_corl = [_rleg("QB", 0.50, -110, "BAL"), _rleg("WR1", 0.50, -110, "BAL"),
+         _rleg("WR2", 0.50, -110, "BAL")]
+_corl[0].market = "player_pass_yds"
+_corl[0].pos = "QB"
+_cst = classify(_corl, {})
+chk("the correlated fixture really is unpriceable",
+    not _cst.priceable and _cst.pairs, str(_cst.pairs)[:100])
+_cc = price_candidate(
+    ff_boost.Candidate(legs=_corl, structure=_cst, boost_pct=0.30,
+                       independent_odds=584.0, stake=5.13), book_odds=360.0)
+chk("a CORRELATED slip has no hold at all, so no note can reach it",
+    _cc.slip_hold is None and _cc.hold_vs_band is None
+    and _cc.hold_band_note is None,
+    f"{_cc.slip_hold} / {_cc.hold_vs_band} / {_cc.hold_band_note}")
 
 # A CROSS-GAME slip below band means something else entirely: the product IS
 # the joint there, so slip_hold is exact and below-band is just a better
@@ -3644,9 +3691,12 @@ chk("and is described as understating, not flattering",
 # The loudness marker is what separates the dangerous direction from the
 # other two — assert it rather than keyword-matching the prose, which is how
 # the first cut of this check failed on "understates rather than flatters".
-chk("only the EV-flattering case is marked loud",
-    _rn.startswith("***") and not str(_ac.hold_band_note).startswith("***"),
-    f"below={_rn[:10]!r} above={str(_ac.hold_band_note)[:10]!r}")
+chk("only the immature-anchor case is marked loud",
+    _rn.startswith("***")
+    and not str(_ac.hold_band_note).startswith("***")
+    and not str(_mc.hold_band_note).startswith("***"),
+    f"below={_rn[:6]!r} above={str(_ac.hold_band_note)[:6]!r} "
+    f"mature={str(_mc.hold_band_note)[:6]!r}")
 # An unpriced or unpriceable candidate has no hold to compare.
 _up = ff_boost.Candidate(legs=_real, structure=_rst, boost_pct=0.30,
                          independent_odds=584.0, stake=10.0)
@@ -4137,6 +4187,110 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("56. three defects a live four-slip round surfaced (B117/B118/B119)")
+# All three passed 784 checks first. The round built four Week 9 slips in the
+# four shapes the correlation work touched; three came back unpriceable and
+# one priced, exactly as designed — and the output showed these.
+# ---------------------------------------------------------------------------
+_s56 = {"PASS": ("player_pass_yds", "QB"), "RUSH": ("player_rush_yds", "RB"),
+        "RECV": ("player_reception_yds", "WR")}
+
+
+def _bleg56(name, side, team, fp=0.50, odds=-110, liq=None):
+    mk, pos = _s56[side]
+    l = BoostLeg(player=name, market=mk, line=50.5, side="OVER", odds=odds,
+                 book="draftkings", fair_prob=fp, fair_source="bovada",
+                 devig_method="shin", event_id="636628", team=team, pos=pos,
+                 verdict="CLEAR")
+    if liq is not None:
+        l.anchor_liquidity = liq
+    return l
+
+
+# B117. `log_edge` records the MODEL's preferred side; `log_bet` records the
+# side the slip took. 5 of 12 legs differed in one live round. The B110 match
+# key includes `side`, so such a leg was reported "NOT in this log" — the
+# verdict IS there, for the other side, and the remedy printed would have
+# created a duplicate.
+_tmp56 = tempfile.mkdtemp()
+_old56 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp56)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+_ed56 = types.SimpleNamespace(side="UNDER", tier="PASS", model_p=0.44,
+                              fair_p=0.50, fair_source="bovada",
+                              devig_method="shin", reasoning="x")
+_lg56 = ff_betlog.Leg(player="Jahmyr Gibbs", market="player_rush_yds",
+                      line=95.5, side="OVER", odds=-114, book="draftkings",
+                      engine_tier="PASS", event_id="636628")
+_b56 = ff_betlog.log_bet(525, 10.0, [_lg56], "draftkings")
+ff_betlog.log_edge(_ed56, "Jahmyr Gibbs", "player_rush_yds", 95.5,
+                   odds=-114, book="draftkings", acted_on=True,
+                   bet_id=_b56["id"], event_id="636628")
+_g56 = ff_betlog.unlogged_bet_verdicts()
+chk("a verdict logged for the OTHER side is its own state",
+    len(_g56) == 1 and _g56[0]["state"] == "opposite", str(_g56))
+_o56 = ff_betlog.rec_summary()
+chk("and is NOT reported as absent from the log",
+    "NOT in this log" not in _o56, _o56[:300])
+chk("the report says the slip took the side the engine did not prefer",
+    "ENGINE DID NOT PREFER" in _o56, _o56[:300])
+chk("and it is marked loud, because it is not a bookkeeping gap",
+    "***" in _o56.split("ENGINE DID NOT PREFER")[0][-80:], _o56[:300])
+chk("it also says a CLEAR verdict is not a view on the side you bet",
+    "NOT that the model likes the side you bet" in _o56, _o56[:400])
+# Same side still links normally — the new state must not swallow the old one.
+_ed56b = types.SimpleNamespace(side="OVER", tier="PASS", model_p=0.56,
+                               fair_p=0.50, fair_source="bovada",
+                               devig_method="shin", reasoning="x")
+_lg56b = ff_betlog.Leg(player="Agreed Leg", market="player_rush_yds",
+                       line=20.5, side="OVER", odds=-110, book="draftkings",
+                       engine_tier="PASS", event_id="636628")
+_b56b = ff_betlog.log_bet(525, 10.0, [_lg56b], "draftkings")
+ff_betlog.log_edge(_ed56b, "Agreed Leg", "player_rush_yds", 20.5, odds=-110,
+                   book="draftkings", acted_on=True, bet_id=_b56b["id"],
+                   event_id="636628")
+chk("a leg the model agreed with is not reported at all",
+    all(g["player"] != "Agreed Leg"
+        for g in ff_betlog.unlogged_bet_verdicts()),
+    str(ff_betlog.unlogged_bet_verdicts()))
+# And a genuinely absent verdict is still MISSING, not reclassified.
+_lg56c = ff_betlog.Leg(player="Never Logged", market="player_rush_yds",
+                       line=30.5, side="OVER", odds=-110, book="draftkings",
+                       engine_tier="PASS", event_id="636628")
+ff_betlog.log_bet(525, 10.0, [_lg56c], "draftkings")
+chk("a leg with no verdict either side is still MISSING",
+    any(g["player"] == "Never Logged" and g["state"] == "missing"
+        for g in ff_betlog.unlogged_bet_verdicts()),
+    str(ff_betlog.unlogged_bet_verdicts()))
+shutil.rmtree(_tmp56, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old56
+
+# B119. The factor note cited "0.61-0.65 on QB stacks" on EVERY correlated
+# slip and claimed the books' factors "have tracked this table closely" —
+# contradicted by the same live round, where DraftKings charged 0.686 on an
+# opposing-QB pair at +7.22% against 0.672 on a true stack at +31%.
+_st_qb = classify([_bleg56("QB", "PASS", "KC"), _bleg56("W1", "RECV", "KC"),
+                   _bleg56("W2", "RECV", "KC")], {})
+_st_rb = classify([_bleg56("R1", "RUSH", "DEN"), _bleg56("R2", "RUSH", "DEN"),
+                   _bleg56("W", "RECV", "DEN")], {})
+_st_mx = classify([_bleg56("Q1", "PASS", "DAL"), _bleg56("Q2", "PASS", "IND"),
+                   _bleg56("W", "RECV", "IND")], {})
+chk("a pure QB stack still gets the range that was observed on QB stacks",
+    "0.61-0.65" in ff_boost.factor_note(_st_qb, 0.672),
+    ff_boost.factor_note(_st_qb, 0.672)[:140])
+chk("a backfield pair does NOT get a QB-stack range to measure against",
+    "0.61-0.65 observation is QB stacks only"
+    in ff_boost.factor_note(_st_rb, 0.921),
+    ff_boost.factor_note(_st_rb, 0.921)[:160])
+chk("and the general 'tracked this table closely' claim is gone",
+    all("tracked this table closely" not in ff_boost.factor_note(st, 0.7)
+        for st in (_st_qb, _st_rb, _st_mx)))
+chk("a mixed slip says the range covers only part of what it is charged for",
+    "PART of what you are being charged for"
+    in ff_boost.factor_note(_st_mx, 0.686),
+    ff_boost.factor_note(_st_mx, 0.686)[:180])
 
 section("55. the guillotine's correlation join, and its borrowed table (B68b)")
 # `correlation_matrix` guarded TEAM and had no position equivalent, then did

@@ -1074,12 +1074,47 @@ def factor_note(structure: Structure, factor: float | None) -> str:
     if factor is None:
         return "no correlation_factor supplied (price_sgp returns it)"
     if structure.pairs:
-        return (f"book factor {factor:.3f} against measured "
-                f"{', '.join(f'{r:+.2f}' for *_, r, _ in structure.pairs)} — "
-                f"the books' factors have tracked this table closely "
-                f"(0.61-0.65 on QB stacks), so expect to be charged roughly "
-                f"what the correlation is worth. Whether it is worth MORE "
-                f"than that is the joint this project cannot compute.")
+        # B119. This used to cite "0.61-0.65 on QB stacks" and claim the
+        # books' factors "have tracked this table closely" on EVERY
+        # correlated slip, whatever its shape. Two faults. The range is a
+        # QB-stack observation and means nothing beside a backfield pair —
+        # printed against a 0.921 factor on two same-team backs it invites
+        # the reader to think 0.921 is generous, when the comparison is to a
+        # different kind of slip. And the claim was contradicted by the slip
+        # in front of it in a live round: DraftKings charged 0.686 on an
+        # opposing-QB pair measured at +7.22%, against 0.672 on a true QB
+        # stack measured at +31% — the same haircut for four times the
+        # correlation. So the range is cited only where it was observed, and
+        # the general claim is gone.
+        #
+        # The r values and the factor are also not the same KIND of number —
+        # one is a correlation, the other a price ratio — so they are placed
+        # side by side as context, never subtracted.
+        _is_stack = ["passing x receiving" in why or "passing x rushing" in why
+                     for *_, why in structure.pairs]
+        qb_stack = all(_is_stack)
+        mixed = any(_is_stack) and not qb_stack
+        rs = ", ".join(f"{r:+.2f}" for *_, r, _ in structure.pairs)
+        if qb_stack:
+            return (f"book factor {factor:.3f}, against measured pair "
+                    f"correlations of {rs}. On QB stacks specifically the "
+                    f"books' factors have sat at 0.61-0.65, so this is "
+                    f"roughly the going rate. Whether the correlation is "
+                    f"worth MORE than that is the joint this project cannot "
+                    f"compute.")
+        if mixed:
+            return (f"book factor {factor:.3f}, against measured pair "
+                    f"correlations of {rs}. This slip mixes a QB stack with "
+                    f"a pair of another shape, and the 0.61-0.65 factor "
+                    f"range is a QB-stack observation only — it describes "
+                    f"PART of what you are being charged for here, so do "
+                    f"not read the whole factor against it.")
+        return (f"book factor {factor:.3f}, against measured pair "
+                f"correlations of {rs}. No factor range has been recorded "
+                f"for this SHAPE — the 0.61-0.65 observation is QB stacks "
+                f"only — so there is nothing here to call the price cheap or "
+                f"dear against, and the joint this project cannot compute is "
+                f"what would settle it.")
     if factor < 0.97:
         return (f"book factor {factor:.3f} on legs the measured table puts "
                 f"at ~0.00 — this haircut is NOT justified. You are paying "
@@ -1265,36 +1300,55 @@ class Candidate:
     def hold_band_note(self) -> str | None:
         """The sentence, for the cases that need one — and only those.
 
-        B93b. The first cut noted every direction, including cross-game, and
-        the firing-rate check before shipping killed it: a soft "this beats
-        the population" line fired on NEARLY EVERY well-shopped slip. Three
-        legs at -110 hold 13.03% against a 17.7% floor, and all three
-        cross-game slips measured in the 2026-11-05 session (15.1%, 14.5%,
-        4.9%) sat below it. A flag that fires on 100% of a class is not a
-        flag.
+        B93b killed the first cut, which noted every direction including
+        cross-game: a soft "this beats the population" line fired on NEARLY
+        EVERY well-shopped slip, and all three cross-game slips measured in
+        the 2026-11-05 session (15.1%, 14.5%, 4.9%) sat below a 17.7% floor.
+        CROSS-GAME still gets no note: the measured table puts different
+        events at ~0.00, so the product IS the joint there, `slip_hold` is
+        exact and the band adds nothing.
 
-        CROSS-GAME gets no note in either direction, because the measured
-        table puts different events at ~0.00 — the product IS the joint
-        there, so `slip_hold` is exact and the band adds nothing to it. The
-        direction is still reported on the object; it is just not narrated.
+        B118. The second cut was worse in a quieter way. Its loud text read
+        "p_cash here is the PRODUCT of the de-vigged legs and that is not the
+        joint for CORRELATED legs" — and `slip_hold` returns None unless
+        `structure.priceable`, which is true only when every pair is
+        MEASURED INDEPENDENT. So the note could fire only on slips where its
+        own stated reason was false: wrong in 100% of reachable cases, on a
+        `***` line, on the one slip in a live round of four that got an EV.
+        B93b's firing-rate check missed it because it compared cross-game
+        against same-game and never independent against correlated.
 
-        SAME-GAME below band is the dangerous one and is marked loud: there
-        `p_cash` is a product of de-vigged singles, which is NOT the joint
-        for correlated legs, so a low hold is as likely to mean the product
-        is wrong as to mean the price is good. Above band understates the EV
-        instead, which is self-correcting and gets the same facts in a
-        quieter voice.
+        What actually makes a below-band hold worth a line is the ANCHOR, not
+        correlation. The band is a population figure for same-game slips; a
+        priceable slip holding well under it is either a genuinely better
+        price or — far more often — resting on soft fair numbers. In the live
+        case all three legs were exactly 0.5000 opening priors with no
+        liquidity behind them, so `p_cash` and therefore the hold were nearly
+        meaningless. That is measurable, so the note says which it is instead
+        of warning about correlation that the structure has already ruled out.
         """
         d = self.hold_vs_band
         if d is None or d == "within" or self.structure.cross_game:
             return None
+        immature = [l.player for l in self.legs
+                    if getattr(l, "anchor_immature", False)]
         if d == "below":
-            return ("*** this slip's hold is BELOW its own same-game band, "
-                    "which flatters the EV: p_cash here is the PRODUCT of "
-                    "the de-vigged legs and that is not the joint for "
-                    "correlated legs, so a cheap-looking hold can be the "
-                    "product being wrong rather than the price being good. "
-                    "Do not quote the EV without saying so.")
+            if immature:
+                return ("*** this slip's hold is BELOW its own same-game "
+                        "band, and it rests on immature anchors — "
+                        f"{', '.join(immature)}. Every pair here is measured "
+                        "independent, so the product IS the joint and the "
+                        "hold is arithmetically right; what is soft is the "
+                        "fair numbers underneath it. A cheap-looking hold "
+                        "off an opening or thin anchor is not evidence of a "
+                        "good price. Re-pull closer to kickoff before "
+                        "quoting the EV.")
+            return ("this slip's hold is BELOW its own same-game band on "
+                    "anchors that are not flagged immature. Every pair is "
+                    "measured independent, so the product is the joint and "
+                    "this is what a better-than-population price looks like "
+                    "— the band is a population figure, this is the slip in "
+                    "front of you.")
         return ("this slip's hold is ABOVE its own same-game band, which "
                 "understates rather than flatters the EV — the product of "
                 "the de-vigged legs is giving away edge here, so the real "

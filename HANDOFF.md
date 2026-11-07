@@ -706,3 +706,21 @@ reality.
     module's own docstring forbids in so many words. A backlog entry is a
     hypothesis with a date on it; re-measure it before building on it.
 
+66. **Check the firing rate on the axis the REASONING turns on.** The
+    B93 hold note was gated on cross-game vs same-game, measured on that
+    axis, and shipped. Its stated reason was about CORRELATED legs — and
+    the property it depended on returns None unless the slip is priceable,
+    which means measured-independent. So it could only fire where its
+    reason was false: wrong in 100% of reachable cases, on a `***` line,
+    found by a live round rather than by 784 checks. A firing-rate check
+    on the wrong axis is a check that passes and proves nothing.
+
+67. **Two writers of the same field may disagree on purpose.**
+    `log_edge` records the side the MODEL prefers; `log_bet` records the
+    side the slip took. Adding `side` to the match key was right, and it
+    turned 5 of 12 legs into "NOT in this log" with a remedy that would
+    have duplicated them. When a join key gains a field, ask what else
+    writes that field and whether the two are even trying to agree —
+    disagreement can be the most informative state there is, and here it
+    was: the engine's lean was against the legs that got bet.
+

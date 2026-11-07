@@ -1145,6 +1145,16 @@ def unlogged_bet_verdicts() -> list[dict]:
     # this function exists to avoid.
     linked = {_key(r, r.get("bet_id")) for r in recs if r.get("bet_id")}
     unlinked = {_key(r, None) for r in recs}
+    # B117. `log_edge` records `edge.side` — the side the MODEL prefers — while
+    # `log_bet` records the side the slip actually took, and those differ
+    # often: 5 of 12 legs in one live round. So a leg can have a verdict in
+    # this log for the OPPOSITE side, which is neither missing nor unlinked.
+    # It is the engine disagreeing with the bet, and that is the most
+    # actionable line on the whole report.
+    def _flip(k):
+        return k[:4] + ("UNDER" if k[4] == "OVER" else
+                        "OVER" if k[4] == "UNDER" else k[4],)
+    opposite = {_flip(_key(r, None)) for r in recs}
     out = []
     for b in bets:
         for i, leg in enumerate(_legs(b)):
@@ -1156,7 +1166,9 @@ def unlogged_bet_verdicts() -> list[dict]:
                 continue
             if _key(leg, b["id"]) in linked:
                 continue
-            state = ("unlinked" if _key(leg, None) in unlinked
+            k = _key(leg, None)
+            state = ("unlinked" if k in unlinked
+                     else "opposite" if k in opposite
                      else "missing")
             out.append({"bet_id": b["id"], "leg_index": i,
                         "state": state,
@@ -1187,6 +1199,7 @@ def _unlogged_note() -> list[str]:
         return []
     missing = [g for g in gap if g["state"] == "missing"]
     unlinked = [g for g in gap if g["state"] == "unlinked"]
+    opposite = [g for g in gap if g["state"] == "opposite"]
 
     def _who(g):
         bits = [x for x in (g["player"], g["market"]) if x]
@@ -1213,6 +1226,23 @@ def _unlogged_note() -> list[str]:
                      "figure in this report is")
             L.append("     computed on an incomplete set. Call log_edge() "
                      "for slip legs too.")
+    if opposite:
+        # B117. Loud, and first, because this is not a bookkeeping gap — it
+        # says the slip took the side the model likes LESS.
+        L += ["",
+              f"  *** {len(opposite)} bet leg"
+              f"{'s' if len(opposite) != 1 else ''} "
+              f"{'take' if len(opposite) != 1 else 'takes'} the side the "
+              f"ENGINE DID NOT PREFER",
+              "     (log_edge records the model's own side; these legs are "
+              "the other one. The verdict IS",
+              "      in this log and IS counted — a CLEAR verdict means the "
+              "veto found nothing wrong",
+              "      with the leg, NOT that the model likes the side you "
+              "bet.)"]
+        for g in opposite:
+            L.append(f"       {g['tier'] or '(no tier)':<10} {_who(g)}"
+                     f"   model preferred the other side")
     if unlinked:
         L += ["",
               f"  note: {len(unlinked)} bet leg"
