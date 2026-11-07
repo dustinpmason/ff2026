@@ -11,6 +11,7 @@ import atexit, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 import ff_boost
+import ff_tokens
 from ff_boost import (BoostLeg, classify, independent_odds, make_candidate,
                       enumerate_candidates, price_candidate, FLOOR, CEILING)
 from ff_data import load_weekly, load_pbp
@@ -3124,12 +3125,18 @@ else:
     ff_betlog.SESSION.write_text(_prev)
 
 def _raises(fn, exc=Exception) -> bool:
-    """True when fn() raises exc. Keeps a check a FAILURE, not a crash."""
+    """True when fn() raises exc. Keeps a check a FAILURE, not a crash.
+
+    Catches EVERYTHING and compares the type, rather than `except exc`,
+    which let a different exception propagate and kill the run — lesson 14
+    for the sixth time. A revert that turns a clean ValueError into a
+    TypeError now FAILS this check instead of crashing the suite.
+    """
     try:
         fn()
         return False
-    except exc:
-        return True
+    except BaseException as e:                               # noqa: BLE001
+        return isinstance(e, exc)
 
 
 def _out(fn) -> str:
@@ -4194,6 +4201,197 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("58. tokens are PARSED INPUT, never constants (F11/F16)")
+# Dustin holds 4-6 tokens a week and the terms change weekly, so none of
+# them are hardcoded — he states them in the prompt and ff_tokens reads
+# them. The rule the whole module rests on: a term that was not stated is
+# NOT a term with a default. D16/B39, and specifically B77, where
+# stake_back_ev's docstring says "the caller must state it" while the
+# signature supplies 0.65.
+# ---------------------------------------------------------------------------
+_T = ff_tokens.parse_token
+
+# The three kinds are different MATH, so a kind guessed wrong inverts which
+# bet is right (B56) — a stake-back rewards a LOW win probability.
+chk("a percentage promo reads as a profit boost",
+    _T("30% profit boost, max $25, SGP only, min odds +200").kind
+    == "profit_boost")
+chk("'get $25 back' reads as a stake-back, money in the middle and all",
+    _T("Bet $25 get $25 back if it loses").kind == "stake_back")
+chk("so does 'no sweat bet', which names neither a boost nor a percentage",
+    _T("No sweat bet up to $50").kind == "stake_back")
+chk("and 'get your stake back as a bonus bet'",
+    _T("get your stake back as a bonus bet, up to $50").kind == "stake_back")
+chk("an odds boost is its own kind, not a percentage promo",
+    _T("Odds boost: +400 to +500 on a 3-leg SGP").kind == "odds_boost")
+# Ambiguity is refused rather than resolved.
+_amb = _T("risk-free 30% boost up to $25")
+chk("a token naming BOTH a refund and a boost gets no kind",
+    _amb.kind is None, str(_amb.kind))
+chk("and says why, naming both phrases it found",
+    any("opposite math" in u for u in _amb.unparsed), str(_amb.unparsed))
+chk("an unusable token is reported unusable",
+    not _amb.usable and _amb.missing)
+
+# Terms are read exactly, or not at all.
+_t1 = _T("30% profit boost, max $25, SGP only, min odds +200")
+chk("percentage, minimum, cap and structure all read",
+    (_t1.pct, _t1.min_odds, _t1.max_stake, _t1.sgp_only)
+    == (0.30, 200.0, 25.0, True),
+    f"{_t1.pct} {_t1.min_odds} {_t1.max_stake} {_t1.sgp_only}")
+chk("'2+ legs' reads as a minimum leg count",
+    _T("50% boost, 2+ legs").min_legs == 2)
+chk("and so does '3-leg SGP', hyphen and all",
+    _T("Odds boost on a 3-leg SGP").min_legs == 3)
+# An unsigned minimum is ambiguous and large: +200 and -200 are different
+# tokens, so it is refused rather than assumed.
+_uns = _T("min odds 200, max $20")
+chk("an UNSIGNED minimum is refused, not assumed positive",
+    _uns.min_odds is None, str(_uns.min_odds))
+chk("and the refusal says why both readings matter",
+    any("different terms" in u for u in _uns.unparsed), str(_uns.unparsed))
+# "bet $25" states a STAKE; "up to $25" states a CAP. Same number, different
+# meaning, different EV.
+chk("a stated stake and a stated cap are kept apart",
+    (_T("Bet $25 get $25 back").stake,
+     _T("No sweat bet up to $25").max_stake) == (25.0, 25.0))
+chk("a stake is preferred over a cap for pricing",
+    _T("Bet $25 get $25 back if it loses").effective_stake == 25.0)
+chk("and a token stating neither has NO stake, rather than a default of 10",
+    _T("30% profit boost").effective_stake is None)
+# Silence about structure is disclosed, because the enumerator does not
+# filter without it and could offer an ineligible slip.
+chk("an unstated structure is named in `missing`",
+    any("SGP-only" in m for m in _T("30% boost, min odds +200",
+                                    ).missing))
+# parse_tokens handles a pasted block, skips headers, drops nothing silently.
+_blk = ff_tokens.parse_tokens(
+    "Tokens:\n- 30% profit boost, max $25, min odds +300\n"
+    "- Bet $25 get $25 back\n\n* 50% boost up to $10, 2+ legs\n"
+    "something I did not describe")
+chk("a pasted block parses one token per line",
+    len(_blk) == 4, str(len(_blk)))
+chk("a header line is skipped, not read as a token",
+    all("Tokens" not in t.raw for t in _blk))
+chk("and a line it could barely read is still returned, not dropped",
+    any(t.kind is None for t in _blk),
+    str([t.kind for t in _blk]))
+chk("describe_tokens counts the unusable ones",
+    "cannot be built to at all" in ff_tokens.describe_tokens(_blk))
+chk("and an empty parse says so rather than reading as 'no tokens held'",
+    "defect to report" in ff_tokens.describe_tokens([]))
+
+# F11. Enumeration builds to the TOKEN's terms, not this project's band.
+_L58 = [BoostLeg(player=f"W{i}", market="player_reception_yds", line=50.5,
+                 side="OVER", odds=o, book="draftkings", fair_prob=0.5,
+                 fair_source="bovada", devig_method="shin", event_id="e1",
+                 team="DET", pos="WR", verdict="CLEAR")
+        for i, o in enumerate((-150, -150, -150, -140, -160))]
+_sl58 = enumerate_candidates(_L58, {}, mode="single-game", event_id="e1",
+                             token=_T("30% profit boost, max $25, "
+                                      "min odds +500"))
+chk("a token minimum above the floor becomes the binding constraint",
+    any("floor raised" in n for n in _sl58.token_notes),
+    str(_sl58.token_notes))
+chk("and it actually filters — nothing here clears +500",
+    not _sl58.candidates, str(len(_sl58.candidates)))
+_sl58b = enumerate_candidates(_L58, {}, mode="single-game", event_id="e1",
+                              token=_T("30% profit boost, min odds +300"))
+chk("a token minimum EQUAL to the floor says they coincide, not that one "
+    "is below the other",
+    any("equals this" in n for n in _sl58b.token_notes),
+    str(_sl58b.token_notes))
+# B55's distinction, kept: a LOWER token minimum does not loosen the floor.
+_sl58c = enumerate_candidates(_L58, {}, mode="single-game", event_id="e1",
+                              token=_T("30% profit boost, min odds +100"))
+chk("a token minimum BELOW the floor does not loosen it",
+    any("floor still" in n for n in _sl58c.token_notes),
+    str(_sl58c.token_notes))
+# A minimum leg count is a MINIMUM: both sizes get built, because the short
+# ones often miss the floor while the long ones clear it.
+_sl58d = enumerate_candidates(_L58, {}, mode="single-game", event_id="e1",
+                              token=_T("50% profit boost up to $10, 2+ legs"))
+chk("a '2+ legs' token builds every size from 2 up to the project default",
+    any("sizes [2, 3]" in n for n in _sl58d.token_notes),
+    str(_sl58d.token_notes))
+chk("and the surviving candidates are the ones that clear the floor",
+    _sl58d.candidates and all(len(c.legs) == 3 for c in _sl58d.candidates),
+    str([len(c.legs) for c in _sl58d.candidates]))
+# The token's minimum reaches the candidate, so B55's token_minimum can
+# answer once priced rather than needing the caller to remember.
+chk("the token's minimum is carried onto each candidate",
+    all(c.token_min_odds == 300.0 for c in _sl58b.candidates),
+    str([c.token_min_odds for c in _sl58b.candidates][:3]))
+# A guessed boost percentage ranks slips for a promo that does not exist.
+chk("no boost percentage, by argument or token, is refused",
+    _raises(lambda: enumerate_candidates(_L58, {}, mode="single-game",
+                                         event_id="e1"), ValueError))
+chk("and the refusal explains what a guess would produce",
+    "promo that does not exist" in _err(
+        lambda: enumerate_candidates(_L58, {}, mode="single-game",
+                                     event_id="e1")))
+# B56. A stake-back must never go through the boost path.
+chk("a stake-back token is REFUSED by the boost enumerator",
+    _raises(lambda: enumerate_candidates(
+        _L58, {}, mode="single-game", event_id="e1",
+        token=_T("Bet $25 get $25 back if it loses")), ValueError))
+chk("and the refusal says the right bet for it is the LONGEST shot",
+    "longest shot" in _err(lambda: enumerate_candidates(
+        _L58, {}, mode="single-game", event_id="e1",
+        token=_T("Bet $25 get $25 back if it loses"))))
+# An SGP-only token cannot be built cross-game.
+chk("an SGP-only token refuses cross-game mode",
+    _raises(lambda: enumerate_candidates(
+        _L58, {}, mode="cross-game",
+        token=_T("30% profit boost, SGP only, min odds +300")), ValueError))
+chk("an unstated stake is disclosed rather than silently defaulted",
+    any("stake not stated" in n for n in _sl58b.token_notes),
+    str(_sl58b.token_notes))
+chk("and describe() surfaces the token notes rather than hiding them",
+    "token:" in _sl58b.describe(), _sl58b.describe()[:200])
+
+# F16. Allocation across the tokens on hand.
+_alloc = ff_tokens.allocate(
+    ff_tokens.parse_tokens(
+        "30% profit boost, max $25, min odds +300\n"
+        "50% profit boost up to $10, 2+ legs\n"
+        "Bet $25 get $25 back if it loses, min odds -200\n"
+        "Odds boost on Mahomes 300+ yards\n"
+        "some promo I did not describe"),
+    _L58, {}, mode="single-game", event_id="e1")
+chk("both profit boosts get a shortlist",
+    len(_alloc["assigned"]) == 2, str(len(_alloc["assigned"])))
+# Behavioural, not prose: the stake-back TOKEN is the one held apart, found
+# by its label rather than by a phrase in my own message. The first cut
+# matched the word "stake-back" in the text, so rewording the message
+# defeated it while the behaviour was intact — a check on wording is not a
+# check on what the code does.
+_sb_lbl = next(t.label for t in ff_tokens.parse_tokens(
+    "30% profit boost, max $25, min odds +300\n"
+    "50% profit boost up to $10, 2+ legs\n"
+    "Bet $25 get $25 back if it loses, min odds -200\n"
+    "Odds boost on Mahomes 300+ yards\n"
+    "some promo I did not describe") if t.kind == "stake_back")
+chk("the stake-back token is the one held apart from the boosts",
+    _sb_lbl in [n for n, _ in _alloc["unranked"]]
+    and _sb_lbl not in [a["token"].label for a in _alloc["assigned"]],
+    f"{_sb_lbl}: unranked={[n for n, _ in _alloc['unranked']]}")
+chk("and the reason cites the bonus value nobody stated (B77)",
+    any("bonus value" in why for _, why in _alloc["unranked"]))
+chk("an odds boost is held apart too — it is not a percentage of a slip",
+    any("odds boost" in why for _, why in _alloc["unranked"]))
+chk("a token with no kind is held apart with its missing terms",
+    any("kind not stated" in why for _, why in _alloc["unranked"]))
+chk("two tokens ranking the same slip first is reported as a CONFLICT",
+    any("both rank" in c for c in _alloc["conflicts"]),
+    str(_alloc["conflicts"]))
+chk("and the conflict says it does not choose for you",
+    any("does not choose for you" in c for c in _alloc["conflicts"]),
+    str(_alloc["conflicts"]))
+chk("describe_allocation prints the conflicts and the unranked",
+    "CONFLICTS" in ff_tokens.describe_allocation(_alloc)
+    and "NOT RANKED" in ff_tokens.describe_allocation(_alloc))
 
 section("57. the four Sunday-path defects (B78/B75/B87/B66)")
 # Picked by asking what will MISLEAD on Sunday rather than off the backlog

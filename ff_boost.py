@@ -1440,6 +1440,11 @@ class Shortlist:
     boost_pct: float
     reason: str = ""
     dropped: list[tuple[str, str]] = field(default_factory=list)
+    # F11. What the token changed, and what it did not state. Reported
+    # rather than applied silently: a shortlist built to a token minimum
+    # nobody checked looks identical to one built to this project's band,
+    # and the two answer different questions (B55).
+    token_notes: list[str] = field(default_factory=list)
 
     @property
     def playable(self) -> bool:
@@ -1509,6 +1514,10 @@ class Shortlist:
             L.append(f"  opening anchors (fair_prob exactly 0.5000) on: "
                      f"{', '.join(self.immature_anchors)} — re-pull closer "
                      f"to kickoff before trusting any EV built on them")
+        if self.token_notes:
+            L.append("  token:")
+            for n in self.token_notes:
+                L.append(f"     {n}")
         fb, tot = self.tier_fallbacks
         # Count the two causes rather than inferring one from the other.
         # The first cut compared `never >= fb` and then described ALL the
@@ -1565,16 +1574,106 @@ def _intake(legs, mode: str, event_id: str | None) -> tuple[list, list]:
     return kept, dropped
 
 
-def enumerate_candidates(legs, meta=None, *, boost_pct: float,
+def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                          mode: str, event_id: str | None = None,
                          floor: float = FLOOR, ceiling: float = CEILING,
-                         legs_per_slip: int = 3, limit: int = 8,
-                         stake: float = 10.0) -> Shortlist:
+                         legs_per_slip: int | None = None, limit: int = 8,
+                         stake: float | None = None,
+                         token=None) -> Shortlist:
     """Shortlist slips that clear the floor, ranked deterministically.
 
     Costs no tool calls. Price the survivors with price_sgp — the local
     ranking is a heuristic and the book's price is the answer.
+
+    F11. Pass `token` (an `ff_tokens.Token`) and the slips are built to the
+    PROMO's terms instead of this project's own band. The two answer
+    different questions and B55 is emphatic about not confusing them: FLOOR
+    asks "is this slip worth betting", a token minimum asks "will the book
+    let me apply the token at all". Where both apply, the BINDING one wins
+    and the shortlist says which it used.
+
+    A token supplies `boost_pct`, `stake` and `legs_per_slip` when the text
+    stated them; it never invents them. If the token did not state a
+    percentage and the caller did not pass one, this refuses — a shortlist
+    built at a guessed boost ranks slips for a promo that does not exist.
     """
+    tok_notes: list[str] = []
+    if token is not None:
+        if getattr(token, "kind", None) == "stake_back":
+            raise ValueError(
+                "this is a STAKE-BACK token, not a boost (B56). Its value "
+                "rises as win probability FALLS, so the right bet for it is "
+                "the longest shot that qualifies, not a slip in this "
+                "project's band — enumerating boost candidates for it "
+                "inverts the whole question. Price it with "
+                "ff_props.stake_back_ev / stake_back_band instead.")
+        if boost_pct is None:
+            boost_pct = getattr(token, "pct", None)
+        if stake is None:
+            stake = token.effective_stake
+        tmin_legs = getattr(token, "min_legs", None)
+        tmin = getattr(token, "min_odds", None)
+        if tmin is not None:
+            # The binding constraint, named. A token minimum below this
+            # project's floor does NOT loosen the floor: the floor is a
+            # judgement about whether the slip is worth betting at all.
+            if float(tmin) > floor:
+                tok_notes.append(
+                    f"floor raised from {floor:+.0f} to the token's minimum "
+                    f"{float(tmin):+.0f} — the binding constraint")
+                floor = float(tmin)
+            elif float(tmin) == floor:
+                tok_notes.append(
+                    f"token minimum {float(tmin):+.0f} equals this "
+                    f"project's floor, so both bind at the same number — "
+                    f"they still answer different questions (B55) and a "
+                    f"change to either does not move the other")
+            else:
+                tok_notes.append(
+                    f"token minimum {float(tmin):+.0f} is below this "
+                    f"project's floor {floor:+.0f}, so the floor still "
+                    f"binds; they answer different questions (B55)")
+        if getattr(token, "sgp_only", None) is True and mode == "cross-game":
+            raise ValueError(
+                "this token is SGP-only and mode is cross-game. Building "
+                "cross-game candidates for it produces slips the book will "
+                "not let the token apply to.")
+        for m in getattr(token, "missing", []) or []:
+            tok_notes.append(f"token did not state: {m}")
+        for u in getattr(token, "unparsed", []) or []:
+            tok_notes.append(f"token text not read: {u}")
+    if boost_pct is None:
+        raise ValueError(
+            "boost_pct is required and was not supplied, by argument or by "
+            "token. It is not defaulted: the shortlist ranks and filters on "
+            "the boosted return, so a guessed percentage produces a ranking "
+            "for a promo that does not exist. State the token's terms.")
+    # F11. A token saying "2+ legs" states a MINIMUM, not a size. Building
+    # only 2-leg slips misses the 3-leg ones that clear the floor (three
+    # -150 legs product to +363 while two product to +256), and building
+    # only 3 misses shorter eligible ones. So every size from the token's
+    # minimum up to the project default is enumerated, and the shortlist
+    # says which sizes it built.
+    sizes: list[int]
+    if legs_per_slip is not None:
+        sizes = [legs_per_slip]
+    elif token is not None and getattr(token, "min_legs", None):
+        lo = int(token.min_legs)
+        sizes = list(range(lo, max(lo, 3) + 1))
+        if len(sizes) > 1:
+            tok_notes.append(
+                f"token allows {lo}+ legs, so sizes {sizes} were all built "
+                f"— a minimum is not a size, and the shorter ones often "
+                f"miss the floor while the longer ones clear it")
+    else:
+        sizes = [3]
+    if stake is None:
+        # A dollar figure nobody stated is a number about a bet nobody can
+        # place, so this is recorded rather than silently assumed.
+        stake = 10.0
+        tok_notes.append(
+            "stake not stated — priced at $10.00 so the EV PERCENTAGES are "
+            "comparable; every dollar figure here is therefore illustrative")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}. It is "
                          f"not inferred: this module cannot read a boost's "
@@ -1592,16 +1691,17 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
     kept, dropped = _intake(legs, mode, event_id)
 
     combos = []
-    if mode == "cross-game":
-        by_event: dict[str, list] = {}
-        for l in kept:
-            by_event.setdefault(l.event_id, []).append(l)
-        if len(by_event) >= legs_per_slip:
-            for evs in combinations(sorted(by_event), legs_per_slip):
-                for pick in product(*(by_event[e] for e in evs)):
-                    combos.append(list(pick))
-    else:
-        combos = [list(c) for c in combinations(kept, legs_per_slip)]
+    for n_legs in sizes:
+        if mode == "cross-game":
+            by_event: dict[str, list] = {}
+            for l in kept:
+                by_event.setdefault(l.event_id, []).append(l)
+            if len(by_event) >= n_legs:
+                for evs in combinations(sorted(by_event), n_legs):
+                    for pick in product(*(by_event[e] for e in evs)):
+                        combos.append(list(pick))
+        else:
+            combos += [list(c) for c in combinations(kept, n_legs)]
 
     seen, cands = set(), []
     n_short, n_long = 0, 0        # measured, not guessed — see the reason below
@@ -1611,6 +1711,10 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
             continue
         seen.add(names)
         cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake)
+        if token is not None and getattr(token, "min_odds", None) is not None:
+            # B55. So `token_minimum` can answer once the slip is priced,
+            # rather than the caller having to remember to set it.
+            cand.token_min_odds = float(token.min_odds)
         if cand.independent_odds < floor:
             n_short += 1
             continue
@@ -1678,7 +1782,8 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float,
                       f"pessimistic end. Measured minimum is ~28% cross-game "
                       f"and ~50% same-game at +300.")
     return Shortlist(candidates=cands, mode=mode, boost_pct=boost_pct,
-                     reason=reason, dropped=dropped)
+                     reason=reason, dropped=dropped,
+                     token_notes=tok_notes)
 
 
 def price_candidate(cand: Candidate, *, book_odds: float,

@@ -1169,6 +1169,61 @@ offer. So the useful question is which legs are quietly broken — the collapsed
 role, the market three books just suspended — and that is what gets vetoed.
 Stake sizing does not apply; `STAKES` is for standalone props only.
 
+## Tokens are INPUT — I paste them, you parse them (F11/F16)
+
+My tokens change every week, so **nothing about them is in this document or
+in the code.** I state them at the start of a chat and you read them with
+`ff_tokens`:
+
+```python
+import ff_tokens
+toks = ff_tokens.parse_tokens(whatever_I_pasted)
+print(ff_tokens.describe_tokens(toks))        # ALWAYS print this back to me
+```
+
+**Print `describe_tokens` before you build anything.** It shows what was read
+and, more importantly, what was **NOT STATED** and what it **COULD NOT
+READ**. If something came back wrong or missing, ask me — do not proceed on
+a reading you are unsure of, and do not fill a gap with a sensible value.
+The whole module is built on one rule: **a term I did not state is not a term
+with a default.**
+
+Three things it will refuse rather than guess, and each refusal is correct:
+
+- **An unsigned minimum.** "min odds 200" is not read, because +200 and −200
+  are different tokens and the difference is large.
+- **A token naming both a refund and a boost.** "risk-free 30% boost" gets no
+  kind, because a boost pays more when you WIN and a stake-back pays when you
+  LOSE — opposite math (B56), and guessing inverts which bet is right.
+- **A stated stake vs a cap.** "bet $25" and "up to $25" are different facts.
+  It keeps them apart; `effective_stake` prefers a stated stake.
+
+Then build to the token, not to this project's band:
+
+```python
+sl = ff_boost.enumerate_candidates(legs, meta, mode="single-game",
+                                   event_id=eid, token=toks[0])
+print(sl.describe())            # token: lines say what the token changed
+```
+
+`enumerate_candidates` takes the **binding** constraint: a token minimum
+above our FLOOR raises the floor, one below it does **not** lower it —
+they answer different questions (B55). A token saying "2+ legs" states a
+*minimum*, so every size from there to 3 is built, because the short slips
+often miss the floor while the longer ones clear it. It **raises** if no boost
+percentage was stated, and it **raises** on a stake-back token, which belongs
+in `ff_props.stake_back_band` instead.
+
+**Across several tokens**, `ff_tokens.allocate(toks, legs, meta, mode=...)`
+plus `describe_allocation` shows which slips suit which token and — the part
+that matters — what it **cannot compare**. A stake-back is never ranked
+against a profit boost: the only honest common unit is dollar EV, and for a
+stake-back that needs the bonus value stated, which B77 records as the thing
+`stake_back_ev`'s own docstring demands and its signature quietly defaults.
+Two tokens whose best slip is the same slip is reported as a **CONFLICT** and
+is **mine to settle** — one slip takes one token, and the allocator says so
+rather than picking.
+
 ## Building a boost slip — `ff_boost.py`
 
 This is the module that solves the actual use case. It does **not** fetch
