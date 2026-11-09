@@ -742,3 +742,45 @@ reality.
     depend on the instruction being read. Where an instruction and a field
     default can disagree, make the field able to say which happened.
 
+70. **A prompt handed over for pasting must contain no instruction
+    addressed to the human.** I wrote a test prompt with
+    `[paste them here, however you'd normally write them]` in the middle
+    of instructions aimed at the session. Dustin pasted it verbatim — as
+    he had every other prompt — and the session correctly refused,
+    pointing out that running `parse_tokens` on a placeholder would look
+    like a parser result and be a measurement of an empty input. Anything
+    the person must supply goes ABOVE the prompt as a labelled block, or
+    in a separate message, never inside it; and if a prompt genuinely
+    cannot be pasted unedited, say so in the sentence that hands it over.
+
+71. **A refusal nothing downstream can see is not a refusal.** B87 made
+    `prop_edge` refuse a fabricated hold and return nan. The same night, a
+    live round showed a leg with `hold=nan` coming back `tier=MODERATE`,
+    `reasoning="clean read"`, `boost_verdict=CLEAR` — the refusal was
+    invisible to every consumer, so a leg with no measurable vig read as
+    vetted. When you add a refusal, trace it to each thing that reads the
+    value and ask what that thing now says. B39, inside B87's own fix.
+
+72. **Two numbers that share a name are not the same quantity.** A model
+    probability of P(scores A touchdown) was priced against a market of
+    P(scores the FIRST touchdown) — about 3x apart — and the engine
+    reported the difference as a +19.2 point edge. Nothing was broken:
+    `Estimate` carries the STAT and the pricing call carries the MARKET,
+    and nothing compared them. Where two inputs describe quantities that
+    must match, make the function take both and check, rather than
+    trusting the caller to have lined them up.
+
+73. **A substring match against a whole report is not a check.** A check
+    named "the fee is counted in what was staked" asserted `"$7.53" in
+    output` — and passed a revert that zeroed the staked figure, because
+    the same number appeared on the boost line. Anchor an assertion to the
+    LINE it is about (`_line(out, "staked")`), or it can be satisfied by
+    any other line that happens to carry the same text.
+
+74. **The log has to be able to represent what actually happened.** A
+    cash-out was unrepresentable, so a real +$5.42 result would have gone
+    into the book as a LOSS and every figure downstream would have
+    inherited it. Before trusting a measurement system, check that its
+    vocabulary covers the outcomes the world actually produces — the gap
+    is not a wrong number, it is a number that cannot be written down.
+

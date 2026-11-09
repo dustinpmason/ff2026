@@ -912,8 +912,28 @@ chk("milestone rung comes back one-sided",
 _sc = screen_quotes(_main, max_age_s=10**9)
 chk("a two-sided main line is NOT reported one-sided",
     _sc.one_sided == [] and len(_sc.usable) == 1, f"{_sc.one_sided}")
+# B122. This pinned the BOOK-only entry. On a 32-row anytime-TD board that
+# printed "draftkings" thirty-two times and could not say which leg was
+# one-sided — the only thing worth knowing on a mixed board. The entry now
+# names the leg and keeps the book, since a leg one-sided at one book may be
+# two-sided at another.
+_mile_os = screen_quotes(_mile, max_age_s=10**9).one_sided
 chk("a milestone rung IS reported one-sided",
-    screen_quotes(_mile, max_age_s=10**9).one_sided == ["draftkings"])
+    len(_mile_os) == 1 and "draftkings" in _mile_os[0], str(_mile_os))
+chk("and the entry names the LEG, not just the book",
+    _mile_os[0] != "draftkings", str(_mile_os))
+# Several one-sided legs at one book must not collapse into one line, nor
+# repeat the book N times with nothing to tell them apart.
+_many = [{"book": "draftkings", "player": p, "market": "player_anytime_td",
+          "point": None, "over": am, "under": None, "suspended_at": None}
+         for p, am in (("Travis Kelce", 145), ("Rashee Rice", 130),
+                       ("Xavier Worthy", 180))]
+_many_os = screen_quotes(_many, game_started=False).one_sided
+chk("three one-sided legs at one book give three distinguishable entries",
+    len(_many_os) == 3 and len(set(_many_os)) == 3, str(_many_os))
+chk("and each names its player",
+    all(any(n in e for n in ("Kelce", "Rice", "Worthy")) for e in _many_os),
+    str(_many_os))
 # Either side missing counts: checking only `under` missed the Under-only row.
 for _lbl, _q in (("over-only", {"book": "dk", "name": "Over", "price": -111,
                                 "last_update": "2026-10-31T04:34:23+00:00"}),
@@ -3139,6 +3159,21 @@ def _raises(fn, exc=Exception) -> bool:
         return isinstance(e, exc)
 
 
+def _line(text: str, prefix: str) -> str:
+    """The report line starting with `prefix`, or "" — so a check can assert
+    on the line it NAMES rather than anywhere in the report.
+
+    A check reading `"$7.53" in output` passed a revert that zeroed the
+    staked figure, because the same string appeared on the boost line. A
+    substring match against a whole report is not a check on the thing the
+    check is about.
+    """
+    for l in text.splitlines():
+        if l.strip().startswith(prefix):
+            return l.strip()
+    return ""
+
+
 def _out(fn) -> str:
     """fn()'s output, or its error message — so a check that asserts on report
     text cannot crash the run when the report itself breaks (lesson 14)."""
@@ -4201,6 +4236,197 @@ chk("and the one usable verdict still gets its bucket",
     "55%-70%" in _o52e, _o52e)
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
+
+section("60. a cash-out is a third outcome, not a flavour of two (B124/B125)")
+# Measured on the real slip: FanDuel SNF SGP, $7.31 at +401 boosted to +521,
+# two legs home and one live, CASHED OUT for $12.95 with $0.22 of
+# "Bet Protect+" on top. Graded by its legs that is a LOSS, so the log would
+# have recorded a +$5.42 result as a loss and every hit rate, ROI and
+# calibration figure downstream would have inherited it.
+# ---------------------------------------------------------------------------
+_tmp60 = tempfile.mkdtemp()
+_old60 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp60)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "_session.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "_pull.json"
+
+
+def _snf60():
+    legs = [ff_betlog.Leg(player=p, market=m, line=l, side="OVER",
+                          odds=-113, book="fanduel", event_id="60348")
+            for p, m, l in (("Rome Odunze", "player_reception_yds", 48.5),
+                            ("D'Andre Swift", "player_rush_yds", 62.5),
+                            ("Luther Burden III",
+                             "player_reception_yds_alt", 50.0))]
+    b = ff_betlog.log_bet(401, 7.31, legs, "fanduel", boost_pct=0.30,
+                          fees=0.22)
+    for i, r in enumerate(("WIN", "LOSS", "WIN")):
+        ff_betlog.grade_leg(b["id"], i, r)
+    return b
+
+
+_b60 = _snf60()
+chk("CASHED_OUT is an accepted result",
+    "CASHED_OUT" in ff_betlog.BET_RESULTS)
+# The amount IS the result; without it a cash-out cannot be told from a loss.
+chk("a cash-out with no payout is refused",
+    _raises(lambda: ff_betlog.grade_bet(_b60["id"], "CASHED_OUT"),
+            ValueError))
+chk("and the refusal says the amount is the result",
+    "amount taken IS the result" in _err(
+        lambda: ff_betlog.grade_bet(_b60["id"], "CASHED_OUT")))
+chk("an unknown result is still refused",
+    _raises(lambda: ff_betlog.grade_bet(_b60["id"], "SORTOF"), ValueError))
+ff_betlog.grade_bet(_b60["id"], "CASHED_OUT", 12.95)
+_o60 = ff_betlog.bet_summary()
+# The money. $7.31 + $0.22 charged, $12.95 back.
+# Line-anchored: the first cut asserted "$7.53" anywhere in the report and
+# a revert that zeroed `staked` still passed, because the boost line carried
+# the same figure.
+chk("the fee is counted in what was staked, not folded into the stake",
+    _line(_o60, "staked") == "staked      : $7.53   (incl. $0.22 in fees)",
+    _line(_o60, "staked"))
+chk("the cash-out is what was returned",
+    _line(_o60, "returned") == "returned    : $12.95", _line(_o60, "returned"))
+chk("so the slip records a PROFIT, not a loss",
+    _line(_o60, "net").startswith("net         : $+5.42"),
+    _line(_o60, "net"))
+# The record. A slip that never settled is neither a win nor a loss.
+chk("no settled slip means no hit rate is claimed",
+    "no slip has settled" in _o60, _o60[:200])
+chk("and the exclusion is stated, not silent",
+    "1 cashed out" in _o60, _o60[:200])
+# The counterfactual is the only thing that makes the decision reviewable.
+chk("the report says what the slip would have done",
+    "would have LOST" in _o60, _o60[:600])
+chk("and names the amount taken against the stake and price",
+    "$12.95 taken on a $7.31 stake at +401" in _o60, _o60[:600])
+chk("a count of cash-outs that beat riding is given as a COUNT",
+    "1 of 1 cash-out" in _o60 and "That is a COUNT, not a rate" in _o60,
+    _o60[:700])
+chk("and it refuses to call one observation an EV finding",
+    "this log has 1" in _o60, _o60[:700])
+# The tokens are the point of this project, so a boosted slip that was
+# cashed out must stay in the boost accounting.
+chk("a boosted slip that was cashed out is still boost accounting",
+    _line(_o60, "boosted slips") == "boosted slips: 1  net $+5.42 on $7.53",
+    _line(_o60, "boosted slips"))
+# A slip whose legs are NOT all graded cannot have a counterfactual invented.
+_b60b = ff_betlog.log_bet(500, 5.0, [ff_betlog.Leg(
+    player="X", market="m", line=1.5, side="OVER", odds=-110,
+    book="fanduel", event_id="60348")], "fanduel", boost_pct=0.30)
+ff_betlog.grade_bet(_b60b["id"], "CASHED_OUT", 3.00)
+chk("an ungraded cash-out says UNKNOWN rather than guessing",
+    "UNKNOWN" in ff_betlog.bet_summary(),
+    ff_betlog.bet_summary()[:700])
+# A settled slip alongside must still produce an ordinary record.
+_b60c = ff_betlog.log_bet(265, 10.0, [ff_betlog.Leg(
+    player="Tucker Kraft", market="player_anytime_td", line=None,
+    side="OVER", odds=265, book="draftkings", event_id="60351")],
+    "draftkings", boost_pct=0.30)
+ff_betlog.grade_leg(_b60c["id"], 0, "LOSS")
+ff_betlog.grade_bet(_b60c["id"], "LOSS")
+_o60c = ff_betlog.bet_summary()
+chk("a settled slip still gets a hit rate",
+    "record      : 0-1" in _o60c, _o60c[:200])
+chk("and the hit rate says it excludes the cash-outs",
+    "excludes 2 cashed out" in _o60c, _o60c[:260])
+# $7.31 + $0.22 fee, plus the $5.00 ungraded cash-out, plus the $10.00
+# settled loss. Written out rather than copied from the output, so the check
+# is arithmetic and not a transcription of whatever the code produced.
+chk("while the money counts all three slips and the fee",
+    _line(_o60c, "staked").startswith(
+        f"staked      : ${7.31 + 0.22 + 5.00 + 10.00:,.2f}"),
+    _line(_o60c, "staked"))
+shutil.rmtree(_tmp60, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old60
+
+section("59. what a real four-slip round found in the same night's fixes")
+# B120/B121/B123, all three from one live round against a real Week 9 board.
+# ---------------------------------------------------------------------------
+class _TDEst:
+    """A TD-shaped estimate, the shape that produced the live units error."""
+    stat = "rush_rec_tds"
+    line = 0.5
+    n = 24
+    blended = 0.3969
+    ci_low, ci_high, ci_width = 0.30, 0.50, 0.20
+    sample_verdict = "ADEQUATE"
+    role_changed = False
+    usage = None
+    mean, sd, hits = 0.4, 0.3, 10
+    empirical = parametric = recency = 0.4
+
+
+# B120. B87 stopped the fabricated hold and stopped there: the refusal was
+# invisible downstream, so a First TD leg came back hold=nan with
+# tier=MODERATE, reasoning="clean read" and boost_verdict=CLEAR — a leg with
+# no measurable vig reading as VETTED. B39's shape inside B87's own fix.
+_nan_ed = prop_edge(_TDEst(), 320, fair_over=0.2053, fair_source="bovada",
+                    devig_method="shin", market="player_anytime_td")
+chk("a refused hold is still nan",
+    _nan_ed.hold != _nan_ed.hold, str(_nan_ed.hold))
+chk("but it no longer reads as a clean read",
+    "clean read" not in str(_nan_ed.reasoning), str(_nan_ed.reasoning)[:90])
+chk("the reason says no hold was measured, and why",
+    "no hold measured" in str(_nan_ed.reasoning)
+    and "one-sided" in str(_nan_ed.reasoning), str(_nan_ed.reasoning)[:120])
+# A real two-sided quote must be unaffected, or the fix has just added noise
+# to every leg.
+_e59 = threshold_prob(log, 90)
+chk("a two-sided leg still reads clean and carries its hold",
+    prop_edge(_e59, -110, -110).hold == prop_edge(_e59, -110, -110).hold
+    and "no hold measured" not in str(prop_edge(_e59, -110, -110).reasoning))
+
+# B121. The UNITS mismatch the engine could not see: P(scores A touchdown)
+# priced against P(scores the FIRST one), which is roughly 3x smaller. The
+# live round reported a +19.2pt "edge" that was almost all units error, and
+# the reading session caught it by hand.
+chk("a TD estimate priced against a FIRST-TD market is refused",
+    _raises(lambda: prop_edge(_TDEst(), 320, fair_over=0.2053,
+                              fair_source="bovada", devig_method="shin",
+                              market="player_first_td"), ValueError))
+chk("and the refusal names both quantities and the ~3x",
+    all(x in _err(lambda: prop_edge(
+        _TDEst(), 320, fair_over=0.2053, fair_source="bovada",
+        devig_method="shin", market="player_first_td"))
+        for x in ("A touchdown", "FIRST", "3x")))
+# An anytime-TD market with a TD estimate is the MATCHING case and must pass.
+chk("the same estimate against an ANYTIME-TD market is not refused",
+    prop_edge(_TDEst(), 320, fair_over=0.2053, fair_source="bovada",
+              devig_method="shin", market="player_anytime_td") is not None)
+# No market named at all: cannot refuse, must not stay silent, must not rank
+# STRONG on units nobody checked.
+_unnamed = prop_edge(_TDEst(), 320, under_odds=-400, fair_over=0.2053,
+                     fair_source="bovada", devig_method="shin")
+chk("an unnamed market on a TD estimate is flagged, not refused",
+    "unnamed market" in str(_unnamed.reasoning), str(_unnamed.reasoning)[:90])
+chk("and costs a tier, so it cannot read as STRONG",
+    _unnamed.tier != "STRONG", _unnamed.tier)
+_named = prop_edge(_TDEst(), 320, under_odds=-400, fair_over=0.2053,
+                   fair_source="bovada", devig_method="shin",
+                   market="player_anytime_td")
+chk("naming the market restores the tier it had earned",
+    _named.tier == "STRONG" and "unnamed" not in str(_named.reasoning),
+    f"{_named.tier} {_named.reasoning}")
+# A non-TD estimate must not be dragged into any of this.
+chk("a yardage estimate is untouched by the TD guard",
+    "unnamed market" not in str(prop_edge(_e59, -110, -110).reasoning))
+
+# B123. An F11 regression found within the hour: `legs_per_slip` is None
+# unless the caller passes one, because sizes now come from `sizes` — so the
+# zero-candidate message printed "a None-leg slip", naming a size that does
+# not exist.
+_L59 = [BoostLeg(player=f"W{i}", market="player_reception_yds", line=50.5,
+                 side="OVER", odds=-110, book="draftkings", fair_prob=0.5,
+                 fair_source="bovada", devig_method="shin", event_id="e1",
+                 team="KC", pos="WR", verdict="CLEAR") for i in range(2)]
+_r59 = enumerate_candidates(_L59, {}, mode="single-game", event_id="e1",
+                            boost_pct=0.30).reason
+chk("the zero-candidate message names a real slip size",
+    "None-leg" not in _r59 and "3-leg" in _r59, _r59[:120])
+chk("and says how many legs survived intake",
+    "2 leg(s) available" in _r59, _r59[:120])
 
 section("58. tokens are PARSED INPUT, never constants (F11/F16)")
 # Dustin holds 4-6 tokens a week and the terms change weekly, so none of

@@ -229,6 +229,28 @@ new verdicts replace them, which is correct. `bl.Leg` carries the same
 field — set it there too, so a bet and its verdicts agree on which game they
 came from.
 
+**A cash-out is `CASHED_OUT`, never WIN or LOSS (B124).** `grade_bet(bet_id,
+"CASHED_OUT", payout)` — and the payout is **required**, because the amount
+taken IS the result. A cash-out counts in the money and in no hit rate, and
+`bet_summary` says so on the record line rather than excluding it silently.
+**Grade the legs anyway**, exactly as if the slip had run: they settle
+independently, and what the slip *would have done* is the only thing that
+makes the decision reviewable later. The report prints that counterfactual,
+or says UNKNOWN when the legs are not all graded.
+
+Do not read the running "beat letting it ride" count as a finding — it is
+printed as a COUNT and labelled not-a-rate on purpose. Whether cashing out
+is +EV needs the offer measured against the live fair price many times, and
+we have one observation. If a cash-out is taken, record the **time** with
+`cashed_out_at=` where you have it; how much game was left is most of what
+decides whether the price was fair.
+
+**`stake` is what is at risk; `fees` is anything charged beside it
+(B125).** A FanDuel slip wagered $7.31 and was charged $7.53 — a 3% "Bet
+Protect+" premium. Pass `fees=0.22`, not a $7.53 stake: the payout maths
+multiplies the stake by the price, so folding a premium into it corrupts
+every figure that follows.
+
 **`log_edge` records the side the MODEL prefers, not the side you bet
 (B117).** Those differ often — 5 of 12 legs in one round. `rec_summary()`
 reports such a leg as *"takes the side the ENGINE DID NOT PREFER"*, loud and

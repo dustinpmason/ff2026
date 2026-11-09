@@ -650,6 +650,13 @@ def log_bet(slip_odds: float,
             boost_type: str = "",
             slip_type: str = "sgp",
             note: str = "",
+            # B125. A FanDuel slip wagered $7.31 and charged $7.53 — a 3%
+            # "Bet Protect+" premium. `stake` is the amount at risk on the
+            # bet itself; `fees` is anything charged beside it. Folding the
+            # premium into `stake` would corrupt the payout arithmetic,
+            # which multiplies the stake by the price; leaving it out
+            # understates what the week cost.
+            fees: float = 0.0,
             is_test: bool = False,
             placed_at: str | None = None) -> dict:
     """Record a placed bet. Call this WHEN THE BET IS PLACED, not afterwards.
@@ -674,6 +681,7 @@ def log_bet(slip_odds: float,
         "boost_type": boost_type,
         "legs": [asdict(l) for l in legs],
         "note": note,
+        "fees": float(fees),
         **({TEST_FLAG: True} if is_test else {}),
         "result": None,
         "payout": None,
@@ -832,10 +840,34 @@ def grade_leg(bet_id: str, leg_index: int, result: str,
     })
 
 
-def grade_bet(bet_id: str, result: str, payout: float | None = None) -> dict:
-    """Append a slip-level grade."""
-    if result not in ("WIN", "LOSS", "PUSH", "VOID"):
-        raise ValueError(f"result must be WIN/LOSS/PUSH/VOID, got {result!r}")
+BET_RESULTS = ("WIN", "LOSS", "PUSH", "VOID", "CASHED_OUT")
+
+
+def grade_bet(bet_id: str, result: str, payout: float | None = None,
+              *, cashed_out_at: str | None = None) -> dict:
+    """Append a slip-level grade.
+
+    B124. `CASHED_OUT` is a THIRD outcome and not a flavour of either of the
+    other two. A live slip cashed out for $12.95 on a $7.31 stake — two legs
+    home, one live — was unrepresentable: graded by its legs it is a LOSS,
+    and the log would have recorded a **+$5.42 result as a loss**, with every
+    hit rate, ROI and calibration figure downstream inheriting that. Calling
+    it a WIN is no better: it inflates the hit rate with a slip that never
+    cashed.
+
+    So it counts in the MONEY and not in the RECORD, and the legs still
+    settle independently, which is what makes the interesting question
+    answerable later: how often does a cash-out beat letting it ride? One
+    observation decides nothing; the field exists so the data accumulates.
+    """
+    if result not in BET_RESULTS:
+        raise ValueError(
+            f"result must be one of {'/'.join(BET_RESULTS)}, got {result!r}")
+    if result == "CASHED_OUT" and payout is None:
+        raise ValueError(
+            "a CASHED_OUT grade needs the payout — the amount taken IS the "
+            "result. Without it the slip has no money attached and cannot be "
+            "told from a loss, which is the whole reason this outcome exists.")
     return _append({
         "id": uuid.uuid4().hex[:12],
         "kind": "bet_grade",
@@ -843,6 +875,7 @@ def grade_bet(bet_id: str, result: str, payout: float | None = None) -> dict:
         "bet_id": bet_id,
         "result": result,
         "payout": None if payout is None else float(payout),
+        **({"cashed_out_at": cashed_out_at} if cashed_out_at else {}),
     })
 
 
@@ -893,6 +926,8 @@ def _apply_grades(bets: list[dict]) -> list[dict]:
             by_id[r["bet_id"]]["result"] = r["result"]
             if r.get("payout") is not None:
                 by_id[r["bet_id"]]["payout"] = r["payout"]
+            if r.get("cashed_out_at"):
+                by_id[r["bet_id"]]["cashed_out_at"] = r["cashed_out_at"]
         elif k == "leg_grade" and r["bet_id"] in by_id:
             legs = by_id[r["bet_id"]]["legs"]
             i = r["leg_index"]
@@ -914,20 +949,40 @@ def bet_summary() -> str:
                 "  reconstructed afterwards — your fill price is gone once the\n"
                 "  game starts.")
 
-    graded = [b for b in bets if b.get("result") in ("WIN", "LOSS")]
-    staked = sum(b["stake"] for b in graded)
-    returned = sum(
-        b.get("payout") if b.get("payout") is not None
-        else (boosted_payout(b["stake"], b["slip_odds"], b.get("boost_pct", 0.0))
-              if b["result"] == "WIN" else 0.0)
-        for b in graded)
+    # B124. A cash-out counts in the MONEY and not in the RECORD. Putting it
+    # in the record either way is a lie: as a WIN it inflates a hit rate with
+    # a slip that never cashed, as a LOSS it reports a profit as a loss.
+    settled = [b for b in bets if b.get("result") in ("WIN", "LOSS")]
+    cashed = [b for b in bets if b.get("result") == "CASHED_OUT"]
+    money = settled + cashed
 
-    L = [f"BET LOG — {len(bets)} slips, {len(graded)} graded"]
-    if graded:
-        wins = sum(1 for b in graded if b["result"] == "WIN")
-        L.append(f"  record      : {wins}-{len(graded)-wins}  "
-                 f"({wins/len(graded):.0%} hit rate)")
-        L.append(f"  staked      : ${staked:,.2f}")
+    def _ret(b):
+        if b.get("payout") is not None:
+            return float(b["payout"])
+        return (boosted_payout(b["stake"], b["slip_odds"],
+                               b.get("boost_pct", 0.0))
+                if b.get("result") == "WIN" else 0.0)
+
+    staked = sum(b["stake"] + float(b.get("fees") or 0.0) for b in money)
+    returned = sum(_ret(b) for b in money)
+    fees = sum(float(b.get("fees") or 0.0) for b in money)
+    graded = settled
+
+    L = [f"BET LOG — {len(bets)} slips, {len(settled)} settled"
+         + (f", {len(cashed)} cashed out" if cashed else "")]
+    if money:
+        wins = sum(1 for b in settled if b["result"] == "WIN")
+        if settled:
+            L.append(f"  record      : {wins}-{len(settled)-wins}  "
+                     f"({wins/len(settled):.0%} hit rate)"
+                     + (f"   [excludes {len(cashed)} cashed out — a slip "
+                        f"that never settled is not a win or a loss]"
+                        if cashed else ""))
+        else:
+            L.append(f"  record      : no slip has settled"
+                     + (f" ({len(cashed)} cashed out)" if cashed else ""))
+        L.append(f"  staked      : ${staked:,.2f}"
+                 + (f"   (incl. ${fees:,.2f} in fees)" if fees else ""))
         L.append(f"  returned    : ${returned:,.2f}")
         L.append(f"  net         : ${returned-staked:+,.2f}  "
                  f"(ROI {(returned-staked)/staked:+.1%})" if staked else "")
@@ -935,6 +990,45 @@ def bet_summary() -> str:
         # branch below, so with no closing lines recorded — the log's actual
         # state — a 33% hit rate and a +108% ROI printed with no caution of
         # any kind. The caution belongs to the RECORD, which is right here.
+        if cashed:
+            L.append("")
+            L.append(f"  CASHED OUT — {len(cashed)} slip"
+                     f"{'s' if len(cashed) != 1 else ''}, counted in the "
+                     f"money above and in no hit rate")
+            _known = 0
+            _beat = 0
+            for b in cashed:
+                legs = _legs(b)
+                res = [l.get("result") for l in legs]
+                took = _ret(b)
+                full = boosted_payout(b["stake"], b["slip_odds"],
+                                      b.get("boost_pct", 0.0))
+                if res and all(r in ("WIN", "LOSS", "PUSH", "VOID")
+                               for r in res):
+                    # The legs settled independently, so what the slip would
+                    # have done IS knowable — and it is the only thing that
+                    # makes the decision reviewable later.
+                    would = "WON" if all(r in ("WIN", "PUSH", "VOID")
+                                         for r in res) else "LOST"
+                    _known += 1
+                    if would == "LOST":
+                        _beat += 1
+                    cmp_ = (f"would have {would} "
+                            f"(${full:,.2f})" if would == "WON"
+                            else f"would have {would} ($0.00)")
+                else:
+                    cmp_ = ("legs not fully graded, so what it would have "
+                            "done is UNKNOWN")
+                L.append(f"     ${took:,.2f} taken on a ${b['stake']:,.2f} "
+                         f"stake at {b['slip_odds']:+.0f}; {cmp_}")
+            if _known:
+                L.append(f"     {_beat} of {_known} cash-out"
+                         f"{'s' if _known != 1 else ''} beat letting it "
+                         f"ride. That is a COUNT, not a rate — whether "
+                         f"cashing out is +EV needs the offer measured "
+                         f"against the live fair price many times over, "
+                         f"and this log has {_known}.")
+
         _u, _why = _bet_independence(graded)
         if _u is not None:
             L.append(f"  spread      : {_u} distinct "
@@ -966,13 +1060,16 @@ def bet_summary() -> str:
         L.append("  or propline_grade_clv after each slate. Without closing odds")
         L.append("  there is no fast feedback — only win/loss, which takes months.")
 
-    if graded:
-        boosted = [b for b in graded if b.get("boost_pct", 0)]
+    # B124. This filtered on `graded`, which is WIN/LOSS only, so a boosted
+    # slip that was cashed out dropped out of the boost accounting entirely
+    # — the tokens are the whole point of this project, and a token spent on
+    # a slip that got cashed is still a token spent.
+    if money:
+        boosted = [b for b in money if b.get("boost_pct", 0)]
         if boosted:
-            bs = sum(b["stake"] for b in boosted)
-            br = sum(b.get("payout") or
-                     (boosted_payout(b["stake"], b["slip_odds"], b["boost_pct"])
-                      if b["result"] == "WIN" else 0.0) for b in boosted)
+            bs = sum(b["stake"] + float(b.get("fees") or 0.0)
+                     for b in boosted)
+            br = sum(_ret(b) for b in boosted)
             L.append("")
             L.append(f"  boosted slips: {len(boosted)}  "
                      f"net ${br-bs:+,.2f} on ${bs:,.2f}")
