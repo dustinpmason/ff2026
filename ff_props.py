@@ -2849,6 +2849,28 @@ LADDER_LEVEL_GAP_FLAG = 0.03
 # because that sd is propagated into every rung's uncertainty.
 LADDER_FLAT_DENOMINATOR_SD = 0.005
 
+# The anchor's resting money, below which its level is an opinion rather than
+# a price. DELIBERATELY DUPLICATED from `ff_boost.THIN_ANCHOR_LIQUIDITY`, the
+# same way `ff_guillotine` duplicates the correlation table: `ff_boost`
+# imports from `ff_props`, so importing back is circular. Keep the two in
+# step by hand.
+#
+# This exists because the first live test of the ladder found the gap it
+# fills. On a Week 10 board (WAS@NYG) Pinnacle was absent entirely, every fair
+# pinned to Kalshi, and of 158 rungs whose anchor could be joined back,
+# **every single one** had a resting side at or under $25 — min $1.30, median
+# $5.25, max $19.50. The ladder printed `fair 80.01% +/- 1.02%` off $1.30 with
+# nothing warning anyone. The +/- is a real measurement of the MARGIN and
+# says nothing about the LEVEL, and on that board the level was noise.
+#
+# F12's original entry predicted exactly this — "alternates and rungs would
+# anchor off Kalshi contracts carrying a dollar or two, the exact input B46
+# exists to reject" — and the ladder work answered the de-vig and the
+# level-SOURCE questions while carrying none of the anchor-maturity machinery
+# across. `anchor_thin`, `anchor_opening` and `anchor_untested` all live on
+# `BoostLeg`, which this path never touches.
+LADDER_THIN_ANCHOR_LIQUIDITY = 25
+
 
 def _logit(p: float) -> float:
     p = min(max(float(p), 1e-9), 1.0 - 1e-9)
@@ -3408,6 +3430,33 @@ def ladder_fair(quotes: list[dict], *, book: str,
             # times too tight in the tail, which makes the deep-tail gate
             # below silently unreachable — a gate that cannot fire is worse
             # than no gate, because it reads as a check that passed.
+            # The anchor's depth. B92 carries liquidity PER SIDE because the
+            # two sides of one line can differ by orders of magnitude, so the
+            # MIN side is what the level rests on — an $18 over against a
+            # $0.28 under is a $0.28 anchor. None is "never reported"
+            # (DraftKings, FanDuel and Bovada all return null), which is a
+            # different state from zero and is flagged as its own thing
+            # rather than being read as deep or as thin.
+            a_lo = a_hi = None
+            if pick is not None:
+                sides = [_num(pick[1].get("over_liquidity")),
+                         _num(pick[1].get("under_liquidity"))]
+                named = [v for v in sides if v is not None]
+                if named:
+                    a_lo, a_hi = min(named), max(named)
+            if a_lo is None:
+                rec.flags.append(
+                    f"anchor depth UNKNOWN: {rec.anchor} reported no "
+                    f"liquidity, so nothing here says whether this level is "
+                    f"a price or an opinion")
+            elif a_lo <= LADDER_THIN_ANCHOR_LIQUIDITY:
+                rec.flags.append(
+                    f"anchor THIN: {rec.anchor} rests ${a_lo:g} on its "
+                    f"shallow side"
+                    + (f" (${a_hi:g} on the other)" if a_hi != a_lo else "")
+                    + f", at or under ${LADDER_THIN_ANCHOR_LIQUIDITY}. The "
+                    f"+/- below measures the MARGIN and says nothing about "
+                    f"the LEVEL, which is what this money is backing")
             if mg.flat_denominator:
                 rec.flags.append(
                     f"{book} posts symmetric main lines here, so the margin's "

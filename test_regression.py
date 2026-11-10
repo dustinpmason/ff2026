@@ -5459,6 +5459,20 @@ def _synth(book, player, pt, median_yards, margin, thresholds, *, pid=None):
 _P = ff_props
 
 
+def _lf(*a, **k):
+    """`ladder_fair`, returning [] if it raises — so a fixture built for one
+    check cannot take the whole section down before the others run. Removing
+    the None-depth branch makes `None <= 25` a TypeError inside `ladder_fair`
+    itself, which is loud rather than silent, but it still stopped the suite
+    at the first failure instead of reporting every one."""
+    try:
+        return _P.ladder_fair(*a, **k)
+    except BaseException:                                    # noqa: BLE001
+        return []
+
+
+
+
 def _unmeasured(fn) -> bool:
     """True when fn() comes back NOT measured. False when it raises.
 
@@ -5799,6 +5813,62 @@ chk("a ladder too short to hold one out says its interp error is unmeasured",
     _fy[0].flags[0] if _fy and _fy[0].flags else "no flag")
 chk("a long enough ladder measures it and does not carry that flag",
     not any("interp error unmeasured" in g for r in _fa for g in r.flags))
+
+# --- the anchor's DEPTH, which the first live test found missing -----------
+# On a Week 10 board every fair was pinned to Kalshi and all 158 joinable
+# rungs had an anchor side at or under $25 (min $1.30, median $5.25). The
+# ladder printed `fair 80.01% +/- 1.02%` off $1.30 with nothing warning
+# anyone. The +/- measures the MARGIN; it says nothing about the LEVEL.
+_thin_anchor = [_q("pinnacle", "A", main=39.5, over=-110, under=-110,
+                   pid="p0")]
+_thin_anchor[0]["over_liquidity"] = 18.0
+_thin_anchor[0]["under_liquidity"] = 0.28      # the min side is the anchor
+_fth = [r for r in _lf(_board + _thin_anchor, book="dk", margin=_mg)
+        if r.player == "A"]
+def _flag(recs, needle):
+    """The first flag containing `needle`, or "". Never indexes into an empty
+    list: removing the flag these checks are about emptied one and CRASHED
+    the run instead of failing it — lesson 14, in checks written to test a
+    guard added because of a different missed check."""
+    for r in recs or ():
+        for g in r.flags:
+            if needle in g:
+                return g
+    return ""
+
+
+chk("a thin anchor is flagged on every rung it pins",
+    bool(_fth) and all(any("anchor THIN" in g for g in r.flags)
+                       for r in _fth),
+    _flag(_fth, "anchor THIN") or "no flag")
+# Asserted on POSITION, not presence. `"$0.28" in flag` passed a revert that
+# swapped min for max, because the swapped text still contains $0.28 — in the
+# other clause, describing the deep side. B124's lesson, re-earned.
+chk("and it names the SHALLOW side, not the deep one (B92)",
+    _flag(_fth, "anchor THIN").startswith(
+        "anchor THIN: pinnacle rests $0.28 on its shallow side"),
+    _flag(_fth, "anchor THIN") or "no flag")
+# None is "never reported", which is not zero and not deep. DraftKings,
+# FanDuel and Bovada all return null.
+_unk = [_q("pinnacle", "A", main=39.5, over=-110, under=-110, pid="p0")]
+_fun = [r for r in _lf(_board + _unk, book="dk", margin=_mg)
+        if r.player == "A"]
+chk("an anchor reporting no liquidity is UNKNOWN, not deep",
+    bool(_fun) and all(any("anchor depth UNKNOWN" in g for g in r.flags)
+                       for r in _fun),
+    _flag(_fun, "anchor depth UNKNOWN") or "no flag")
+chk("and UNKNOWN is never reported as THIN",
+    _fun and not any("anchor THIN" in g for r in _fun for g in r.flags))
+# A genuinely deep anchor gets neither flag.
+_deep_a = [_q("pinnacle", "A", main=39.5, over=-110, under=-110, pid="p0")]
+_deep_a[0]["over_liquidity"] = 500.0
+_deep_a[0]["under_liquidity"] = 500.0
+_fdp = [r for r in _lf(_board + _deep_a, book="dk", margin=_mg)
+        if r.player == "A"]
+chk("a deep anchor gets neither depth flag",
+    _fdp and not any("anchor THIN" in g or "anchor depth UNKNOWN" in g
+                     for r in _fdp for g in r.flags),
+    _flag(_fdp, "anchor") or "no depth flags")
 
 # --- a suspended rung is not a price ---------------------------------------
 _susp = list(_board) + _pin_row

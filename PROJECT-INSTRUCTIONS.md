@@ -609,7 +609,10 @@ appears in source, that is the bug.
 by it. Check `mg.measured` before quoting anything.
 
 - **"no anchor-chain book posts a two-sided main line for X"** — the real
-  remaining limit. 32 of 182 DK rungs on the MNF board. The ladder gives a
+  remaining limit. 32 of 182 DK rungs on one board — but it is board-dependent and
+  not a rate to rely on: on a Week 10 board where Kalshi blanket-covered every
+  player it fired ZERO times, and every fair was pinned to a sub-$25 anchor
+  instead. A refusal count of zero is not good news on its own. The ladder gives a
   shape with no level to pin it to. **Do not price these off the book's own
   main line** — that is de-vigging a book against itself, which these
   instructions forbid elsewhere and which `ladder_fair` will not do.
@@ -630,6 +633,20 @@ by it. Check `mg.measured` before quoting anything.
   the signal Dustin is after** — value arising before the model says
   anything — but it is also the single most likely thing to be a stale line,
   so check `last_update` on both sides before acting on it.
+- **`anchor THIN: <book> rests $X on its shallow side`** — the level this
+  rung is pinned to is backed by almost no money. **This is the flag that
+  decides whether a ladder number means anything**, and the first live test
+  found it mattering on every rung: on a Week 10 WAS@NYG board Pinnacle was
+  absent entirely, every fair pinned to Kalshi, and all 158 joinable rungs had
+  a resting side at or under $25 — min $1.30, median $5.25. Liquidity is
+  carried PER SIDE (B92), so the shallow side is the real depth: an $18 over
+  against a $0.28 under is a $0.28 anchor. The `+/-` on a fair measures the
+  MARGIN and says nothing about the LEVEL. **Do not quote a fair from a thin
+  anchor as though it were a price.**
+- **`anchor depth UNKNOWN`** — that book reported no liquidity at all.
+  DraftKings, FanDuel and Bovada all return null, so this is common and is
+  NOT the same as deep. It means nothing here can tell you whether the level
+  is a price or an opinion.
 - **`deep tail: ±X is N% of an M% rung`** — fires on roughly 9% of priced
   rungs, the longest ones. Absolute accuracy holds into the tail (1.14% vs
   0.88% in the core, only 1.30x); RELATIVE accuracy does not, and it is the
