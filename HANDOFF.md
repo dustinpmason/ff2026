@@ -964,3 +964,36 @@ reality.
     changes what you bet" and "this changes a line of a report" is exactly
     what a person needs to answer. Run the before/after before writing the
     question.
+
+91. **A property nobody checked is a defect nobody can find.** The lineup
+    enumerator hard-picked one quarterback and never enumerated the
+    alternative, for as long as this project has existed, and 1,140 checks
+    passed identically before and after the fix. Nothing had ever asked the
+    one question that finds it without knowing it: can every rostered player
+    be reached? A session found it by noticing a delta with the wrong SIGN —
+    adding a player cannot raise the best lineup's P(elim) — and then reading
+    the enumerator to explain it. Both of those are properties, not examples:
+    they hold for every input and they fail loudly on the bug. Prefer one
+    property over ten examples when the examples all share an assumption.
+
+92. **The vacuous clause, twice in one evening.** `or True` at the end of a
+    check makes it pass unconditionally, and `abs(x is not None and 0 or 0)
+    == 0` does the same thing less obviously. Both got written here while
+    testing something genuinely hard to reach — an alarm that fires only on
+    an impossible input. The fix is not more care at the keyboard; it is to
+    extract the branch so it CAN be reached. `render_waiver_board` exists
+    separately from `waiver_board` for exactly that reason: `waiver_value`
+    cannot produce a positive delta by construction, so no test routed
+    through it will ever exercise the alarm, and a check that cannot fail
+    will get written to paper over it.
+
+93. **The dangerous wrong answer is the reassuring one.** An eliminated team
+    with an empty roster scored 0.00, came last in every simulation, and
+    returned P(elim) = 0.0000%. Every other bug in this project has produced
+    a number that looked wrong or a refusal that looked annoying; this one
+    produced "you are safe" in a format where being wrong means being out.
+    The diagnostic information existed — `short_rosters` named the team — but
+    it sat below a headline figure that contradicted it, and a caller reads
+    the headline. When a check and a headline disagree, the headline wins in
+    practice, so the fix belongs in the headline: exclude the team, change
+    the number, and say what the number is now relative to.

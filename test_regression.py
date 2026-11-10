@@ -6669,5 +6669,288 @@ chk("so the market swap changes the reported r and not the EV",
     f"{_before.pairs[0][2]:+.4f} -> {_after.pairs[0][2]:+.4f}")
 
 
+# ---------------------------------------------------------------------------
+section("68. the lineup enumerator must enumerate the QB too (B132)")
+# `enumerate_lineups` hard-picked ONE quarterback by highest MEAN and never
+# enumerated the alternative, while TEs, RBs and WRs all were. Highest mean is
+# an EV criterion and this function feeds a FLOOR objective, so it picks wrong
+# whenever a lower-mean QB has a better shape.
+#
+# Measured on a real board at 200,000 sims: a roster holding Jared Goff (mean
+# 18.42, sd 7.98) and Trevor Lawrence (mean 18.40, sd 6.66) forced GOFF in on
+# a 0.02 mean advantage and 1.32 more sd, costing +0.3495pp of P(elim). Across
+# all 260 lineups it produced, Lawrence never appeared.
+#
+# The suite passed identically before and after the fix, which is the real
+# finding here: 1,140 checks and not one of them asked whether a rostered
+# player could be reached.
+_pool68 = {
+    # name: (mean, sd) -> a two-value array reproduces the mean exactly and
+    # `_mean_of` is all the enumerator reads.
+    "QB_HIGH": [30.0, 10.0],     # mean 20.00, the max-by-mean pick
+    "QB_LOW": [19.0, 19.0],      # mean 19.00, lower mean
+    "RB1": [12.0, 12.0], "RB2": [11.0, 11.0], "RB3": [10.0, 10.0],
+    "WR1": [14.0, 14.0], "WR2": [13.0, 13.0], "WR3": [9.0, 9.0],
+    "TE1": [8.0, 8.0],
+}
+_pool68 = {k: np.array(v, dtype=float) for k, v in _pool68.items()}
+_ros68 = {"QB": ["QB_HIGH", "QB_LOW"], "RB": ["RB1", "RB2", "RB3"],
+          "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}
+_lus68 = ff_guillotine.enumerate_lineups(_ros68, _pool68)
+_qbs_seen = {p for L in _lus68 for p in L if p.startswith("QB_")}
+
+chk("every rostered QB is reachable in some enumerated lineup",
+    _qbs_seen == {"QB_HIGH", "QB_LOW"},
+    f"only {sorted(_qbs_seen)} appeared across {len(_lus68)} lineups")
+chk("and the enumeration is not simply the old one twice over",
+    len(_lus68) > 0 and all(
+        sum(1 for p in L if p.startswith("QB_")) == 1 for L in _lus68),
+    "exactly one QB per lineup")
+# The property that makes the defect findable without knowing the fix: a
+# lineup set built from a SUPERSET roster must contain every lineup the
+# smaller roster could build. The old code violated this for any QB that
+# was not the mean leader.
+_small68 = dict(_ros68, QB=["QB_LOW"])
+_small_set = {frozenset(L) for L in ff_guillotine.enumerate_lineups(
+    _small68, _pool68)}
+_big_set = {frozenset(L) for L in _lus68}
+chk("a bigger roster's lineup set CONTAINS the smaller roster's",
+    _small_set <= _big_set,
+    f"{len(_small_set - _big_set)} lineup(s) lost by adding a player")
+# ...and the same property for the other QB, so neither is privileged.
+_small_hi = {frozenset(L) for L in ff_guillotine.enumerate_lineups(
+    dict(_ros68, QB=["QB_HIGH"]), _pool68)}
+chk("which holds for the mean-leader as well as the alternative",
+    _small_hi <= _big_set)
+chk("a roster with one QB still enumerates normally",
+    len(ff_guillotine.enumerate_lineups(_small68, _pool68)) > 0)
+# Asserted on the MESSAGE. Removing the no-QB guard still raises, because
+# the empty loop leaves `out` empty and the "no legal lineup" check fires
+# instead — so a bare _raises() passed a revert that deleted the guard and
+# swapped a precise diagnosis for a vague one. Lesson 84, again.
+chk("a roster with NO QB is refused, and told it has no QB",
+    "roster has no QB" in _err(
+        lambda: ff_guillotine.enumerate_lineups(dict(_ros68, QB=[]),
+                                                _pool68)),
+    _err(lambda: ff_guillotine.enumerate_lineups(dict(_ros68, QB=[]),
+                                                 _pool68))[:80])
+# Dedupe still holds with the extra loop: one lineup per player SET.
+chk("lineups are still deduped by player set, not inflated by the new loop",
+    len({frozenset(L) for L in _lus68}) == len(_lus68),
+    f"{len(_lus68)} lineups, {len({frozenset(L) for L in _lus68})} sets")
+
+
+# ---------------------------------------------------------------------------
+section("69. a waiver add is a PAIRED delta, never two runs subtracted (B133)")
+# Running the sim twice and subtracting does not work: `RNG` is consumed one
+# draw per player, so adding a player shifts the stream and the two runs see
+# different scenarios. On a live board that produced seven players with an
+# IDENTICAL delta of +0.284pp and several that "cleared 2se" while being
+# impossible — adding a player can only expand the legal lineup set, so the
+# best lineup's P(elim) can never rise. The positive sign was the only tell.
+_p69 = {n: np.array(v, dtype=float) for n, v in {
+    "QB1": [22.0, 18.0],
+    "RB1": [20.0, 16.0], "RB2": [13.0, 11.0], "RB3": [9.0, 7.0],
+    "WR1": [18.0, 14.0], "WR2": [12.0, 10.0], "WR3": [8.0, 6.0],
+    "TE1": [9.0, 7.0],
+    "STAR": [40.0, 36.0],      # clearly better than anyone rostered
+    "SCRUB": [1.0, 0.5],       # clearly worse than anyone rostered
+}.items()}
+_meta69 = {n: ("AAA", p) for n, p in [
+    ("QB1", "QB"), ("RB1", "RB"), ("RB2", "RB"), ("RB3", "RB"),
+    ("WR1", "WR"), ("WR2", "WR"), ("WR3", "WR"), ("TE1", "TE"),
+    ("STAR", "WR"), ("SCRUB", "WR")]}
+_t69 = [{"team_id": str(i), "team_name": f"t{i}", "roster": {
+            "QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
+            "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}}
+        for i in range(4)]
+
+_wv_star = ff_guillotine.waiver_value(
+    _t69, _p69, my_team_id="0", candidate="STAR", n_sims=4000, meta=_meta69)
+_wv_scrub = ff_guillotine.waiver_value(
+    _t69, _p69, my_team_id="0", candidate="SCRUB", n_sims=4000, meta=_meta69)
+
+chk("the paired delta is never positive, by construction",
+    _wv_star.delta <= 0 and _wv_scrub.delta <= 0,
+    f"star {_wv_star.delta*100:+.4f}pp, scrub {_wv_scrub.delta*100:+.4f}pp")
+chk("a clearly better player resolves and is reachable",
+    _wv_star.reachable and _wv_star.player == "STAR", _wv_star.why)
+chk("and he lands in the best lineup",
+    _wv_star.in_best_lineup, _wv_star.describe())
+# The core property, and it was missing: a clearly better player must move
+# P(elim) DOWN by a MEASURABLE amount. Every check here asserted the delta
+# was not positive, which a revert satisfied by making it exactly zero —
+# `p_without = min(all lineups)` destroys the pairing and every delta
+# becomes 0.000, passing every "<= 0" check in the section.
+chk("a clearly better player moves P(elim) materially DOWN",
+    _wv_star.delta < -0.005,
+    f"{_wv_star.delta*100:+.4f}pp — a pairing that reads all lineups "
+    f"returns exactly 0 here")
+chk("and the two terms are genuinely different numbers",
+    _wv_star.p_with < _wv_star.p_without,
+    f"{_wv_star.p_with:.5f} vs {_wv_star.p_without:.5f}")
+chk("a clearly worse player moves it by nothing",
+    abs(_wv_scrub.delta) < 1e-12, f"{_wv_scrub.delta*100:+.6f}pp")
+chk("and is reported as not in the best lineup",
+    not _wv_scrub.in_best_lineup, _wv_scrub.describe())
+# The position comes from meta's (team, position) TUPLE. Passing the whole
+# tuple to `_meta_field` made the position the string "('AAA', 'WR')", so the
+# player went into a slot that does not exist and every candidate came back
+# NOT REACHABLE — six real receivers among them, which is how it was caught.
+chk("the position is read from meta's second field, not the whole tuple",
+    ff_guillotine._meta_field(
+        ff_guillotine.meta_lookup("STAR", _meta69)[1]) == "WR",
+    repr(ff_guillotine._meta_field(
+        ff_guillotine.meta_lookup("STAR", _meta69))))
+# A name nobody can resolve is refused BY NAME, not valued at zero.
+_wv_none = ff_guillotine.waiver_value(
+    _t69, _p69, my_team_id="0", candidate="Nobody At All", n_sims=2000,
+    meta=_meta69)
+chk("an unresolvable name is refused, not scored",
+    not _wv_none.reachable and "does not resolve" in _wv_none.why,
+    _wv_none.why[:90])
+chk("and its describe() says a bid is unjustified rather than quoting a zero",
+    "unjustified on survival grounds" in _wv_none.describe())
+# A candidate who IS on the roster but enters no legal lineup — on a bye
+# here. He must be reported unreachable, not handed a delta of zero as
+# though the simulation had an opinion.
+_wv_bye = ff_guillotine.waiver_value(
+    _t69, _p69, my_team_id="0", candidate="STAR", n_sims=2000, meta=_meta69,
+    unavailable=["STAR"])
+chk("a rostered candidate who enters no lineup is UNREACHABLE",
+    not _wv_bye.reachable, _wv_bye.describe()[:100])
+chk("and the reason names why, rather than reporting a delta",
+    "enters no legal lineup" in _wv_bye.why, _wv_bye.why[:90])
+chk("a board puts him in the unreachable count, not the ranked list",
+    "0 reachable, 1 not" in ff_guillotine.render_waiver_board(
+        [_wv_bye], n_sims=2000),
+    ff_guillotine.render_waiver_board([_wv_bye], n_sims=2000).splitlines()[0])
+chk("a bad team id is refused rather than defaulting to someone",
+    _raises(lambda: ff_guillotine.waiver_value(
+        _t69, _p69, my_team_id="99", candidate="STAR", n_sims=1000,
+        meta=_meta69), ValueError))
+
+# --- the board ------------------------------------------------------------
+_board69 = ff_guillotine.waiver_board(
+    _t69, _p69, my_team_id="0", candidates=["STAR", "SCRUB", "Nobody At All"],
+    n_sims=4000, meta=_meta69)
+chk("the board counts reachable and unreachable separately",
+    "2 reachable, 1 not" in _board69, _board69.splitlines()[0])
+chk("it ranks by delta, best first",
+    _board69.splitlines()[1].strip().startswith("STAR"),
+    _board69.splitlines()[1].strip()[:60])
+chk("unreachable candidates are NAMED, not dropped from the board",
+    "Nobody At All" in _board69)
+# The impossible-sign alarm, tested through the RENDERER. `waiver_value`
+# cannot produce a positive delta, so a test that goes through it can never
+# reach that branch — and the check first written here passed on an `or True`
+# clause, which is not a check. That is the vacuous-clause fault twice in one
+# evening, so: assert the alarm fires, and assert it stays quiet.
+_pos69 = [ff_guillotine.WaiverValue("BROKEN", 0.20, 0.10, True, 100, True)]
+chk("a positive delta trips the impossible-sign alarm",
+    "IMPOSSIBLE" in ff_guillotine.render_waiver_board(_pos69, n_sims=100),
+    _line(ff_guillotine.render_waiver_board(_pos69, n_sims=100), "!!"))
+chk("and the alarm says not to act on the board",
+    "do not act on this board"
+    in ff_guillotine.render_waiver_board(_pos69, n_sims=100))
+_neg69 = [ff_guillotine.WaiverValue("FINE", 0.10, 0.20, True, 100, True)]
+chk("a normal board does NOT carry the alarm",
+    "IMPOSSIBLE" not in ff_guillotine.render_waiver_board(_neg69,
+                                                          n_sims=100),
+    ff_guillotine.render_waiver_board(_neg69, n_sims=100))
+chk("an unreachable-only board does not trip it either",
+    "IMPOSSIBLE" not in ff_guillotine.render_waiver_board(
+        [ff_guillotine.WaiverValue("X", float("nan"), float("nan"), False,
+                                   100, False, "no")], n_sims=100))
+
+
+# ---------------------------------------------------------------------------
+section("70. an eliminated team is OUT of the pool, not scored at zero (B135)")
+# In this format a knocked-out roster is released, so `get_roster` returns
+# `{}` for an eliminated team. Left in the pool it scored 0.00, placed last in
+# every single simulation, and returned **P(elim) = 0.0000%** — the worst
+# wrong answer this engine can give, because in an elimination format it says
+# you are safe. `short_rosters` named it, but a caller reads the headline.
+#
+# This is NOT the unfillable-roster case: byes and injuries leave LIVE teams
+# short every week, and the strict=False fallback handles those by fielding
+# what they have and reporting it understated. No players versus not enough.
+_p70 = {n: np.array(v, dtype=float) for n, v in {
+    "QB1": [22, 18], "RB1": [20, 16], "RB2": [13, 11], "RB3": [9, 7],
+    "WR1": [18, 14], "WR2": [12, 10], "WR3": [8, 6], "TE1": [9, 7],
+    "QB2": [21, 17], "RB4": [19, 15], "RB5": [12, 10], "RB6": [8, 6],
+    "WR4": [17, 13], "WR5": [11, 9], "WR6": [7, 5], "TE2": [8, 6]}.items()}
+_A70 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
+        "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}
+_B70 = {"QB": ["QB2"], "RB": ["RB4", "RB5", "RB6"],
+        "WR": ["WR4", "WR5", "WR6"], "TE": ["TE2"]}
+_t70 = [{"team_id": "0", "team_name": "me", "roster": _A70},
+        {"team_id": "1", "team_name": "alive", "roster": _B70},
+        {"team_id": "2", "team_name": "gone-empty", "roster": {}},
+        {"team_id": "4", "team_name": "gone-blank",
+         "roster": {"QB": [], "RB": [], "WR": [], "TE": []}}]
+_r70 = ff_guillotine.run(_t70, _p70, my_team_id="0", n_sims=8000)
+
+chk("an eliminated team does not make my P(elim) zero",
+    min(_r70.p_last) > 0.01,
+    f"{min(_r70.p_last):.4%} — it was 0.0000% with them in the pool")
+chk("both shapes of empty roster are detected",
+    sorted(_r70.eliminated_teams) == ["gone-blank", "gone-empty"],
+    str(_r70.eliminated_teams))
+chk("and they are NOT reported as merely short",
+    _r70.short_rosters == [], str(_r70.short_rosters))
+chk("they are gone from the opponent set",
+    set(_r70.opp_scores_mean) == {"alive"}, str(list(_r70.opp_scores_mean)))
+chk("the report names them rather than dropping them silently",
+    "ELIMINATED, excluded from the pool" in _r70.report(),
+    _line(_r70.report(), "  ELIMINATED"))
+chk("and says what the risk is now relative to",
+    "relative to the 2 teams still alive" in _r70.report(),
+    _line(_r70.report(), "  Every P(elim)"))
+# My own empty roster means I am out. Refused, not simulated.
+chk("my own empty roster is refused with the reason",
+    "already been eliminated" in _err(
+        lambda: ff_guillotine.run(_t70, _p70, my_team_id="2", n_sims=100)),
+    _err(lambda: ff_guillotine.run(_t70, _p70, my_team_id="2",
+                                   n_sims=100))[:80])
+# A live team that simply cannot fill its slots must STILL be simulated and
+# reported short — the distinction the fix turns on.
+_t70b = [dict(_t70[0]), dict(_t70[1]),
+         {"team_id": "5", "team_name": "short-not-out",
+          "roster": {"QB": ["QB2"], "RB": ["RB4"], "WR": [], "TE": []}}]
+_r70b = ff_guillotine.run(_t70b, _p70, my_team_id="0", n_sims=8000)
+chk("a team with SOME players is short, not eliminated",
+    _r70b.eliminated_teams == []
+    and any("short-not-out" in x for x in _r70b.short_rosters),
+    f"elim={_r70b.eliminated_teams} short={_r70b.short_rosters[:1]}")
+chk("and it is still counted as an opponent",
+    "short-not-out" in _r70b.opp_scores_mean)
+# Everyone else out. A real end state, and it used to surface as numpy's
+# "zero-size array to reduction operation minimum", which tells a reader
+# nothing about what happened.
+chk("last team standing is refused with a readable reason",
+    "last one standing" in _err(
+        lambda: ff_guillotine.run(
+            [dict(_t70[0]), {"team_id": "9", "team_name": "gone",
+                             "roster": {}}],
+            _p70, my_team_id="0", n_sims=500)),
+    _err(lambda: ff_guillotine.run(
+        [dict(_t70[0]), {"team_id": "9", "team_name": "gone", "roster": {}}],
+        _p70, my_team_id="0", n_sims=500))[:100])
+chk("and that reason names who went out",
+    "Eliminated: gone" in _err(
+        lambda: ff_guillotine.run(
+            [dict(_t70[0]), {"team_id": "9", "team_name": "gone",
+                             "roster": {}}],
+            _p70, my_team_id="0", n_sims=500)))
+
+# With no eliminations at all the new lines stay out of the report.
+_r70c = ff_guillotine.run([dict(_t70[0]), dict(_t70[1])], _p70,
+                          my_team_id="0", n_sims=4000)
+chk("a league with nobody out carries no elimination line",
+    _r70c.eliminated_teams == []
+    and "ELIMINATED, excluded" not in _r70c.report())
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

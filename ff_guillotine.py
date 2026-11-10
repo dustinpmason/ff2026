@@ -732,7 +732,24 @@ def enumerate_lineups(roster: dict[str, list[str]],
     if not qbs:
         raise ValueError("roster has no QB")
 
-    qb = max(qbs, key=lambda p: _mean_of(pool, p))
+    # B132. This was `qb = max(qbs, key=lambda p: _mean_of(pool, p))` — a
+    # single QB, hard-picked by MEAN, never enumerated, while TEs, RBs and
+    # WRs all are. Highest mean is an EV criterion and this function is
+    # feeding a FLOOR objective, so it picks wrong whenever a lower-mean QB
+    # has a better shape.
+    #
+    # Measured on a real board at 200,000 sims: a roster holding Jared Goff
+    # (mean 18.42, sd 7.98) and Trevor Lawrence (mean 18.40, sd 6.66) forced
+    # GOFF in on a 0.02 mean advantage and 1.32 more sd, and cost
+    # **+0.3495pp of P(elim)** — larger than the across-seed noise floor and
+    # five times the fantasy-table swap. Across all 260 lineups it enumerated,
+    # Lawrence never appeared once.
+    #
+    # It also made a QB waiver add unanalyzable: a candidate QB is either
+    # discarded (no effect, delta 0) or forced in as a replacement, so the
+    # delta reported for him is a swap he may not want. That is how a session
+    # got a POSITIVE delta for Goff, which is logically impossible — adding a
+    # player can only expand the legal lineup set.
 
     # Dedupe by player SET. A WR in the WR slot and the same WR in the FLEX
     # slot score identically, so slot permutations of one set of eight are the
@@ -740,19 +757,21 @@ def enumerate_lineups(roster: dict[str, list[str]],
     # with duplicate rows.
     seen: set[frozenset[str]] = set()
     out: list[tuple[str, ...]] = []
-    for te in (tes or [None]):
-        for rb2 in combinations(rbs, SLOTS["RB"]):
-            for wr2 in combinations(wrs, SLOTS["WR"]):
-                core = [qb] + ([te] if te else []) + list(rb2) + list(wr2)
-                rest = [p for pos in FLEX_ELIGIBLE for p in roster.get(pos, [])
-                        if p not in core]
-                for flex in combinations(rest, SLOTS["FLEX"]):
-                    full = tuple(core) + flex
-                    key = frozenset(full)
-                    if len(key) != len(full) or key in seen:
-                        continue
-                    seen.add(key)
-                    out.append(full)
+    for qb in qbs:
+        for te in (tes or [None]):
+            for rb2 in combinations(rbs, SLOTS["RB"]):
+                for wr2 in combinations(wrs, SLOTS["WR"]):
+                    core = ([qb] + ([te] if te else []) + list(rb2)
+                            + list(wr2))
+                    rest = [p for pos in FLEX_ELIGIBLE
+                            for p in roster.get(pos, []) if p not in core]
+                    for flex in combinations(rest, SLOTS["FLEX"]):
+                        full = tuple(core) + flex
+                        key = frozenset(full)
+                        if len(key) != len(full) or key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(full)
 
     if not out:
         counts = {k: len(v) for k, v in roster.items()}
@@ -790,6 +809,11 @@ class Result:
     unresolved_names: dict[str, list[str]] = field(default_factory=dict)
     excluded: list[str] = field(default_factory=list)
     short_rosters: list[str] = field(default_factory=list)
+    # B135. Teams with NO players — eliminated, and excluded from the pool
+    # before anything is simulated. Named rather than silently dropped: the
+    # count of who is still alive is what P(elim) is relative to, so a reader
+    # needs to know it changed.
+    eliminated_teams: list[str] = field(default_factory=list)
     stale_projections: dict[str, list[str]] = field(default_factory=dict)
     # B68b. Players the correlation lookup could not resolve. These were
     # silently dropped to a 0.0 entry, indistinguishable from a measured
@@ -886,6 +910,12 @@ class Result:
         L.append("  Projected opponent means:")
         for t, m in sorted(self.opp_scores_mean.items(), key=lambda x: x[1]):
             L.append(f"     {m:6.1f}  {t}")
+        if self.eliminated_teams:
+            L.append("")
+            L.append(f"  ELIMINATED, excluded from the pool: "
+                     f"{', '.join(self.eliminated_teams)}")
+            L.append(f"  Every P(elim) here is relative to the "
+                     f"{len(self.opp_scores_mean) + 1} teams still alive.")
         if self.short_rosters:
             L.append("")
             L.append("  ! SHORT ROSTERS after exclusions — these opponents cannot")
@@ -973,8 +1003,46 @@ def run(teams: list[dict],
                                   for pos, names in t["roster"].items()}}
                  for t in teams]
 
+    # B135. A team with NO PLAYERS AT ALL has been eliminated — in this
+    # format the knocked-out roster is released, so the roster object comes
+    # back `{}`. Such a team is no longer competing for last place and must
+    # not be in the pool.
+    #
+    # Left in, it scored 0.00, placed last in every single simulation, and
+    # returned **my P(elim) = 0.0000%**. That is the worst wrong answer this
+    # engine can give: in an elimination format it says you are safe. The
+    # `short_rosters` line did name it, but a caller reads the headline.
+    #
+    # This is NOT the same as a roster that cannot fill its slots — byes and
+    # injuries do that to live teams every week, and the `strict=False`
+    # fallback below handles those correctly by fielding what they have and
+    # reporting it understated. The distinction is no players versus not
+    # enough players.
+    def _is_out(t) -> bool:
+        return not any(t.get("roster", {}).values())
+
+    eliminated = [str(t.get("team_name") or t.get("team_id"))
+                  for t in teams if _is_out(t)]
+    if _is_out(next((t for t in teams
+                     if str(t["team_id"]) == str(my_team_id)), {})):
+        raise ValueError(
+            f"team {my_team_id!r} has an empty roster, which in this format "
+            f"means it has already been eliminated. There is nothing to "
+            f"simulate.")
+    teams = [t for t in teams if not _is_out(t)]
+
     me = next(t for t in teams if str(t["team_id"]) == str(my_team_id))
     opponents = [t for t in teams if str(t["team_id"]) != str(my_team_id)]
+    # Everyone else eliminated. A real end state in this format, and it used
+    # to surface as `zero-size array to reduction operation minimum`, which
+    # tells the reader nothing. There is no last place to come in when nobody
+    # else is playing.
+    if not opponents:
+        raise ValueError(
+            f"every other team in this league has an empty roster, so "
+            f"{str(me.get('team_name') or my_team_id)!r} is the last one "
+            f"standing. There is no elimination risk left to simulate."
+            + (f" Eliminated: {', '.join(eliminated)}." if eliminated else ""))
 
     # Opponent totals: best-eight-by-mean, drawn independently.
     opp_tot = np.zeros((len(opponents), n_sims))
@@ -1046,5 +1114,164 @@ def run(teams: list[dict],
                   variance_inflation=variance_inflation, week=week,
                   flagged=flagged or [],
                   unresolved_names=unres, excluded=sorted(out_set),
-                  short_rosters=short, stale_projections=stale,
+                  short_rosters=short,
+        eliminated_teams=eliminated, stale_projections=stale,
                   correlation_unresolved=corr_unres)
+
+
+# ---------------------------------------------------------------------------
+# Waiver value — what an added player is worth, measured as a PAIRED delta
+# ---------------------------------------------------------------------------
+#
+# B133. The obvious way to value a waiver add is to run the sim twice, once
+# with the player and once without, and subtract. It does not work, and the
+# way it fails is quiet.
+#
+# `RNG` is a module-level generator consumed sequentially, one draw per
+# player, so adding a player SHIFTS THE STREAM and the two runs see different
+# scenarios. The difference you get back is mostly that shift. On a live board
+# it produced seven different players with an identical delta of +0.284pp and
+# several that "cleared 2se" — while being impossible, because adding a player
+# can only EXPAND the set of legal lineups, so the best lineup's P(elim) can
+# never rise. A positive delta is the tell, and it is the only reason anyone
+# noticed.
+#
+# The fix is to never run twice. Run ONCE with the candidate on the roster,
+# then read two numbers off the same draws:
+#
+#     p_with    = min P(elim) over ALL lineups
+#     p_without = min P(elim) over lineups that do NOT contain the candidate
+#
+# Same scenarios, same stream, so the delta has no sampling error between the
+# two terms at all and is <= 0 by construction. What remains is scenario
+# spread across seeds, which is what `WaiverValue.floor` reports.
+#
+# Credit where due: this method came out of a live project-thread session
+# that threw away its own first sweep after noticing the impossible sign.
+
+
+@dataclass
+class WaiverValue:
+    player: str
+    p_with: float
+    p_without: float
+    in_best_lineup: bool
+    n_sims: int
+    reachable: bool          # does he appear in ANY legal lineup
+    why: str = ""
+
+    @property
+    def delta(self) -> float:
+        """Change in best-lineup P(elim). Never positive, by construction."""
+        return self.p_with - self.p_without
+
+    def describe(self, floor: float | None = None) -> str:
+        if not self.reachable:
+            return (f"{self.player}: NOT REACHABLE — he enters no legal "
+                    f"lineup, so the simulation has nothing to say about him. "
+                    f"A bid is unjustified on survival grounds.")
+        s = (f"{self.player}: {self.p_without:.3%} -> {self.p_with:.3%}  "
+             f"({self.delta * 100:+.3f}pp)")
+        if floor is not None:
+            s += ("  RESOLVED" if abs(self.delta) > floor
+                  else f"  inside the {floor:.3f}pp floor — treat as zero")
+        if not self.in_best_lineup:
+            s += "  [not in the best lineup]"
+        return s
+
+
+def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
+                 *, my_team_id: str, candidate: str,
+                 n_sims: int = 80_000, meta: dict | None = None,
+                 week: int | None = None,
+                 unavailable=None, **kw) -> WaiverValue:
+    """What `candidate` is worth to `my_team_id`, as a paired delta.
+
+    The candidate is added to the roster and the sim runs ONCE. Both numbers
+    come off those same draws, so the comparison carries no between-run noise.
+    Never run this twice and subtract — see the note above this function.
+    """
+    me = next((t for t in teams if str(t.get("team_id")) == str(my_team_id)),
+              None)
+    if me is None:
+        raise ValueError(f"no team with id {my_team_id!r} in this league")
+    who = resolve(candidate, pool)
+    if who is None:
+        return WaiverValue(candidate, float("nan"), float("nan"), False,
+                           n_sims, False,
+                           f"{candidate!r} does not resolve to anyone in the "
+                           f"pool — check the spelling before reading "
+                           f"anything into this")
+    pos = None
+    if meta:
+        # `meta_lookup` returns (team, position); `_meta_field` cleans ONE
+        # field. Passing the whole tuple made the position the string
+        # "('BUF', 'WR')", so every candidate went into a slot that does not
+        # exist and came back NOT REACHABLE — including six real receivers,
+        # which is the only reason it was noticed.
+        pos = _meta_field(meta_lookup(candidate, meta)[1])
+    pos = pos or next((p for p in ("RB", "WR", "TE", "QB")
+                       if who in me["roster"].get(p, [])), None) or "WR"
+
+    grown = {k: list(v) for k, v in me["roster"].items()}
+    grown.setdefault(pos, [])
+    if who not in grown[pos]:
+        grown[pos].append(who)
+    patched = [({**t, "roster": grown} if str(t.get("team_id")) ==
+                str(my_team_id) else t) for t in teams]
+
+    r = run(patched, pool, my_team_id=my_team_id, n_sims=n_sims, meta=meta,
+            week=week, unavailable=unavailable, **kw)
+    with_him = [i for i, L in enumerate(r.lineups) if who in L]
+    without = [i for i, L in enumerate(r.lineups) if who not in L]
+    if not with_him:
+        return WaiverValue(candidate, float(min(r.p_last)),
+                           float(min(r.p_last)), False, n_sims, False,
+                           f"{who} is on the roster but enters no legal "
+                           f"lineup — on a bye, or crowded out of every "
+                           f"slot. The simulation cannot value him.")
+    if not without:
+        return WaiverValue(candidate, float(min(r.p_last)), float("nan"),
+                           True, n_sims, False,
+                           f"{who} appears in EVERY legal lineup, so there is "
+                           f"no without-him comparison on this roster")
+    p_with = float(min(r.p_last))
+    p_without = float(min(r.p_last[without]))
+    best = r.lineups[int(np.argmin(r.p_last))]
+    return WaiverValue(candidate, p_with, p_without, who in best, n_sims,
+                       True, "paired within one run")
+
+
+def waiver_board(teams: list[dict], pool: dict[str, np.ndarray], *,
+                 my_team_id: str, candidates, n_sims: int = 80_000,
+                 meta: dict | None = None, week: int | None = None,
+                 unavailable=None, floor: float = 0.25, **kw) -> str:
+    """Every candidate, ranked, with the unreachable ones named not hidden."""
+    vals = [waiver_value(teams, pool, my_team_id=my_team_id, candidate=c,
+                         n_sims=n_sims, meta=meta, week=week,
+                         unavailable=unavailable, **kw) for c in candidates]
+    return render_waiver_board(vals, n_sims=n_sims, floor=floor)
+
+
+def render_waiver_board(vals, *, n_sims: int, floor: float = 0.25) -> str:
+    """Format a list of `WaiverValue`s.
+
+    Separate from `waiver_board` so the impossible-sign alarm below can be
+    TESTED. `waiver_value` cannot produce a positive delta by construction,
+    so a test that goes through it can never reach that branch — and a check
+    written against the combined function passed on an `or True` clause,
+    which is no check at all.
+    """
+    ok = sorted([v for v in vals if v.reachable], key=lambda v: v.delta)
+    no = [v for v in vals if not v.reachable]
+    L = [f"WAIVER BOARD — {len(ok)} reachable, {len(no)} not, "
+         f"n_sims={n_sims:,}, floor {floor:.3f}pp"]
+    for v in ok:
+        L.append("  " + v.describe(floor))
+    for v in no:
+        L.append("  " + v.describe())
+    if any(v.delta > 0 for v in ok):
+        L.append("  !! a POSITIVE delta appeared, which is IMPOSSIBLE — "
+                 "adding a player cannot raise the best lineup's P(elim). "
+                 "Something has broken the pairing; do not act on this board.")
+    return "\n".join(L)
