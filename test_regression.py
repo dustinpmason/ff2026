@@ -1716,12 +1716,13 @@ def leg(player, event_id, odds=-150, fair_prob=0.60, **kw):
     -150 / 0.60 is the documented target shape: three such legs price at
     +363, which clears the +300 floor with the shortest legs available.
     """
+    _side = kw.pop("side", "OVER")
     return BoostLeg(
         event_id=event_id,
         book=kw.pop("book", "draftkings"),
         market=kw.pop("market", "player_reception_yds"),
         player=player,
-        side=kw.pop("side", "OVER"),
+        side=_side,
         odds=odds,
         fair_prob=fair_prob,
         fair_source=kw.pop("fair_source", "pinnacle (via get_event_ev)"),
@@ -1729,6 +1730,10 @@ def leg(player, event_id, odds=-150, fair_prob=0.60, **kw):
         line=kw.pop("line", 45.5),
         player_id=kw.pop("player_id", f"espn:{abs(hash(player)) % 10**7}"),
         verdict=kw.pop("verdict", "CLEAR"),
+        # B126. Defaults to the leg's own side, which is what the helper
+        # already builds — the point of the guard is that a verdict carried
+        # across from the OTHER side cannot be built at all.
+        verdict_side=kw.pop("verdict_side", _side),
         team=META.get(player, (None, None))[0],
         pos=META.get(player, (None, None))[1],
         **kw,
@@ -1893,7 +1898,8 @@ noteam = BoostLeg(event_id=EV1, book="draftkings",
                   market="player_reception_yds", player="Ghost",
                   side="OVER", odds=-150, fair_prob=0.6,
                   fair_source="pinnacle", devig_method="shin",
-                  verdict="CLEAR")
+                  verdict="CLEAR",
+                 verdict_side="OVER")
 s = classify([leg("QB A", EV1, market="player_pass_yds"), noteam,
               leg("WR B1", EV1)], {})
 chk("an unknown team in a shared event is unmeasurable, not independent",
@@ -1910,7 +1916,8 @@ nopos = BoostLeg(event_id=EV1, book="draftkings",
                  market="player_reception_yds", player="Spectre",
                  side="OVER", odds=-150, fair_prob=0.6,
                  fair_source="pinnacle", devig_method="shin",
-                 verdict="CLEAR", team="AAA", pos=None)
+                 verdict="CLEAR",
+                 verdict_side="OVER", team="AAA", pos=None)
 s = classify([leg("QB A", EV1, market="player_pass_yds"), nopos,
               leg("WR B1", EV1)], {})
 chk("a known team with an UNKNOWN position is unmeasurable, not WR",
@@ -3077,7 +3084,8 @@ def _pleg(player, market, team, pos):
     return BoostLeg(event_id=EV1, book="draftkings", market=market,
                     player=player, side="OVER", odds=-150, fair_prob=0.6,
                     fair_source="pinnacle", devig_method="shin",
-                    verdict="CLEAR", team=team, pos=pos)
+                    verdict="CLEAR",
+                 verdict_side="OVER", team=team, pos=pos)
 _nan = float("nan")
 for _bad, _lbl in ((_nan, "NaN"), ("   ", "whitespace"), ("", "empty")):
     # Caught rather than allowed to propagate. A NaN position used to raise
@@ -3209,7 +3217,8 @@ def _aleg(player, fp, lq, tier):
     return BoostLeg(event_id=EV1, book="fanduel",
                     market="player_reception_yds", player=player, side="OVER",
                     odds=-114, fair_prob=fp, fair_source="pinnacle",
-                    devig_method="shin", verdict="CLEAR", team="X", pos="WR",
+                    devig_method="shin", verdict="CLEAR",
+                 verdict_side="OVER", team="X", pos="WR",
                     anchor_liquidity=lq, opening_liquidity_tier=tier)
 _slip = [_aleg("Gibbs", 0.5427, 250, 250.0),      # tier derived from Pinnacle
          _aleg("Likely", 0.4944, 175.76, None),   # Kalshi: no tier, falls back
@@ -3605,7 +3614,8 @@ def _rleg(player, fp, odds, team):
     return BoostLeg(event_id=_EVT, book="draftkings",
                     market="player_reception_yds", player=player, side="OVER",
                     odds=odds, fair_prob=fp, fair_source="bovada",
-                    devig_method="shin", verdict="CLEAR", team=team, pos="WR")
+                    devig_method="shin", verdict="CLEAR",
+                 verdict_side="OVER", team=team, pos="WR")
 _real = [_rleg("Brenton Strange", 0.4892, -109, "BAL"),
          _rleg("Travis Hunter", 0.5000, -115, "JAX"),
          _rleg("Parker Washington", 0.5108, -110, "JAX")]
@@ -4237,6 +4247,103 @@ chk("and the one usable verdict still gets its bucket",
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
 
+section("61. a verdict belongs to ONE side (B126)")
+# The Cade Otton near-miss. `boost_verdict` vetoes "a role change running
+# against THE SIDE BEING BET" (B80), and `prop_edge` could only ever answer
+# for the side the MODEL liked — the side was derived from which way the
+# edge pointed, with no way to ask about the side you want to bet. So a live
+# session computed one verdict per LINE and attached it to whichever side it
+# was betting, and nearly shipped Otton OVER with his targets collapsed
+# 5.4 -> 1.5. Rebuilding per-side cut both ways: it also UN-vetoed
+# Loveland's OVER, which the same error had wrongly excluded.
+# ---------------------------------------------------------------------------
+_e61 = threshold_prob(log, 60)        # a line the model likes the OVER on
+chk("by default the side is still the one the model prefers",
+    prop_edge(_e61, -110, -110).side == "OVER")
+chk("a side can now be FORCED, which is a different question",
+    prop_edge(_e61, -110, -110, side="UNDER").side == "UNDER")
+chk("and a forced side the model dislikes gives a NEGATIVE edge",
+    prop_edge(_e61, -110, -110, side="UNDER").edge < 0,
+    str(prop_edge(_e61, -110, -110, side="UNDER").edge))
+chk("which is the same magnitude the other way",
+    abs(prop_edge(_e61, -110, -110, side="UNDER").edge
+        + prop_edge(_e61, -110, -110, side="OVER").edge) < 1e-9)
+chk("forcing the side the model already picked changes nothing",
+    prop_edge(_e61, -110, -110, side="OVER").edge
+    == prop_edge(_e61, -110, -110).edge)
+chk("a nonsense side is refused",
+    _raises(lambda: prop_edge(_e61, -110, -110, side="sideways"),
+            ValueError))
+# A negative edge must never read as a confident tier, and must not be
+# described as noise — a -27pt edge is a disagreement, not a thin read.
+_dis = prop_edge(_e61, -110, -110, side="UNDER")
+chk("a side the model is against can never be STRONG",
+    _dis.tier == "PASS", _dis.tier)
+chk("and is named as a disagreement, not as 'inside the noise'",
+    "the model is AGAINST this side" in str(_dis.reasoning)
+    and "inside the noise" not in str(_dis.reasoning),
+    str(_dis.reasoning)[:110])
+chk("the disagreement names the side the model prefers instead",
+    "it prefers OVER" in str(_dis.reasoning), str(_dis.reasoning)[:110])
+# A genuinely SMALL edge is still noise, or the message has been replaced
+# rather than split. Constructed from `fair_over` so the edge is exactly
+# +1pt regardless of what the fixture's data happens to be — the first cut
+# picked a threshold and got a +26pt edge that was PASSing for an unrelated
+# reason (a wide CI), so it proved nothing.
+_small = prop_edge(_e61, -110, fair_over=_e61.blended - 0.01,
+                   fair_source="pinnacle", devig_method="shin", side="OVER")
+chk("the small-edge fixture really is small",
+    abs(_small.edge - 0.01) < 1e-6, f"{_small.edge:+.4f}")
+chk("a small edge is still reported as inside the noise",
+    "inside the noise" in str(_small.reasoning)
+    and "AGAINST this side" not in str(_small.reasoning),
+    str(_small.reasoning)[:110])
+# And the boundary: a hair BELOW zero is a disagreement, not noise.
+_hair = prop_edge(_e61, -110, fair_over=_e61.blended + 0.02,
+                  fair_source="pinnacle", devig_method="shin", side="OVER")
+chk("a clearly negative edge crosses into disagreement",
+    "AGAINST this side" in str(_hair.reasoning), str(_hair.reasoning)[:110])
+
+
+def _otton(**kw):
+    """The live leg, as it was nearly shipped."""
+    return BoostLeg(player="Cade Otton", market="player_reception_yds",
+                    line=28.5, side="OVER", odds=-110, book="fanduel",
+                    fair_prob=0.5, fair_source="pinnacle",
+                    devig_method="shin", event_id="60348", team="TB",
+                    pos="TE", **kw)
+
+
+chk("a leg with NO verdict is fine — that is the unscreened state",
+    _otton().verdict == "UNSCREENED")
+chk("a verdict with no side recorded is refused at construction",
+    _raises(lambda: _otton(verdict="CAUTION"), ValueError))
+chk("and the refusal explains that a verdict is about one side",
+    "THE SIDE BEING BET" in _err(lambda: _otton(verdict="CAUTION")))
+chk("a verdict computed for the OTHER side is refused",
+    _raises(lambda: _otton(verdict="CAUTION", verdict_side="UNDER"),
+            ValueError))
+chk("and the refusal says a collapsed role vetoes one side and supports "
+    "the other",
+    "vetoes the OVER and supports the UNDER" in _err(
+        lambda: _otton(verdict="CAUTION", verdict_side="UNDER")))
+chk("and it names the call that fixes it",
+    "side='OVER'" in _err(
+        lambda: _otton(verdict="CAUTION", verdict_side="UNDER")),
+    _err(lambda: _otton(verdict="CAUTION", verdict_side="UNDER"))[-120:])
+chk("a verdict for THIS side builds",
+    _otton(verdict="CAUTION", verdict_side="OVER").verdict_side == "OVER")
+chk("case does not matter when comparing the sides",
+    _otton(verdict="CAUTION", verdict_side="over").verdict == "CAUTION")
+# An UNDER leg is the mirror, so the guard is not accidentally one-sided.
+chk("an UNDER leg refuses an OVER verdict",
+    _raises(lambda: BoostLeg(
+        player="Cade Otton", market="player_reception_yds", line=28.5,
+        side="UNDER", odds=-110, book="fanduel", fair_prob=0.5,
+        fair_source="pinnacle", devig_method="shin", event_id="60348",
+        team="TB", pos="TE", verdict="CLEAR", verdict_side="OVER"),
+        ValueError))
+
 section("60. a cash-out is a third outcome, not a flavour of two (B124/B125)")
 # Measured on the real slip: FanDuel SNF SGP, $7.31 at +401 boosted to +521,
 # two legs home and one live, CASHED OUT for $12.95 with $0.22 of
@@ -4420,7 +4527,8 @@ chk("a yardage estimate is untouched by the TD guard",
 _L59 = [BoostLeg(player=f"W{i}", market="player_reception_yds", line=50.5,
                  side="OVER", odds=-110, book="draftkings", fair_prob=0.5,
                  fair_source="bovada", devig_method="shin", event_id="e1",
-                 team="KC", pos="WR", verdict="CLEAR") for i in range(2)]
+                 team="KC", pos="WR", verdict="CLEAR",
+                 verdict_side="OVER") for i in range(2)]
 _r59 = enumerate_candidates(_L59, {}, mode="single-game", event_id="e1",
                             boost_pct=0.30).reason
 chk("the zero-candidate message names a real slip size",
@@ -4512,7 +4620,8 @@ chk("and an empty parse says so rather than reading as 'no tokens held'",
 _L58 = [BoostLeg(player=f"W{i}", market="player_reception_yds", line=50.5,
                  side="OVER", odds=o, book="draftkings", fair_prob=0.5,
                  fair_source="bovada", devig_method="shin", event_id="e1",
-                 team="DET", pos="WR", verdict="CLEAR")
+                 team="DET", pos="WR", verdict="CLEAR",
+                 verdict_side="OVER")
         for i, o in enumerate((-150, -150, -150, -140, -160))]
 _sl58 = enumerate_candidates(_L58, {}, mode="single-game", event_id="e1",
                              token=_T("30% profit boost, max $25, "
@@ -4779,7 +4888,8 @@ def _bleg56(name, side, team, fp=0.50, odds=-110, liq=None):
     l = BoostLeg(player=name, market=mk, line=50.5, side="OVER", odds=odds,
                  book="draftkings", fair_prob=fp, fair_source="bovada",
                  devig_method="shin", event_id="636628", team=team, pos=pos,
-                 verdict="CLEAR")
+                 verdict="CLEAR",
+                 verdict_side="OVER")
     if liq is not None:
         l.anchor_liquidity = liq
     return l

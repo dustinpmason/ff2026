@@ -251,6 +251,37 @@ Protect+" premium. Pass `fees=0.22`, not a $7.53 stake: the payout maths
 multiplies the stake by the price, so folding a premium into it corrupts
 every figure that follows.
 
+**Evaluate the side you are BETTING, not the side the model likes (B126).**
+`prop_edge` picks the side its own edge points at unless you say otherwise.
+That is the right default for "what does the model like here" and the wrong
+one for "is this leg OK on my slip" — and `boost_verdict` vetoes **a role
+change running against the side being bet** (B80), so a verdict carried
+across from the other side discards the exact thing the veto turns on.
+
+So when you are building a slip, pass the side:
+
+```python
+edge = ff_props.prop_edge(est, over_odds, under_odds, ..., side="OVER")
+verdict, reasons = ff_props.boost_verdict(est, edge, screen)
+leg = ff_boost.BoostLeg(..., side="OVER", verdict=verdict,
+                        verdict_side="OVER")
+```
+
+**`BoostLeg` refuses a verdict with no `verdict_side`, and refuses one
+computed for the other side.** Not a warning — a carried-across verdict does
+not look wrong, it looks like a screened leg. This is live history: one
+verdict per line, applied to both sides, nearly put **Cade Otton OVER** on a
+slip with his targets collapsed 5.4 → 1.5. Collapsed vetoes the OVER and
+*supports* the UNDER, so doing it per side cuts both ways — the same rebuild
+un-vetoed Loveland's OVER, which the single-verdict approach had wrongly
+excluded.
+
+A forced side the model dislikes returns a **negative** edge and always
+tiers PASS, with the reason reading *"the model is AGAINST this side by N
+points"* rather than "inside the noise". That is the disagreement made
+computable instead of left in prose — if you still want the leg, you now
+have a number for what you are overriding.
+
 **`log_edge` records the side the MODEL prefers, not the side you bet
 (B117).** Those differ often — 5 of 12 legs in one round. `rec_summary()`
 reports such a leg as *"takes the side the ENGINE DID NOT PREFER"*, loud and

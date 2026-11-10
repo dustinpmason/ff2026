@@ -592,6 +592,16 @@ class BoostLeg:
     # read CLEAR without boost_verdict() ever being called.
     verdict: str = "UNSCREENED"                  # from ff_props.boost_verdict
     verdict_reasons: tuple[str, ...] = ()
+    # B126. WHICH SIDE the verdict was computed for. `boost_verdict` vetoes
+    # "a role change running against THE SIDE BEING BET" (B80), so a verdict
+    # for the UNDER says nothing whatever about the OVER — and until now
+    # nothing recorded the difference. A live session computed one verdict
+    # per LINE and attached it to whichever side it was betting, which
+    # nearly shipped Cade Otton OVER with his targets collapsed 5.4 -> 1.5:
+    # COLLAPSED against the OVER is a VETO, and it had been carried across
+    # as a CAUTION. Rebuilding per-side cut both ways — it also UN-vetoed
+    # Loveland's OVER, which the same error had wrongly excluded.
+    verdict_side: str = ""
     team: str | None = None
     pos: str | None = None
     # Liquidity on the ANCHOR's line, not on the book you are betting. It
@@ -618,6 +628,30 @@ class BoostLeg:
     tier_source: str = ""
 
     def __post_init__(self):
+        # B126. A verdict with no side recorded, or recorded for the OTHER
+        # side, is refused at construction. Refused rather than flagged
+        # because the failure is silent by nature: COLLAPSED + OVER is a
+        # VETO and COLLAPSED + UNDER is support, so a carried-across verdict
+        # does not look wrong — it looks like a screened leg.
+        if self.verdict and self.verdict != "UNSCREENED":
+            vs = (self.verdict_side or "").upper()
+            if not vs:
+                raise ValueError(
+                    f"{self.player}: verdict {self.verdict!r} was given with "
+                    f"no verdict_side. boost_verdict() judges a role change "
+                    f"against THE SIDE BEING BET (B80), so a verdict is "
+                    f"about one side and is meaningless without it. Pass "
+                    f"verdict_side= the side you evaluated — and if that is "
+                    f"not the side on this leg, evaluate the right one with "
+                    f"ff_props.prop_edge(..., side=...).")
+            if vs != str(self.side).upper():
+                raise ValueError(
+                    f"{self.player}: this leg is {self.side} but its verdict "
+                    f"was computed for {vs}. A verdict does NOT carry across "
+                    f"sides — a collapsed role vetoes the OVER and supports "
+                    f"the UNDER. Re-evaluate with "
+                    f"ff_props.prop_edge(est, ..., side={str(self.side).upper()!r}) "
+                    f"and pass that Edge to boost_verdict().")
         if not (0.0 < float(self.fair_prob) < 1.0):
             raise ValueError(
                 f"fair_prob must be strictly between 0 and 1, got "
@@ -1759,8 +1793,16 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             # plausible sentence instead of an error, which is this
             # project's recurring signature.
             if not n_short and not n_long:
-                reason = (f"not enough legs to build a "
-                          f"{legs_per_slip}-leg slip")
+                # F11 regression, found live within the hour: `legs_per_slip`
+                # is None unless the caller passed one, because the sizes to
+                # build now come from `sizes` — so this printed "a None-leg
+                # slip", naming a size that does not exist. The message has
+                # to name what was actually attempted.
+                want = (f"{sizes[0]}-leg" if len(sizes) == 1 else
+                        f"{'- or '.join(str(n) for n in sizes)}-leg")
+                reason = (f"not enough legs survived intake to build a "
+                          f"{want} slip from them — {len(kept)} leg(s) "
+                          f"available after drops")
             elif n_long and not n_short:
                 reason = (f"all {n_long} combination(s) price ABOVE the "
                           f"+{ceiling:.0f} ceiling — the legs are too LONG "

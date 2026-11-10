@@ -784,3 +784,10 @@ reality.
     vocabulary covers the outcomes the world actually produces — the gap
     is not a wrong number, it is a number that cannot be written down.
 
+75. **If a guard would only block people, it is half a fix.** A verdict
+    computed for the wrong side needed refusing — but `prop_edge` had no
+    way to produce one for a chosen side, so the refusal alone would have
+    left the correct workflow impossible and the guard would have been
+    worked around. Before adding a check that something was done wrong,
+    confirm there is a supported way to do it right, and build that first.
+

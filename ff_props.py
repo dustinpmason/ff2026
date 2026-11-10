@@ -1168,7 +1168,9 @@ def prop_edge(est: Estimate,
               under_odds: float | None = None,
               fair_over: float | None = None,
               fair_source: str | None = None,
-              devig_method: str = "auto") -> Edge:
+              devig_method: str = "auto",
+              market: str | None = None,
+              side: str | None = None) -> Edge:
     """Compare the model against a market price and tier the result.
 
     Raises ValueError on a missing `over_odds`. That used to fall through to
@@ -1234,10 +1236,33 @@ def prop_edge(est: Estimate,
 
     p = est.blended
     edge_over = p - fair_over
-    side = "OVER" if edge_over >= 0 else "UNDER"
+    # B126. The side was DERIVED from which way the edge pointed, with no
+    # way for a caller to ask about the side it actually wants to bet. That
+    # is the root of the Cade Otton near-miss: a live session wanted
+    # verdicts for specific sides to build slips, `prop_edge` could only
+    # answer for the side the model liked, so the session computed one
+    # verdict per LINE and attached it to whichever side it was betting.
+    # `boost_verdict` vetoes "a role change running against THE SIDE BEING
+    # BET" (B80), so that discarded exactly the thing the veto turns on —
+    # and nearly shipped Otton OVER with his targets collapsed 5.4 -> 1.5.
+    #
+    # Forcing a side is not a worse answer, it is a different question:
+    # "what does the model think of the bet I want to make" rather than
+    # "what does the model like here". A forced side the model dislikes
+    # yields a NEGATIVE edge, which is the honest answer and is what makes
+    # the disagreement computable instead of a note in prose.
+    if side is not None:
+        side = str(side).upper()
+        if side not in ("OVER", "UNDER"):
+            raise ValueError(
+                f"side must be 'OVER' or 'UNDER', got {side!r}")
+    else:
+        side = "OVER" if edge_over >= 0 else "UNDER"
     model_p = p if side == "OVER" else 1 - p
     fair_p = fair_over if side == "OVER" else 1 - fair_over
-    edge = abs(edge_over)
+    # Signed to the side being evaluated: +ve means the model likes this
+    # side, -ve means it does not. Only the derived side can assume +ve.
+    edge = edge_over if side == "OVER" else -edge_over
 
     # The UNDER must be priced at the UNDER's price. Falling back to
     # `over_odds` here produced a number for a bet nobody can place, and it
@@ -1276,6 +1301,45 @@ def prop_edge(est: Estimate,
         reasons.append(f"CI spans {est.ci_width*100:.0f} pts")
     if not np.isnan(hold) and hold > 0.06:
         reasons.append(f"hold {hold*100:.1f}% is steep")
+    # B121. A UNITS mismatch between the estimate and the market, which this
+    # engine could not see at all. Found live: a First TD Scorer leg was
+    # priced against a model probability built from a rushing+receiving TD
+    # series — that is P(scores A touchdown), while the market is P(scores
+    # the FIRST one), roughly three times smaller. The engine reported a
+    # +19.2 point "edge" that was almost entirely the units error, and
+    # nothing in the output hinted at it; the reading session caught it by
+    # hand. `Estimate` carries `stat`, never the market being priced, so the
+    # two quantities had no way to be compared.
+    _stat = str(getattr(est, "stat", "") or "").lower()
+    _td_shaped = "td" in _stat or "touchdown" in _stat
+    _mkt = (market or "").lower()
+    if _td_shaped and "first" in _mkt:
+        raise ValueError(
+            f"the estimate is built on {est.stat!r} at line {est.line}, "
+            f"which is P(scores A touchdown), and you are pricing {market!r}, "
+            f"which is P(scores the FIRST touchdown). Those are different "
+            f"events and the first is roughly 3x the second, so the edge "
+            f"would be almost entirely a units error. Refusing rather than "
+            f"returning it. Price the first-TD market off the market's own "
+            f"de-vigged field and report no model number — F4 measured that "
+            f"this project cannot out-predict a book on TD level anyway "
+            f"(best feature AUC 0.66).")
+    _units_unchecked = _td_shaped and not _mkt
+    if _units_unchecked:
+        reasons.append(
+            "TD-shaped estimate priced against an unnamed market — pass "
+            "market= so a first-TD line cannot be scored with an "
+            "anytime-TD probability (they differ by about 3x)")
+    if np.isnan(hold):
+        # B120. A nan hold was SILENT here, so a leg whose hold could not be
+        # computed came back `tier=MODERATE`, `reasoning="clean read"` and
+        # `boost_verdict=CLEAR` — a leg with no measurable vig reading as
+        # VETTED. Found live on a First TD leg the same night B87 introduced
+        # the refusal: B87 stopped the fabricated number and stopped there,
+        # leaving the refusal invisible to everything downstream, which is
+        # B39's shape inside B87's own fix. The reason now carries WHY,
+        # which also puts it in front of `boost_verdict`.
+        reasons.append(f"no hold measured — {hold_note}")
 
     # A role change OVERRIDES the edge. This is the Waller case: the model read
     # 80% against a market at 50% because his targets had halved. A big edge on
@@ -1353,13 +1417,32 @@ def prop_edge(est: Estimate,
 
     if edge < 0.03 or est.ci_width > 0.50:
         tier = "PASS"
-        reasons.insert(0, "edge inside the noise")
+        # B126. "inside the noise" is true of a SMALL edge and false of a
+        # negative one. With a side forced, the model can be actively
+        # against the bet — a -8% edge is not noise, it is a disagreement,
+        # and reporting it as noise hides the one thing the caller asked.
+        if edge < -0.005:
+            reasons.insert(0, (
+                f"the model is AGAINST this side by {abs(edge)*100:.1f} "
+                f"points — it prefers "
+                f"{'UNDER' if side == 'OVER' else 'OVER'} here. This is not "
+                f"a thin edge, it is a disagreement."))
+        else:
+            reasons.insert(0, "edge inside the noise")
     elif edge >= 0.08 and est.sample_verdict == "ADEQUATE" and est.ci_width <= 0.35:
         tier = "STRONG"
     elif edge >= 0.05 and est.sample_verdict != "THIN":
         tier = "MODERATE"
     else:
         tier = "COIN-FLIP"
+
+    # B121. An unchecked units question costs a tier, for the same reason a
+    # role change does: the edge may be real but it may be three times the
+    # quantity the market is about, and nothing here can tell. STRONG on a
+    # leg whose units were never checked is the "reads as vetted" fault the
+    # live round named.
+    if _units_unchecked:
+        tier = {"STRONG": "MODERATE", "MODERATE": "COIN-FLIP"}.get(tier, tier)
 
     # A supportive role change still costs a tier: the DIRECTION is informative
     # but the MAGNITUDE is not, so do not let it license a big stake.
@@ -2454,7 +2537,19 @@ def screen_quotes(quotes: list[dict],
             # anything priced off it needs an external fair line. Checking
             # only `under` missed the Under-only case, which arrives whenever
             # a native outcome row is screened without being paired first.
-            out.one_sided.append(book)
+            # B122. This appended only the BOOK, so on a 32-row anytime-TD
+            # board `describe()` printed "draftkings" thirty-two times and
+            # could not say WHICH leg was one-sided — the only thing you
+            # want from it on a mixed board. The player and market come
+            # along now, deduped, and the book is kept because a leg
+            # one-sided at one book may be two-sided at another.
+            _who = " ".join(str(x) for x in
+                            (q.get("player"), q.get("market"),
+                             q.get("point"))
+                            if x not in (None, ""))
+            _entry = f"{_who} @{book}" if _who else book
+            if _entry not in out.one_sided:
+                out.one_sided.append(_entry)
 
         if q.get("label_warning"):
             # A strange outcome label on a market that carries a line means
