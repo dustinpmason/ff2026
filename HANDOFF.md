@@ -997,3 +997,22 @@ reality.
     the headline. When a check and a headline disagree, the headline wins in
     practice, so the fix belongs in the headline: exclude the team, change
     the number, and say what the number is now relative to.
+
+94. **Test the label, not just the number behind it.** `waiver_board` printed
+    "inside the 0.250pp floor — treat as zero" on a −12.23pp move, because
+    the comparison put a fraction against a figure in percentage points.
+    Fourteen checks shipped around that function hours earlier; every one of
+    them asserted on the ranking or the delta, both of which were right the
+    whole time, and the suite's own fixture printed `-23.150pp ... inside the
+    0.250pp floor` and passed. A human reads the sentence, not the float. If
+    a function's output includes a verdict in words, the words are part of
+    the contract and need a check of their own — including one on each side
+    of the boundary, because the extremes pass under almost any arithmetic.
+
+95. **A flag set by the caller is not a flag read from the data.** The first
+    checks for `stale` and `position_defaulted` constructed `WaiverValue`
+    with those fields set directly. They proved the formatting worked and
+    nothing else: a revert that stopped reading `pool.stale` altogether
+    passed every one. A field that is supposed to be DERIVED needs at least
+    one check that drives the real derivation, with the source data arranged
+    to make it true.

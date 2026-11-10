@@ -198,6 +198,35 @@ def team_byes(weekly: pd.DataFrame,
     return out
 
 
+# B138. nflverse and FantasyPros disagree on two team codes. `meta` comes
+# from nflverse and carries JAX and LA; the connector returns JAC and LAR.
+# Passing a connector code straight through matched NOBODY and the player was
+# projected at his average ON HIS BYE — on a live board that moved Week 11
+# from 16.38% to 12.76%, because Blake Corum (LA) was never excluded.
+#
+# This is the same silent-empty failure the docstring below already warns
+# about for derived byes, in a second guise: the set comes back smaller than
+# it should and nothing says so. Week 10 happened to be unaffected, since
+# CHI/DEN/PHI/TB spell the same in both.
+#
+# Kept as a map rather than a fuzzy match: these are two known, stable
+# disagreements, and a near-match rule would be a new way to pair the wrong
+# team. Add to it when a third shows up.
+TEAM_CODE_ALIASES = {
+    "JAC": "JAX",      # FantasyPros -> nflverse
+    "LAR": "LA",
+}
+
+
+def canon_team(code) -> str | None:
+    """A team code in nflverse's spelling, or None."""
+    c = _meta_field(code)
+    if c is None:
+        return None
+    c = c.strip().upper()
+    return TEAM_CODE_ALIASES.get(c, c) or None
+
+
 def players_on_bye(week: int,
                    meta: dict[str, tuple[str, str]],
                    byes: dict[str, int] | set[str] | list[str]) -> set[str]:
@@ -240,7 +269,30 @@ def players_on_bye(week: int,
                 f"on bye' and projected every bye player at his average.")
     else:
         off = set(byes)
-    return {p for p, (team, _) in meta.items() if team in off}
+
+    # B138. Normalise BOTH sides to nflverse's spelling before matching, and
+    # refuse a code that matches nobody while other codes do. A connector
+    # "LAR" against meta's "LA" matched zero players and the bye silently did
+    # not apply.
+    off_canon = {c for c in (canon_team(t) for t in off) if c}
+    hits = {p: canon_team(team) for p, (team, _) in meta.items()}
+    present = {t for t in hits.values() if t}
+    missed = sorted(off_canon - present)
+    if missed and len(missed) < len(off_canon):
+        # Some codes matched and some did not. A team nobody rosters is
+        # legitimate, so this is a warning in the exception only when it
+        # looks like a spelling problem: the code is absent while its
+        # neighbours are present.
+        raise ValueError(
+            f"bye team code(s) {missed} match no player in meta, while "
+            f"{sorted(off_canon & present)} do. meta comes from nflverse and "
+            f"spells teams {sorted(present)[:6]}...; the connector spells two "
+            f"of them differently (JAC/JAX, LAR/LA), which is why "
+            f"TEAM_CODE_ALIASES exists. Either this code is misspelled or "
+            f"nobody in the league rosters that team — pass the codes through "
+            f"canon_team() and check. Returning a short set here would have "
+            f"projected a bye player at his average.")
+    return {p for p, t in hits.items() if t in off_canon}
 
 
 def build_meta(weekly: pd.DataFrame) -> dict[str, tuple[str, str]]:
@@ -1159,6 +1211,15 @@ class WaiverValue:
     n_sims: int
     reachable: bool          # does he appear in ANY legal lineup
     why: str = ""
+    # His distribution is a PRIOR season's. `stale_names()` cannot see this:
+    # it scans rosters only, so a stale CANDIDATE was invisible and Tyreek
+    # Hill — zero 2026 games — came fourth on a live board with nothing
+    # saying his level was last year's.
+    stale: bool = False
+    # No position in `meta`, so one was assumed. A player with no 2026 rows
+    # has no team and no position, and this used to fall through to "WR"
+    # silently, which is a guess wearing a measurement's clothes.
+    position_defaulted: bool = False
 
     @property
     def delta(self) -> float:
@@ -1172,8 +1233,19 @@ class WaiverValue:
                     f"A bid is unjustified on survival grounds.")
         s = (f"{self.player}: {self.p_without:.3%} -> {self.p_with:.3%}  "
              f"({self.delta * 100:+.3f}pp)")
+        if self.stale:
+            s += "  [STALE: projected from a prior season]"
+        if self.position_defaulted:
+            s += "  [position ASSUMED, not in meta]"
         if floor is not None:
-            s += ("  RESOLVED" if abs(self.delta) > floor
+            # `delta` is a FRACTION; `floor` is in PERCENTAGE POINTS, as its
+            # own message says. Comparing them directly meant the test only
+            # passed at a delta above 25pp, so EVERY line printed "inside the
+            # floor" — including James Cook at -12.23pp, 78x the simulation's
+            # own noise. Fourteen checks shipped around this function and not
+            # one asserted on the label; they all tested the ranking and the
+            # delta, which were right.
+            s += ("  RESOLVED" if abs(self.delta * 100.0) > floor
                   else f"  inside the {floor:.3f}pp floor — treat as zero")
         if not self.in_best_lineup:
             s += "  [not in the best lineup]"
@@ -1210,8 +1282,11 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
         # exist and came back NOT REACHABLE — including six real receivers,
         # which is the only reason it was noticed.
         pos = _meta_field(meta_lookup(candidate, meta)[1])
-    pos = pos or next((p for p in ("RB", "WR", "TE", "QB")
-                       if who in me["roster"].get(p, [])), None) or "WR"
+    from_roster = next((p for p in ("RB", "WR", "TE", "QB")
+                        if who in me["roster"].get(p, [])), None)
+    defaulted = not (pos or from_roster)
+    pos = pos or from_roster or "WR"
+    is_stale = who in getattr(pool, "stale", ())
 
     grown = {k: list(v) for k, v in me["roster"].items()}
     grown.setdefault(pos, [])
@@ -1229,17 +1304,20 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
                            float(min(r.p_last)), False, n_sims, False,
                            f"{who} is on the roster but enters no legal "
                            f"lineup — on a bye, or crowded out of every "
-                           f"slot. The simulation cannot value him.")
+                           f"slot. The simulation cannot value him.",
+                           stale=is_stale, position_defaulted=defaulted)
     if not without:
         return WaiverValue(candidate, float(min(r.p_last)), float("nan"),
                            True, n_sims, False,
                            f"{who} appears in EVERY legal lineup, so there is "
-                           f"no without-him comparison on this roster")
+                           f"no without-him comparison on this roster",
+                           stale=is_stale, position_defaulted=defaulted)
     p_with = float(min(r.p_last))
     p_without = float(min(r.p_last[without]))
     best = r.lineups[int(np.argmin(r.p_last))]
     return WaiverValue(candidate, p_with, p_without, who in best, n_sims,
-                       True, "paired within one run")
+                       True, "paired within one run", stale=is_stale,
+                       position_defaulted=defaulted)
 
 
 def waiver_board(teams: list[dict], pool: dict[str, np.ndarray], *,

@@ -6830,6 +6830,142 @@ chk("a bad team id is refused rather than defaulting to someone",
         _t69, _p69, my_team_id="99", candidate="STAR", n_sims=1000,
         meta=_meta69), ValueError))
 
+# --- the team-code mismatch (B138) -----------------------------------------
+# nflverse spells JAX and LA; the FantasyPros connector returns JAC and LAR.
+# A connector code passed straight through matched NOBODY and the player was
+# projected at his average ON HIS BYE — on a live board that moved Week 11
+# from 16.38% to 12.76%, because Blake Corum (LA) was never excluded. Week 10
+# was unaffected only because CHI/DEN/PHI/TB spell the same both ways.
+_m138 = {"Blake Corum": ("LA", "RB"), "Trevor Lawrence": ("JAX", "QB"),
+         "Caleb Williams": ("CHI", "QB"), "Josh Allen": ("BUF", "QB")}
+
+
+def _bye(codes, week=11, meta=None):
+    """players_on_bye, or None if it raises.
+
+    Removing the normalisation makes a MIXED set raise — "LAR" misses while
+    "CHI" hits, which is the spelling-problem branch — so calling it bare
+    turned these checks into a crash instead of a failure. Lesson 14, in
+    checks written for a fix whose whole point is not failing silently.
+    """
+    try:
+        return ff_guillotine.players_on_bye(week, _m138 if meta is None
+                                            else meta, codes)
+    except BaseException:                                    # noqa: BLE001
+        return None
+chk("the connector's spelling finds the same players as nflverse's",
+    _bye({"LAR"}) == _bye({"LA"}) == {"Blake Corum"},
+    f"LAR -> {_bye({'LAR'})}")
+chk("and the other known disagreement maps too",
+    _bye({"JAC"}) == {"Trevor Lawrence"}, f"JAC -> {_bye({'JAC'})}")
+chk("codes that already match are untouched",
+    _bye({"CHI"}) == {"Caleb Williams"}, f"CHI -> {_bye({'CHI'})}")
+chk("a mixed set resolves every code in it",
+    _bye({"LAR", "CHI"}) == {"Blake Corum", "Caleb Williams"},
+    f"-> {_bye({'LAR', 'CHI'})}")
+chk("canon_team normalises both aliases and leaves the rest alone",
+    (ff_guillotine.canon_team("LAR"), ff_guillotine.canon_team("JAC"),
+     ff_guillotine.canon_team("chi")) == ("LA", "JAX", "CHI"))
+chk("and it survives the NaN that build_meta emits for a missing team",
+    ff_guillotine.canon_team(float("nan")) is None
+    and ff_guillotine.canon_team(None) is None)
+# A code that matches nothing WHILE others match is a spelling problem, not
+# a team nobody rosters — refused loudly rather than silently shortening the
+# set, which is the failure this whole function exists to prevent.
+chk("an unmatched code beside a matched one is refused, not dropped",
+    "match no player in meta" in _err(
+        lambda: ff_guillotine.players_on_bye(11, _m138, {"CHI", "ZZZ"})),
+    _err(lambda: ff_guillotine.players_on_bye(11, _m138,
+                                              {"CHI", "ZZZ"}))[:70])
+chk("and the refusal names the alias map as the likely cause",
+    "TEAM_CODE_ALIASES" in _err(
+        lambda: ff_guillotine.players_on_bye(11, _m138, {"CHI", "ZZZ"})))
+# All-unmatched is the different case: a league that rosters none of the bye
+# teams. Legitimate, and must NOT raise.
+chk("a bye week where the league rosters nobody affected is fine",
+    _bye({"SEA", "ARI"}) == set(), f"-> {_bye({'SEA', 'ARI'})}")
+
+# --- the floor annotation's UNITS (B136) -----------------------------------
+# `delta` is a FRACTION and `floor` is in PERCENTAGE POINTS, as its own
+# message says. Compared directly, the test only passed above a 25pp delta,
+# so EVERY line printed "inside the floor — treat as zero", including James
+# Cook at -12.23pp on a live board, 78x the simulation's own noise.
+#
+# Fourteen checks shipped around this function the night before and not one
+# of them asserted on the LABEL. They tested the ranking and the delta, which
+# were correct the whole time.
+_big69 = ff_guillotine.WaiverValue("Cook", 0.1381, 0.2604, True, 80_000, True)
+chk("a 12pp move is RESOLVED, not 'inside the 0.250pp floor'",
+    "RESOLVED" in _big69.describe(0.25)
+    and "inside the" not in _big69.describe(0.25),
+    _big69.describe(0.25))
+chk("and the delta it prints is in the same unit as the floor",
+    "-12.230pp" in _big69.describe(0.25), _big69.describe(0.25))
+# A delta just over and just under the floor, so the boundary is pinned and
+# not merely the extremes.
+# 0.2578 against 0.2604 is a 0.26pp delta — just over the 0.25pp floor.
+# Written first as 0.2600 vs 0.26040, which is 0.04pp and BELOW it: the
+# check failed for the right reason and the fixture was the thing wrong.
+chk("a delta just ABOVE the floor resolves",
+    "RESOLVED" in ff_guillotine.WaiverValue(
+        "X", 0.2578, 0.26040, True, 80_000, True).describe(0.25),
+    ff_guillotine.WaiverValue("X", 0.2578, 0.26040, True, 80_000,
+                              True).describe(0.25))
+chk("a delta just BELOW the floor is called inside it",
+    "inside the 0.250pp floor" in ff_guillotine.WaiverValue(
+        "X", 0.26020, 0.26040, True, 80_000, True).describe(0.25),
+    ff_guillotine.WaiverValue("X", 0.26020, 0.26040, True, 80_000,
+                              True).describe(0.25))
+chk("and a zero delta is inside any floor",
+    "inside the" in ff_guillotine.WaiverValue(
+        "X", 0.26, 0.26, False, 80_000, True).describe(0.25))
+
+# --- a STALE candidate, which stale_names() cannot see (B137) --------------
+# `stale_names()` scans ROSTERS only, so a stale CANDIDATE was invisible:
+# Tyreek Hill, zero 2026 games, came FOURTH on a live board with nothing
+# saying his level was last season's.
+_stale69 = ff_guillotine.WaiverValue("Hill", 0.1966, 0.2604, True, 80_000,
+                                     True, stale=True)
+chk("a candidate projected from a prior season is flagged on his own line",
+    "STALE" in _stale69.describe(0.25), _stale69.describe(0.25))
+chk("and a current-season candidate is not",
+    "STALE" not in _big69.describe(0.25))
+# A position assumed because meta has none is not a measurement.
+_dflt69 = ff_guillotine.WaiverValue("Hill", 0.1966, 0.2604, True, 80_000,
+                                    True, position_defaulted=True)
+chk("an assumed position is named as assumed",
+    "position ASSUMED" in _dflt69.describe(0.25), _dflt69.describe(0.25))
+chk("and a position read from meta is not",
+    "ASSUMED" not in _big69.describe(0.25))
+chk("waiver_value reports a measured position as not defaulted",
+    not ff_guillotine.waiver_value(
+        _t69, _p69, my_team_id="0", candidate="STAR", n_sims=1500,
+        meta=_meta69).position_defaulted)
+chk("and defaults it, flagged, when meta has no position for him",
+    ff_guillotine.waiver_value(
+        _t69, _p69, my_team_id="0", candidate="STAR", n_sims=1500,
+        meta={}).position_defaulted)
+# Staleness read THROUGH waiver_value off the pool, not handed to the
+# dataclass. Every check above constructed `stale=True` directly, so a
+# revert that stopped reading `pool.stale` passed all of them.
+_stale_pool = dict(_p69)
+_sp = ff_guillotine.Pool() if hasattr(ff_guillotine, "Pool") else None
+try:
+    _stale_pool = ff_guillotine.Pool(_p69)
+except Exception:                                            # noqa: BLE001
+    class _SP(dict):
+        pass
+    _stale_pool = _SP(_p69)
+_stale_pool.stale = {"STAR"}
+chk("waiver_value reads staleness off the pool, not from its caller",
+    ff_guillotine.waiver_value(
+        _t69, _stale_pool, my_team_id="0", candidate="STAR", n_sims=1500,
+        meta=_meta69).stale)
+chk("and a current-season candidate off the same pool is not stale",
+    not ff_guillotine.waiver_value(
+        _t69, _stale_pool, my_team_id="0", candidate="SCRUB", n_sims=1500,
+        meta=_meta69).stale)
+
 # --- the board ------------------------------------------------------------
 _board69 = ff_guillotine.waiver_board(
     _t69, _p69, my_team_id="0", candidates=["STAR", "SCRUB", "Nobody At All"],
