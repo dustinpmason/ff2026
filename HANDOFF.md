@@ -928,3 +928,14 @@ reality.
     DONE row describing half the work. An item is finished when it does what
     it was filed to do, not when the part I happened to think of works. Read
     the entry, not the title.
+
+88. **Check whether an open item is still open before offering it again.**
+    I carried B108 — a graded bet with no logged recommendation — across
+    three reports, ending each with it as a decision for Dustin to make.
+    Running it found the backfill had been written the day before, by an
+    earlier session, exactly as specified. The log was the authority on its
+    own state and it was one query away; I was quoting a summary of a
+    summary. A standing item in a backlog is a claim about the world, and
+    claims about the world go stale. Re-check before spending somebody's
+    attention on one — and before writing, because the prompt I handed over
+    would have double-counted had the session not refused it.

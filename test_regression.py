@@ -6374,5 +6374,74 @@ chk("a list of legs is accepted as well as one string",
                               book="draftkings")) == 2)
 
 
+# ---------------------------------------------------------------------------
+section("66. a verdict with no model_p is not an engine call (B117/B108)")
+# The B108 backfill turned out to have been done already, on 2026-11-08. What
+# it left behind is the real issue and it is general: a rec with model_p=None
+# records the side that was BET, not a side the engine chose. B113 names
+# model_p=None as the supported backfill path, so these will keep appearing,
+# and the reasoning on one explains the missing probability while saying
+# nothing about the side. In the tier table that reads as an engine call.
+#
+# Fixed at the READ side rather than by amending stored records: it costs no
+# log write, needs no new API, and it corrects every such record that already
+# exists. `grade_rec` is the only writer of `supersedes` and is hardcoded to
+# grading, so there is no amendment path — and adding one would fix the three
+# records in hand while leaving the next backfill to repeat it.
+import shutil as _sh66
+import tempfile as _tf66
+_tmp66 = _tf66.mkdtemp()
+_old66 = (ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER)
+ff_betlog.LOG_DIR = pathlib.Path(_tmp66)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "s.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "pull.json"
+try:
+    ff_betlog.record_pull(files=1, trashed=0)
+except Exception:
+    pass
+
+# Two engine calls with a probability, one backfill without.
+ff_betlog.log_recommendation("Engine A", "player_reception_yds", 50.5,
+                             "OVER", "PASS", 0.42, 0.50, -110,
+                             event_id="53178")
+ff_betlog.log_recommendation("Engine B", "player_reception_yds", 60.5,
+                             "OVER", "LEAN", 0.58, 0.50, -110,
+                             event_id="53178")
+ff_betlog.log_recommendation("Backfilled C", "player_reception_yds", 33.5,
+                             "OVER", "PASS", None, 0.50, -110,
+                             event_id="87238",
+                             reasoning="B108 backfill: no model_p recorded")
+_r66 = _out(ff_betlog.rec_summary)
+
+chk("a verdict with no model_p is named in the summary",
+    "carry NO model_p" in _r66, _line(_r66, "!!") or "not named")
+chk("and the count is right, not the whole set",
+    "1 of 3 verdicts carry NO model_p" in _r66, _line(_r66, "!!"))
+chk("it says those record the side BET, not a side the engine chose",
+    "the side that was BET" in _r66)
+chk("and says plainly that a tier on one is not an engine call",
+    "NOT evidence the engine liked that side" in _r66)
+chk("the tier it sits under is named, so the reader can subtract it",
+    "1 PASS" in _line(_r66, "!!"), _line(_r66, "!!"))
+# It must NOT fire when every verdict carries a probability — a warning that
+# is always on is a warning nobody reads.
+_sh66.rmtree(_tmp66, ignore_errors=True)
+_tmp66b = _tf66.mkdtemp()
+ff_betlog.LOG_DIR = pathlib.Path(_tmp66b)
+ff_betlog.SESSION = ff_betlog.LOG_DIR / "s.jsonl"
+ff_betlog.PULL_MARKER = ff_betlog.LOG_DIR / "pull.json"
+try:
+    ff_betlog.record_pull(files=1, trashed=0)
+except Exception:
+    pass
+ff_betlog.log_recommendation("Engine A", "player_reception_yds", 50.5,
+                             "OVER", "PASS", 0.42, 0.50, -110,
+                             event_id="53178")
+chk("and it stays quiet when every verdict has a model_p",
+    "carry NO model_p" not in _out(ff_betlog.rec_summary))
+_sh66.rmtree(_tmp66b, ignore_errors=True)
+ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old66
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

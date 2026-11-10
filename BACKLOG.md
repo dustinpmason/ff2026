@@ -32,6 +32,13 @@ All shipped and covered by `test_regression.py` (37 checks, all passing).
 | **B7** | *Found during E2:* `grade_rec` double-counted | DONE 2026-10-30 | Wrote both a `rec_grade` audit copy and a superseding `rec`, so `rec_summary` reported 10 verdicts for 5 recommendations and doubled every tier count. Now one record; all readers go through `live_recs()`. |
 | **P1** | Relabel model output in betting context | DONE 2026-10-30 | `boost_verdict()` / `boost_leg_report()` — CLEAR/CAUTION/VETO, no stake sizing, reports the number as a **gap** not an "edge". |
 
+### Found by running the B108 prompt (2026-11-09)
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| **B108** | A graded bet with no logged recommendation | **ALREADY CLOSED 2026-11-08 — I kept offering to do it anyway** | Running the prompt found the backfill had been written the previous day, 2026-11-08T23:42:21Z: all three legs of bet `7a5f4b8ef8dc` (DK 3-leg SGP, +550, event 87238, LOSS) carry linked recs at tier PASS with `model_p=None`, superseded 48 seconds later to add `result: LOSS`. `unlogged_bet_verdicts()` returns `[]` and did before. The session correctly refused to write and correctly did not push — `upload_payload()` returned None, so creating a Drive file would have added a redundant one. **The error was mine:** I carried B108 as open across three separate reports and offered it as a decision each time, without ever checking whether it was still open. The log was the authority and it was one query away. |
+| **B131** | A verdict with `model_p=None` reads as an engine call in `rec_summary`'s tier table | **FIXED 2026-11-09** | What B108 left behind, and it is general rather than about those three records. B113 names `model_p=None` as the supported backfill path, so these keep appearing; the reasoning on one explains the missing probability and says nothing about the SIDE. So the side recorded is the side that was BET, and a PASS tier on it reads as the engine's view — B117's trap exactly. Calibration already dropped them and said so; the tier table counted them silently, and the table is where the misreading happens. `rec_summary` now names the count, breaks it down by tier, and says the records are not engine calls. **Fixed at the READ side on purpose:** no log write, no new API, and it corrects every such record that already exists. The alternative considered and rejected was an amendment path — `grade_rec` is the only writer of `supersedes` and is hardcoded to grading — which would have fixed the three records in hand and left the next backfill to repeat the problem. Section 66, 4 reverts all caught. |
+
 ### Found by building F15 (2026-11-09)
 
 | # | Item | Status | Notes |

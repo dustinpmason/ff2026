@@ -1432,6 +1432,36 @@ def rec_summary() -> str:
         L.append(f"  {tier:<12}{len(rs):>5}{acted:>8}{len(g):>8}{hit:>8}"
                  f"   {_spread_note(g) if g else ''}")
 
+    # B117/B108. A verdict with no `model_p` records the side that was BET,
+    # not a side the engine chose. Backfilled recs are the common case —
+    # B113 names `model_p=None` as the supported backfill path — and the
+    # reasoning on one says why the probability is missing while saying
+    # nothing about the side. So a PASS row in the table above silently
+    # mixes engine calls with slip sides, and a tier on the latter reads as
+    # the engine's view when it is only a record of what was wagered.
+    #
+    # Reported against the tier table rather than only in calibration, which
+    # is where it already appeared, because the table is where the
+    # misreading happens: calibration drops these records and says so, the
+    # table counts them.
+    _nomp = [r for r in recs if _num(r.get("model_p")) is None]
+    if _nomp:
+        _bytier = {}
+        for r in _nomp:
+            _bytier[r.get("tier") or "(no tier)"] = (
+                _bytier.get(r.get("tier") or "(no tier)", 0) + 1)
+        L.append("")
+        L.append(f"  !! {len(_nomp)} of {len(recs)} verdicts carry NO "
+                 f"model_p ("
+                 + ", ".join(f"{n} {t}" for t, n in sorted(_bytier.items()))
+                 + ")")
+        L.append("     Those record the side that was BET, not a side the "
+                 "engine chose.")
+        L.append("     A tier on one is NOT evidence the engine liked that "
+                 "side — read the")
+        L.append("     rows above with that many subtracted before calling "
+                 "any of it an engine call.")
+
     # The hit column is a raw tally, deliberately ungated — `graded` and the
     # spread of players and events sit beside every figure, so nothing in the
     # table claims to be a rate. Everything below it that says what a number
