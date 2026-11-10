@@ -2493,11 +2493,50 @@ filter would sit on a different scale from its neighbours, while a ratio
 measured within one filter transfers. E3 should replace it with a directly
 measured value.
 
-**Magnitude does not decide priceability.** `classify()` refuses an EV if
-ANY pair is non-zero, so +0.31 and +0.20 both make a slip unpriceable. These
-numbers reach the explanation text and the comparison against the book's own
-`correlation_factor` — which is the comparison the next paragraph tells you
-to make, and the reason the level still has to be right.
+**The SIGN decides priceability, then the magnitude. Changed 2026-11-10
+by F13 — read this before reporting a correlated slip.** `classify()` still
+answers only "is the product the joint", and for a correlated slip the
+answer is still no, so `p_cash` and `ev_pct` stay `None`. What changed is
+that a measured correlation now gets a **bound** instead of a refusal, and
+the verdict has a third state.
+
+Run `joint_verdict(legs, structure.pairs, cis=structure.pair_cis)`, or just
+read `Candidate.floor` / `.p_cash_floor` / `.ev_floor_pct`, which do it for
+you. Three outcomes:
+
+- **Every pair pointing the same way (all positive after the side signs).**
+  The product is a **FLOOR** on P(cash) — a theorem, Slepian's inequality,
+  not an estimate — so the slip can only be better than it reads. The
+  verdict is `FLOOR ONLY`, `p_cash_floor` and `ev_floor_pct` are reported
+  as **lower bounds**, and there is no threshold on the size. A QB stack at
+  +47% joint error prices exactly as a +2% one does.
+- **A negative total, inside the error the product already carries.**
+  Reported, with the EV flagged **OPTIMISTIC** by that amount. The gate is
+  a ratio against the legs' own propagated fair uncertainty, not a number
+  anybody picked.
+- **A negative total past that, or a positive total that only nets out
+  positive on the arithmetic.** Refused — no P(cash), no EV, as before.
+
+**Say which of the three you are reporting.** A floor and an optimistic
+estimate are the same kind of number on the page and opposite kinds of
+mistake. `floor[1]` is the sentence to quote.
+
+**A pair the table never measured still refuses outright.** F13 replaced
+"nobody measured this" with a measurement for receptions and anytime TD; it
+did not make independence an assumption anywhere.
+
+**Markets now in the table:** passing yards, rushing yards, receiving
+yards, **receptions** and **anytime TD**. Receptions is its own side, NOT
+receiving yards — same-team PASS x RECEPTIONS is +0.1774 against +0.2456
+for receiving yards, so folding them together overstates a receptions leg
+by ~28%. Passing TDs are measured but have **no market key** in
+`MARKET_SIDE`, because no passing-TD market has been seen on a live board
+here; if you see one, report the exact market string back.
+
+These numbers still reach the explanation text and the comparison against
+the book's own `correlation_factor` — which is the comparison the next
+paragraph tells you to make, and the reason the level still has to be
+right.
 
 **Do NOT limit slips to QB-stack shapes.** All-WR slips, cross-team slips,
 opposing-position slips are all fine and mostly independent. Build whatever the

@@ -101,7 +101,9 @@ its face rather than leaving a clean-looking number to be quoted elsewhere.
 """
 from __future__ import annotations
 
+import math
 import re
+from statistics import NormalDist
 from dataclasses import dataclass, field
 from collections import Counter
 from itertools import combinations, product
@@ -440,7 +442,8 @@ MODEL_SIDE_GATE = 0.03
 # classifying one QB-stack slip under both tables and getting identical
 # `priceable` and `independent_odds`. Re-derive with
 # `python3 ff_correlation.py`.
-from ff_correlation import RECORDED_MARKET as _RM
+from ff_correlation import (RECORDED_MARKET as _RM,
+                            RECORDED_MARKET_SIDE as _RMS)
 
 SAME_TEAM_CORR = {k: _RM[k][0] for k in (("QB", "WR"), ("QB", "TE"),
                                          ("QB", "RB"))}
@@ -570,7 +573,22 @@ MARKET_SIDE = {
     "player_pass_yds": "PASS",
     "player_rush_yds": "RUSH",
     "player_reception_yds": "RECV",
+    # F13. Added once E3 made the table reproducible and
+    # `market_side_table()` measured the cells. RECEPTIONS is deliberately
+    # its OWN side and not folded into RECV: same-team PASS x RECEPTIONS is
+    # +0.1774 (n=16,510) against PASS x RECV at +0.2456, so mapping a
+    # receptions leg to the receiving side overstates it by about 28%.
+    "player_receptions": "RECEPTIONS",
+    "player_anytime_td": "TD",
 }
+
+# `PASS_TD` is MEASURED — five cells, including same-team PASS_TD x TD at
+# +0.2173 over 13,100 pairs — but no passing-TD market key has been
+# observed on a live board in this project, so there is nothing to map it
+# to. Guessing the key would be worse than leaving it out: a key that never
+# matches refuses exactly like a measured refusal, which is B39's shape.
+# The key has to come off a real board before it goes in here.
+SIDES_MEASURED_NO_MARKET_KEY = ("PASS_TD",)
 
 # Markets NOT in MARKET_SIDE are outside what the correlation table
 # measured. player_anytime_td is the one that matters: it is a boost-parlay
@@ -586,6 +604,11 @@ VERDICTS = {
             "measured hold band.",
     "NEGATIVE": "Clears the floor but is -EV at the measured hold. The "
                 "boost does not cover the structure.",
+    "FLOOR ONLY": "Correlated legs whose measured correlation BOUNDS the "
+                  "joint instead of destroying it. P(cash) and EV are a "
+                  "lower bound, not an estimate; the slip can only be "
+                  "better than it reads. Read the joint-error line for "
+                  "which direction the bound runs.",
     "UNPRICEABLE": "Correlated legs. Real price, real payout, no EV — the "
                    "joint is not the product and this project has no joint "
                    "model. Not a verdict either way.",
@@ -929,6 +952,13 @@ class Structure:
     # provenance here is what lets `reason` name which measurement cleared
     # each pair, instead of asserting independence in general terms.
     zeros: list[tuple] = field(default_factory=list)
+    # F13. (player_a, player_b) -> (lo, hi) for each measured pair that
+    # carries one. Kept OUT of the `pairs` tuples on purpose: one caller
+    # unpacks those as `*_, r, why`, so appending a fifth element would
+    # silently shift `r` onto the label. A separate map changes nothing for
+    # existing readers and gives `joint_error` the interval it needs to know
+    # a pair's SIGN rather than assume it.
+    pair_cis: dict = field(default_factory=dict)
 
     @property
     def cross_game(self) -> bool:
@@ -1075,6 +1105,51 @@ def _pair_r(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
     return _from_measured("opp", sa, sb, a, b)
 
 
+def side_pair(relation: str, side_a: str, side_b: str):
+    """(r, n, ci) from E3's market-side table, or None if never measured.
+
+    This is the F13 table — 40 cells with confidence intervals — and it is
+    consulted only for pairs `MEASURED_PAIR_LIFT` does not cover. The
+    canonical lift table keeps priority where it has an entry, because B68
+    is explicit that pasting one filter's levels over another's is how the
+    original table became unreproducible.
+    """
+    lo, hi = sorted((side_a, side_b))
+    e = _RMS.get((relation, lo, hi))
+    if e is None:
+        return None
+    return float(e[0]), int(e[1]), (float(min(e[2])), float(max(e[2])))
+
+
+def _pair_r_ci(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str, tuple | None]:
+    """`_pair_r` plus the pair's confidence interval where one was measured.
+
+    `_pair_r` keeps its two-value signature — it is called directly in the
+    suite and the interval is not part of the question it answers. The
+    interval matters to `joint_error`, which needs a SIGN it can trust and
+    must not take one from a cell whose interval spans zero.
+    """
+    r, why = _pair_r(a, b)
+    if r is None or not r:
+        return r, why, None
+    ta, tb = _clean(a.team), _clean(b.team)
+    sa, sb = MARKET_SIDE.get(a.market), MARKET_SIDE.get(b.market)
+    if a.event_id != b.event_id or not ta or not tb or sa is None or sb is None:
+        return r, why, None
+    m = side_pair("same" if ta == tb else "opp", sa, sb)
+    if m is None:
+        return r, why, None
+    _r, _n, ci = m
+    # The canonical lift table and the side table are different
+    # measurements of the same pair where both have one, so an interval is
+    # attached only when it actually brackets the r being used. Stretching
+    # one table's interval around the other's point estimate would invent a
+    # bound neither measured.
+    if not (ci[0] <= r <= ci[1]):
+        return r, why, None
+    return r, why, ci
+
+
 def _from_measured(relation: str, sa: str, sb: str,
                    a: BoostLeg, b: BoostLeg) -> tuple[float | None, str]:
     """Resolve a pair the canonical table does not cover, off MEASURED_PAIR_LIFT.
@@ -1097,6 +1172,20 @@ def _from_measured(relation: str, sa: str, sb: str,
     rel_word = "same team" if relation == "same" else "opposing"
     m = pair_lift(relation, sa, sb)
     if m is None:
+        # F13. The lift sweep never reached this pair; the market-side
+        # table may still have measured its CORRELATION. A lift is a
+        # joint-crossing quantity and does not transfer to a binary market
+        # (a TD has no threshold to cross), but r does, and the gate is now
+        # computed from r rather than from lift. So an r here is a real
+        # answer where a missing lift used to be a refusal.
+        sp = side_pair(relation, sa, sb)
+        if sp is not None:
+            r, n, ci = sp
+            return r, (f"{rel_word} {sa.lower()} x {sb.lower()} — MEASURED "
+                       f"r={r:+.4f} over {n:,} pairs, 95% CI "
+                       f"{ci[0]:+.4f}..{ci[1]:+.4f} (E3's market-side "
+                       f"table; no joint-crossing lift for this pair, so "
+                       f"the slip's joint error is computed from r)")
         return None, (
             f"{rel_word} {sa.lower()} x {sb.lower()} is not a pair this "
             f"project has measured — the full sweep could not reach "
@@ -1187,13 +1276,15 @@ def classify(legs, meta=None) -> Structure:
             if l.team is None or l.pos is None:
                 l.team, l.pos = meta.get(l.player, (None, None))
 
-    pairs, unmeasured, zeros = [], [], []
+    pairs, unmeasured, zeros, pair_cis = [], [], [], {}
     for a, b in combinations(legs, 2):
-        r, why = _pair_r(a, b)
+        r, why, ci = _pair_r_ci(a, b)
         if r is None:
             unmeasured.append((a.player, b.player, why))
         elif r:
             pairs.append((a.player, b.player, r, why))
+            if ci is not None:
+                pair_cis[(a.player, b.player)] = ci
         else:
             zeros.append((a.player, b.player, why))
 
@@ -1223,18 +1314,359 @@ def classify(legs, meta=None) -> Structure:
     elif pairs:
         detail = "; ".join(f"{a} x {b} r={r:+.2f} ({why})"
                            for a, b, r, why in pairs)
-        reason = (f"NOT priceable: {detail}. The true joint is not the "
-                  f"product and this project has no joint model, so no EV "
-                  f"is reported. That is not a verdict against the slip — "
-                  f"the measured same-game hold was measured on INDEPENDENT "
-                  f"legs and does not apply here.")
+        # Deliberately says nothing about whether an EV is reported. It
+        # used to assert "no EV is reported", and F13 made that false while
+        # leaving the sentence in place two lines above a printed EV floor.
+        # Whether a floor exists is `Candidate.floor`'s answer, and this
+        # text is not the place to pre-empt it.
+        reason = (f"The product is NOT the joint: {detail}. Whether that "
+                  f"leaves a usable bound is a separate question — see the "
+                  f"joint-error line. Either way it is not a verdict "
+                  f"against the slip: the measured same-game hold was "
+                  f"measured on INDEPENDENT legs and does not apply here.")
     else:
         detail = "; ".join(f"{a} x {b}: {why}" for a, b, why in unmeasured)
         reason = (f"NOT priceable: {detail}. Independence here would be an "
                   f"assumption, not a measurement, and assuming it is what "
                   f"hands a correlated slip an EV it should never get.")
     return Structure(kind=kind, pairs=pairs, priceable=priceable,
-                     reason=reason, unmeasured=unmeasured, zeros=zeros)
+                     reason=reason, unmeasured=unmeasured, zeros=zeros,
+                     pair_cis=pair_cis)
+
+
+# ---------------------------------------------------------------------------
+# F13 — what a measured correlation COSTS the product, and which way
+# ---------------------------------------------------------------------------
+#
+# `classify` answers "is the product the joint". For a correlated slip the
+# answer is no, and until now that was the end of it: no P(cash), no EV,
+# whatever the size of the correlation. That refusal is right for an
+# UNMEASURED pair and far too blunt for a measured one, which is the whole
+# of F13: once a pair has a number, the product's error has a number too,
+# and a number can be reported instead of a refusal.
+#
+# THE ARITHMETIC. Under a Gaussian copula each leg fires when its latent
+# Z clears z_i = PHI^-1(1 - p_i). To first order in the correlations, the
+# orthant probability is
+#
+#     P(all) ~ (PROD p_i) * (1 + SUM_{i<j} r_ij * phi(z_i) phi(z_j) / p_i p_j)
+#
+# so the RELATIVE error of the independent product is the second term, and
+# it is ADDITIVE OVER PAIRS. That additivity is the finding: a per-pair gate
+# cannot bound a slip, because three pairs each just inside a 3% gate stack.
+# Verified against antithetic Monte Carlo over a swept range in section 73,
+# and it holds far better than a first-order expansion has any right to:
+# across r from 0.03 to 0.50 on 2- and 3-leg slips, closed-form / simulation
+# runs 0.95 to 1.00, never worse than 5% out even where the error itself is
+# 95%. The deviations point the right way on BOTH gates below. For positive
+# correlations it UNDERSTATES the understatement (0.95-1.00), so a floor
+# stated from it is a floor. For the small NEGATIVE correlations where the
+# refusal gate actually lives it OVERSTATES the overstatement (1.06x at
+# r=-0.03, 1.03x on three such pairs), so the gate errs toward refusing.
+# Neither direction is corrected by a fudge factor; the sweep is pinned in
+# the suite instead, so a regression in this arithmetic is visible.
+#
+# The 2-leg figure in F13's backlog entry reproduces exactly. **The 3-leg
+# figure does not.** That entry says r=0.03 across three pairs costs 11.5%
+# of a 3-leg joint; it costs 5.73% closed-form and 5.89% by simulation, so
+# the entry was 2x high. The conclusion it was used to support — gate the
+# TOTAL, not each pair — survives unharmed, since 3 pairs still cost 3x one
+# pair. The magnitude of the argument was overstated; its direction was not.
+#
+# TWO THINGS THE OLD PER-PAIR GATE COULD NOT SEE.
+#
+# 1. THE SIGN. A positive joint error means the true joint is HIGHER than
+#    the product, so the reported P(cash) and EV are too LOW. Being wrong in
+#    that direction passes on a good slip; it never places a bad one. A
+#    NEGATIVE joint error is the dangerous one: the product OVERSTATES the
+#    joint and hands the slip an EV it has not earned, which is the exact
+#    failure `classify`'s refusal exists to prevent. Both signs are real in
+#    the measured table — same-team PASS x RECV is +0.2462 and same-team
+#    PASS x RUSH is -0.0765 — so the asymmetry below discriminates rather
+#    than waving slips through.
+#
+# 2. THE SIDES. Correlation is between the underlying STATS, not between the
+#    bets. Two positively-correlated players both bet OVER lift the joint;
+#    one OVER and one UNDER depress it. Under the copula that is exactly a
+#    sign flip on the latent variable, so the pair's effective r is
+#    r * s_a * s_b with s = +1 for an OVER and -1 for an UNDER. Nothing
+#    before this read `BoostLeg.side` when scoring a pair, so a mixed-side
+#    slip was scored with the sign of an all-OVER one.
+#
+# AND THE LEG PROBABILITIES MATTER, which is why this is computed on the
+# real legs and never looked up by shape. The same r=0.03 pair costs 0.97%
+# at p=0.65 each and 3.36% at p=0.35 each — a 3.5x range inside one pair.
+# F13's table of "measured totals for real shapes" was computed at 50/50 and
+# is a rough guide only.
+
+
+# The stdlib's own normal, not a hand-rolled rational approximation.
+# `ff_correlation._norm_ppf` exists but is an Acklam-style approximation
+# carried for a different job; this arithmetic is sensitive in the tail,
+# where a 1e-4 approximation error in z moves phi(z) by more than the
+# correlations being measured.
+_NORM = NormalDist()
+
+
+def _phi(z: float) -> float:
+    """Standard normal density."""
+    return _NORM.pdf(z)
+
+
+def _norm_inv(q: float) -> float:
+    """Standard normal quantile, refusing the endpoints.
+
+    A fair probability of exactly 0 or 1 has no finite z and `BoostLeg`
+    already refuses those, so reaching here with one is a caller error
+    rather than a number to clamp.
+    """
+    if not (0.0 < q < 1.0):
+        raise ValueError(
+            f"no finite normal quantile for {q!r} — a fair probability of "
+            f"exactly 0 or 1 cannot be placed on the copula's scale")
+    return _NORM.inv_cdf(q)
+
+
+def _side_sign(side) -> int:
+    """+1 for an OVER, -1 for an UNDER.
+
+    Anything else raises rather than defaulting. A slip whose side this
+    cannot read must not be scored with the sign of an all-OVER slip —
+    that is B39's shape, and here it would invert which way the error runs.
+    """
+    s = str(side or "").strip().upper()
+    if s in ("OVER", "O", "YES"):
+        return 1
+    if s in ("UNDER", "U", "NO"):
+        return -1
+    raise ValueError(
+        f"cannot tell which side {side!r} is, and the joint error's SIGN "
+        f"depends on it — an OVER and an UNDER of the same correlated pair "
+        f"move the joint in opposite directions")
+
+
+@dataclass
+class JointError:
+    """How far the product of the legs is from the joint, and which way."""
+    rel: float                              # signed relative error
+    terms: tuple[tuple[str, str, float], ...]   # (a, b, contribution)
+    why: str = ""
+    unreadable: tuple[str, ...] = ()        # legs whose side could not be read
+    # True when EVERY pair was scored on the pessimistic end of its own
+    # confidence interval rather than on its point estimate. The gate below
+    # keys on the SIGN of the error, and E3 measured one cell —
+    # same-team PASS x PASS_TD, n=262 — whose interval spans zero, so its
+    # sign is not known. A point estimate would have handed that pair a
+    # confident sign it has not earned (B39), so a pair carrying an interval
+    # is scored at whichever end hurts, and a pair carrying none is scored
+    # at its point estimate and forfeits the Slepian floor.
+    pessimistic: bool = False
+
+    @property
+    def measurable(self) -> bool:
+        return not self.unreadable
+
+    @property
+    def conservative(self) -> bool:
+        """True when the product UNDERSTATES the joint.
+
+        Zero counts as conservative: no error is not an overstatement.
+        """
+        return self.measurable and self.rel >= 0.0
+
+    def describe(self) -> str:
+        if not self.measurable:
+            return ("joint error NOT MEASURABLE: could not read the side of "
+                    + ", ".join(self.unreadable))
+        word = ("the product UNDERSTATES the joint"
+                if self.rel > 0 else
+                "the product OVERSTATES the joint" if self.rel < 0 else
+                "the product is the joint to first order")
+        s = f"joint error {self.rel:+.2%} — {word}"
+        if self.terms:
+            worst = max(self.terms, key=lambda t: abs(t[2]))
+            s += (f" (largest pair: {worst[0]} x {worst[1]} at "
+                  f"{worst[2]:+.2%})")
+        return s
+
+
+def joint_error(legs, pairs, cis=None) -> JointError:
+    """First-order relative error of the independent product.
+
+    `pairs` is `Structure.pairs` — (player_a, player_b, r, why). Only pairs
+    with a measured non-zero r contribute; a pair the table never measured
+    does not appear there and is NOT scored here, because `classify` refuses
+    the slip outright for it and no error estimate can stand in for a number
+    that does not exist.
+    """
+    by_name: dict[str, list] = {}
+    for l in legs:
+        by_name.setdefault(l.player, []).append(l)
+
+    unreadable, terms, tot = [], [], 0.0
+    all_ci = True
+    for pair in pairs:
+        a_name, b_name, r = pair[0], pair[1], pair[2]
+        ci = pair[4] if len(pair) > 4 else None
+        if ci is None and cis:
+            ci = (cis.get((pair[0], pair[1]))
+                  or cis.get((pair[1], pair[0])))
+        la = by_name.get(a_name, [None])[0]
+        lb = by_name.get(b_name, [None])[0]
+        if la is None or lb is None:
+            # A pair naming a player not in `legs` is a caller error, not a
+            # datum. Refuse rather than silently dropping the term, which
+            # would shrink the error toward zero — the unsafe direction.
+            unreadable.append(f"{a_name if la is None else b_name} "
+                              f"(named in a pair but not among the legs)")
+            continue
+        try:
+            sign = _side_sign(la.side) * _side_sign(lb.side)
+        except ValueError:
+            bad = [l.player for l in (la, lb)
+                   if str(l.side or "").strip().upper()
+                   not in ("OVER", "O", "YES", "UNDER", "U", "NO")]
+            unreadable.extend(bad)
+            continue
+        pa, pb = float(la.fair_prob), float(lb.fair_prob)
+        za = _norm_inv(1.0 - pa)
+        zb = _norm_inv(1.0 - pb)
+        # The pessimistic end is whichever one drives the TERM most
+        # negative, which depends on the sides: with sign -1 the term is
+        # most negative at the interval's HIGH end.
+        if ci is None:
+            all_ci = False
+            use = float(r)
+        else:
+            lo, hi = float(min(ci)), float(max(ci))
+            use = lo if sign > 0 else hi
+        t = sign * use * _phi(za) * _phi(zb) / (pa * pb)
+        terms.append((a_name, b_name, t))
+        tot += t
+
+    if unreadable:
+        return JointError(rel=0.0, terms=tuple(terms),
+                          unreadable=tuple(dict.fromkeys(unreadable)),
+                          why="the sign of the joint error cannot be fixed")
+    if not terms:
+        return JointError(rel=0.0, terms=(),
+                          why="no measured non-zero pair — nothing to correct")
+    return JointError(
+        rel=tot, terms=tuple(terms), pessimistic=all_ci,
+        why=(f"first-order Gaussian-copula expansion over "
+             f"{len(terms)} measured pair(s), on these legs' own fair "
+             f"probabilities and sides, scored at "
+             + ("the pessimistic end of each pair's confidence interval"
+                if all_ci else
+                "point estimates — at least one pair carried no interval")))
+
+
+# The gate. NOT a threshold on the joint error's size, which is the thing
+# lesson 99 says to stop doing — three tuned thresholds died on B57 before
+# the quantity turned out to be wrong. There are two questions here and only
+# one of them needs a number at all:
+#
+#   * rel >= 0 — the product understates the joint. The reported P(cash) and
+#     EV are then a conservative FLOOR, and a floor is a usable number. No
+#     threshold: the direction is safe at any magnitude.
+#
+#   * rel < 0 — the product overstates the joint. Now the size matters, and
+#     the honest reference is the error the product ALREADY carries from the
+#     legs' own fair uncertainty, propagated the same way B57 propagates it.
+#     Inside that, the bias is smaller than the noise it sits in and
+#     refusing buys nothing; outside it, the bias dominates and the slip
+#     goes back to refusing. A RATIO, with nothing to tune.
+JOINT_OVERSTATE_RATIO = 1.0
+
+
+def product_noise(legs, quotes=None) -> tuple[float, str]:
+    """Relative error the product already carries from the legs' own fairs.
+
+    sqrt(SUM (u/p_i)^2) — independent per-leg errors through a product. `u`
+    is B57's `fair_uncertainty`, measured off the board where two books
+    quote the same leg and falling back to FAIR_UNCERTAINTY_FALLBACK with a
+    reason when they do not.
+    """
+    u, why = fair_uncertainty(legs, quotes)
+    tot = 0.0
+    for l in legs:
+        p = float(l.fair_prob)
+        tot += (u / p) ** 2
+    return math.sqrt(tot), why
+
+
+def joint_verdict(legs, pairs, quotes=None, cis=None) -> tuple[bool, str]:
+    """(is the product usable as a floor, why) for a correlated slip.
+
+    THREE states, because "the product understates the joint" rests on two
+    quite different things depending on the pairs:
+
+      1. EVERY effective pair correlation >= 0. Then P(all legs) >= the
+         product is a THEOREM, not an estimate — Slepian's inequality for a
+         Gaussian copula with non-negative correlations. The floor holds at
+         any magnitude and does not depend on the expansion at all; the
+         expansion only SIZES the gap. Priced.
+
+      2. MIXED signs that happen to total positive. The floor is then only
+         as good as the first-order expansion, since a negative pair pulls
+         the joint down and nothing guarantees the positives outweigh it
+         beyond the arithmetic that said so. Held to the same ratio test as
+         an overstatement, against the error the product already carries.
+
+      3. TOTAL negative. The product overstates the joint, which is the one
+         direction that places a bad slip rather than passing on a good one.
+         Ratio test.
+    """
+    je = joint_error(legs, pairs, cis)
+    if not je.measurable:
+        return False, je.describe()
+    if not je.terms:
+        return True, je.why
+
+    if je.rel >= 0 and all(t[2] >= 0 for t in je.terms) and je.pessimistic:
+        return True, (
+            f"{je.describe()}. Every pair points the same way, so the "
+            f"product is a FLOOR on P(cash) by Slepian's inequality rather "
+            f"than by the expansion: the real joint is at least the product "
+            f"whatever the magnitude, and about {je.rel:+.2%} above it on "
+            f"this arithmetic. The EV on the floor is conservative by "
+            f"roughly that much — this slip can only be better than "
+            f"it reads, never worse")
+
+    noise, nwhy = product_noise(legs, quotes)
+    ratio = abs(je.rel) / noise if noise > 0 else float("inf")
+    mixed = je.rel >= 0
+    lead = (f"{je.describe()}, which is {ratio:.2f}x the {noise:.2%} the "
+            f"product already carries from the legs' own fair uncertainty "
+            f"({nwhy})")
+    if mixed:
+        gap = ("the pairs point BOTH ways and only net out positive on "
+               "the first-order arithmetic"
+               if not all(t[2] >= 0 for t in je.terms) else
+               "at least one pair carried no confidence interval, so the "
+               "positive sign rests on a point estimate")
+        if ratio <= JOINT_OVERSTATE_RATIO:
+            return True, (
+                f"{lead}. {gap[0].upper()}{gap[1:]}, so this is not a "
+                f"Slepian floor — but the whole correction is inside the "
+                f"noise it sits in, so it is reported rather than refused")
+        return False, (
+            f"{lead}. {gap[0].upper()}{gap[1:]}, so nothing guarantees the "
+            f"joint clears the product beyond a first-order expansion, and "
+            f"the correction is bigger than the noise it sits in. No "
+            f"P(cash) and no EV: a floor that rests only on an "
+            f"approximation is not a floor")
+    if ratio <= JOINT_OVERSTATE_RATIO:
+        return True, (
+            f"{lead} — the bias is inside the noise it sits in, so it is "
+            f"reported rather than refused, but the EV on the floor is "
+            f"OPTIMISTIC "
+            f"by about {abs(je.rel):.2%} and that is the direction that "
+            f"costs money")
+    return False, (
+        f"{lead} — past {JOINT_OVERSTATE_RATIO:.2f}x the overstatement "
+        f"dominates, so no P(cash) and no EV. This is the one direction "
+        f"that places a bad slip rather than passing on a good one")
 
 
 def independent_odds(legs) -> float:
@@ -1444,6 +1876,48 @@ class Candidate:
         d = to_decimal(self.book_odds)
         return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
 
+    # --- F13: the floor, where the product is not the joint -----------
+    #
+    # Strictly DISJOINT from p_cash / ev_pct above, which stay None for a
+    # correlated slip. The same number must never appear under two names
+    # with two meanings — that is how "+15.7% beside a NEGATIVE verdict"
+    # happened. `p_cash` means "this IS the joint"; `p_cash_floor` means
+    # "the joint is at least this".
+    @property
+    def joint(self) -> JointError:
+        return joint_error(self.legs, self.structure.pairs,
+                           self.structure.pair_cis)
+
+    @property
+    def floor(self) -> tuple[bool, str]:
+        """(is the product usable as a floor, why) — None-safe, never raises."""
+        if self.structure.priceable:
+            return False, ("the product IS the joint here, so there is no "
+                           "floor to report — see P(cash)")
+        if self.structure.unmeasured:
+            return False, ("a pair in this slip was never measured, and no "
+                           "floor can be built on a number that does not "
+                           "exist")
+        return joint_verdict(self.legs, self.structure.pairs,
+                             cis=self.structure.pair_cis)
+
+    @property
+    def p_cash_floor(self) -> float | None:
+        """A LOWER BOUND on P(cash) for a correlated slip, or None."""
+        return fair_joint(self.legs) if self.floor[0] else None
+
+    @property
+    def ev_floor_pct(self) -> float | None:
+        """EV computed on the floor — itself a lower bound where the joint
+        error is positive, and an OPTIMISTIC figure where the gate let a
+        small negative through. `floor[1]` says which, and the report
+        prints it, because the two read identically as numbers."""
+        if not (self.floor[0] and self.priced):
+            return None
+        p = self.p_cash_floor
+        d = to_decimal(self.book_odds)
+        return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
+
     @property
     def ev_band(self) -> tuple[float, float] | None:
         """(pessimistic, optimistic) ROI anticipated across the measured
@@ -1563,7 +2037,13 @@ class Candidate:
     @property
     def verdict(self) -> str:
         if not self.structure.priceable:
-            return "UNPRICEABLE"
+            # F13. UNPRICEABLE used to be the only answer here, and it was
+            # printed in the header while the body now carries a P(cash)
+            # floor and an EV on it. A header that contradicts its own body
+            # is worse than either reading alone — the "+15.7% beside a
+            # NEGATIVE verdict" failure, one layer out — so a slip whose
+            # product bounds its joint says FLOOR ONLY and means it.
+            return "FLOOR ONLY" if self.floor[0] else "UNPRICEABLE"
         if not self.clears_floor:
             return "NEGATIVE"
         if self.priced:
@@ -1648,6 +2128,13 @@ class Shortlist:
         v = {c.verdict for c in self.candidates}
         if "PLAY" in v:
             return "LIKELY PLAYABLE"
+        # F13. A FLOOR ONLY slip has a BOUNDED EV, which is not a negative
+        # one — it fell through to "LIKELY NEGATIVE" when this state was
+        # added, which is the opposite of what the bound says. It is listed
+        # ahead of UNPRICEABLE because a bound is actionable and a refusal
+        # is not, so a board holding both should surface the bound.
+        if "FLOOR ONLY" in v:
+            return "BOUNDED ONLY"
         if "UNPRICEABLE" in v:
             return "UNPRICEABLE ONLY"
         return "LIKELY NEGATIVE"
@@ -2262,6 +2749,76 @@ def rank_is_meaningful(cands, quotes=None) -> tuple[bool, str]:
           "rank on those.")
 
 
+# ---------------------------------------------------------------------------
+# B57's one surviving quality signal — SHOWN, never sorted on
+# ---------------------------------------------------------------------------
+#
+# B57 went looking for anything that could order a shortlist and found
+# exactly one quantity that genuinely varies across a real board: the
+# liquidity resting on the legs' ANCHOR lines, 5x across 120 candidates.
+# Everything else was noise, the model's own level error, or flat.
+#
+# It is still not a sort key, and this deliberately does not make it one.
+# Anchor liquidity measures how much money the MARKET has put behind the
+# level, which is the market's confidence in its own number — not this
+# slip's value. Sorting on it would rank a shortlist by how well-tested its
+# legs are and present that as which slip to bet, which is precisely the
+# false ordering B57 concluded the report must refuse to imply.
+#
+# So it is a column. It tells Dustin which legs rest on a number somebody
+# has actually taken a position against, and leaves the ordering refused.
+#
+# D16/B39: a leg whose anchor reported NO liquidity must not read as a thin
+# one or as a deep one. Bovada returns null, DraftKings reported none on
+# 0/276 lines and FanDuel on 0/204, so "silent" is the common case and it
+# is reported as its own state with its own count.
+
+
+@dataclass
+class AnchorDepth:
+    """Depth behind a candidate's legs, summarised without being ranked."""
+    thinnest: float | None = None
+    reported: int = 0
+    silent: int = 0
+    total: int = 0
+
+    def describe(self) -> str:
+        if self.total == 0:
+            return "anchor depth  : no legs"
+        if self.reported == 0:
+            return (f"anchor depth  : NOT REPORTED on any of "
+                    f"{self.total} legs — this says nothing either way "
+                    f"about whether these levels have been tested")
+        # Defensive on purpose: the number is formatted only when there
+        # IS one, independently of the branch above. A revert that removed
+        # the no-readings branch made this line format None and raise out
+        # of `report()`, taking the whole report down over a column that is
+        # the least important line in it (lesson 14 — a check must fail,
+        # not crash, and so must a cosmetic column).
+        depth = (f"{self.thinnest:,.0f}" if self.thinnest is not None
+                 else "UNKNOWN")
+        s = (f"anchor depth  : thinnest leg {depth} "
+             f"({self.reported} of {self.total} legs reporting)")
+        if self.silent:
+            s += f", {self.silent} silent"
+        return s + "  — market confidence, NOT a ranking key"
+
+
+def anchor_depth(legs) -> AnchorDepth:
+    """The thinnest anchor among these legs, and how many said nothing.
+
+    THINNEST, not mean: a parlay inherits its weakest anchor, and averaging
+    a 10,000 against a 25 reports 5,012 and hides the leg that matters.
+    """
+    vals = [float(l.anchor_liquidity) for l in legs
+            if l.anchor_liquidity is not None]
+    return AnchorDepth(thinnest=min(vals) if vals else None,
+                       reported=len(vals),
+                       silent=sum(1 for l in legs
+                                  if l.anchor_liquidity is None),
+                       total=len(list(legs)))
+
+
 def report(cands, boost_label: str = "", quotes=None) -> str:
     """Human-readable, and deliberately loud about what it does not know."""
     out = []
@@ -2314,10 +2871,33 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                        "probabilities. It inherits whatever error is in the "
                        "anchor, which is per-LINE, not per-book.")
         else:
-            out.append("  NO EV, NO P(cash) — the joint is not the product "
-                       "and this project cannot compute it.")
+            _fok, _fwhy = c.floor
+            if _fok:
+                # F13. The product is not the joint, but it bounds it, and
+                # a bound is a usable number where a refusal was not.
+                out.append(f"  P(cash) FLOOR   : {c.p_cash_floor:.1%}  "
+                           f"(a LOWER BOUND, not an estimate — the product "
+                           f"of the de-vigged legs)")
+                if c.ev_floor_pct is not None:
+                    out.append(f"  EV on the floor : {c.ev_floor_pct:+.1%}  "
+                               f"(against the quoted price)")
+                else:
+                    out.append("  EV on the floor : not priced yet — run "
+                               "price_sgp")
+                out.append(f"  {_fwhy}")
+            else:
+                out.append("  NO EV, NO P(cash) — the joint is not the "
+                           "product and this project cannot compute it.")
+                out.append(f"  why: {_fwhy}")
             out.append(f"  reference band  : not applicable. "
                        f"{c.hold_band_reason}")
+        try:
+            out.append(f"  {anchor_depth(c.legs).describe()}")
+        except Exception as e:                       # pragma: no cover
+            # A column must not be able to cost the report. Named rather
+            # than swallowed, so a silent omission is not what you get.
+            out.append(f"  anchor depth  : COULD NOT BE RENDERED "
+                       f"({type(e).__name__}: {e})")
         for l in c.legs:
             if l.anchor_note:
                 out.append(f"  ** OPENING ANCHOR ** {l.anchor_note}")

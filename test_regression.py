@@ -7,7 +7,7 @@ crashed on a second call; the bye check because a partial week made 21 teams
 look like they were off.
 """
 import warnings; warnings.filterwarnings("ignore")
-import atexit, json, pathlib, sys, traceback
+import atexit, inspect, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 import ff_boost
@@ -1874,17 +1874,29 @@ chk("a TE receiving prop takes the TE coefficient, not the WR one",
     any(abs(p[2] - _STC[("QB", "TE")]) < 1e-9 for p in s.pairs)
     and _STC[("QB", "TE")] != _STC[("QB", "WR")], str(s.pairs))
 
-# The correlation table was measured on YARDS. anytime-TD is a boost staple
-# and nobody here has measured it, so independence would be a claim.
+# anytime-TD is a boost staple. It was UNMEASURED until F13 and the slip
+# refused for that reason; E3's side table measured it at -0.0274 over
+# 49,520 pairs, so the refusal now rests on a NUMBER. What must not change
+# is that the slip is still not priceable as a product — the point of F13
+# was to replace "nobody measured this" with a measurement, not to assert
+# independence where the measurement says there is none.
 s = classify([leg("WR A1", EV1, market="player_anytime_td", line=None),
               leg("WR A2", EV1, market="player_anytime_td", line=None),
               leg("WR B1", EV1)], META)
 chk("two same-event anytime-TD legs are NOT asserted independent",
     not s.priceable, f"{s.kind} priceable={s.priceable}")
-chk("the unmeasured pair is kept apart from the measured ones",
-    s.unmeasured and not s.pairs, f"{s.unmeasured} / {s.pairs}")
-chk("the reason says independence would be an assumption",
-    "assumption" in s.reason.lower(), s.reason[:90])
+chk("and the TD x TD pair is now MEASURED, not unmeasured",
+    s.pairs and not any("anytime_td" in str(u) for u in s.unmeasured),
+    f"pairs={s.pairs} / unmeasured={s.unmeasured}")
+chk("the reason cites the measurement rather than an assumption",
+    "r=" in s.reason or "lift" in s.reason.lower(), s.reason[:120])
+chk("the measured TD x TD sign is negative, so the product OVERSTATES",
+    ff_boost.joint_error(
+        [leg("WR A1", EV1, market="player_anytime_td", line=None),
+         leg("WR A2", EV1, market="player_anytime_td", line=None)],
+        [("WR A1", "WR A2", ff_boost.side_pair("same", "TD", "TD")[0], "t",
+          ff_boost.side_pair("same", "TD", "TD")[2])]).rel < 0,
+    "a negative joint error is the direction that must still refuse")
 
 c = make_candidate([leg("WR A1", EV1, market="player_anytime_td", line=None),
                     leg("WR A2", EV1, market="player_anytime_td", line=None),
@@ -6619,9 +6631,15 @@ _pr = _C.RECORDED_MARKET_SIDE[("same", "PASS", "RECEPTIONS")][0]
 _py = _C.RECORDED_MARKET_SIDE[("same", "PASS", "RECV")][0]
 chk("PASS x RECEPTIONS is materially below PASS x RECV",
     _pr < _py - 0.05, f"{_pr:+.4f} vs {_py:+.4f}")
-chk("so player_receptions must not be mapped onto the RECV side",
-    "player_receptions" not in ff_boost.MARKET_SIDE,
-    "wiring it is a permissive change and needs sign-off")
+chk("player_receptions is mapped, and to its OWN side not RECV",
+    ff_boost.MARKET_SIDE.get("player_receptions") == "RECEPTIONS",
+    f"got {ff_boost.MARKET_SIDE.get('player_receptions')!r} — folding it "
+    f"into RECV overstates a receptions leg by about 28%")
+chk("PASS_TD is measured but deliberately has no market key",
+    all(v != "PASS_TD" for v in ff_boost.MARKET_SIDE.values())
+    and "PASS_TD" in ff_boost.SIDES_MEASURED_NO_MARKET_KEY
+    and ("same", "PASS_TD", "TD") in _C.RECORDED_MARKET_SIDE,
+    "a guessed market key refuses exactly like a measured refusal")
 # The standing comment in ff_boost says this pair is unmeasured. It is not,
 # any more, and it went the other way.
 chk("two same-team anytime TDs are slightly NEGATIVE, not positive",
@@ -6644,9 +6662,19 @@ _qleg = ff_boost.BoostLeg(
     devig_method="shin", line=250.5, player_id="q9", verdict="CLEAR",
     verdict_side="OVER", team="BUF", pos="QB")
 _rs = ff_boost.classify([_qleg, _rleg])
-chk("a same-event receptions leg is still UNPRICEABLE, as before",
-    not _rs.priceable and _rs.unmeasured,
-    _rs.reason[:110])
+chk("a same-event receptions leg is no longer UNMEASURED",
+    not _rs.unmeasured and _rs.pairs, _rs.reason[:140])
+chk("it is scored on PASS x RECEPTIONS, not on PASS x RECV",
+    any(abs(p[2] - _C.RECORDED_MARKET_SIDE[("same", "PASS", "RECEPTIONS")][0])
+        < 1e-9 for p in _rs.pairs),
+    f"{_rs.pairs} — PASS x RECV would be "
+    f"{_C.RECORDED_MARKET_SIDE[('same','PASS','RECV')][0]:+.4f}")
+# QB passing x teammate receptions is POSITIVE, so an all-OVER slip's
+# product is a floor and F13 unblocks it. That is the permissive half.
+_jok, _jwhy = ff_boost.joint_verdict([_qleg, _rleg], _rs.pairs,
+                                     cis=_rs.pair_cis)
+chk("and an all-OVER QB x receptions slip gets a usable floor",
+    _jok and "FLOOR" in _jwhy, _jwhy[:160])
 
 # --- ff_boost is NOT changed from here -------------------------------------
 # Signed off and applied 2026-11-10. This asserted the OLD literal while
@@ -7384,6 +7412,347 @@ chk("and omits it when the order is real",
     not ff_boost.report(_wide).startswith("!!"),
     ff_boost.report(_wide).splitlines()[0][:70])
 
+
+# ===========================================================================
+# 73. F13 — the joint error, its sign, and the gate built on it
+# ===========================================================================
+#
+# The arithmetic first, because every verdict below rests on it, and then
+# the three states of the gate. The Monte Carlo figures are the ones from
+# the 4,000,000-draw antithetic sweep; they are pinned as literals rather
+# than re-simulated, so the suite stays fast and a regression in the closed
+# form shows up as a disagreement with a number nobody can quietly edit.
+
+section("73. F13 — joint error, sign, and the gate")
+
+
+def _jleg(name, p, side="OVER", market="player_rush_yds", team="BUF",
+          pos="RB", ev="E1", liq=None, verdict="CLEAR"):
+    # BoostLeg refuses a verdict without a matching verdict_side (B126), so
+    # a leg whose side is deliberately unreadable has to be UNSCREENED.
+    return ff_boost.BoostLeg(
+        event_id=ev, book="dk", market=market, player=name, side=side,
+        odds=-110, fair_prob=p, fair_source="pinnacle", devig_method="shin",
+        line=50.0, team=team, pos=pos, verdict=verdict,
+        verdict_side=(side if verdict and verdict != "UNSCREENED" else ""),
+        anchor_liquidity=liq)
+
+
+# --- the closed form against simulation ----------------------------------
+# (legs' p, r on every pair, first-order, Monte Carlo)
+_MC = [
+    (2, 0.50,  0.0300,  0.019099,  0.020081),
+    (2, 0.35,  0.0300,  0.033599,  0.034414),
+    (2, 0.65,  0.0300,  0.009742,  0.010224),
+    (2, 0.50,  0.2462,  0.156736,  0.158800),
+    (3, 0.50,  0.0300,  0.057296,  0.058930),
+    (3, 0.50,  0.2462,  0.470208,  0.472800),
+    (2, 0.50, -0.0300, -0.019099, -0.018000),
+    (3, 0.50, -0.0300, -0.057296, -0.055600),
+]
+for _k, _p, _r, _fo, _mc in _MC:
+    _ls = [_jleg(chr(65 + i), _p) for i in range(_k)]
+    _ps = [(chr(65 + i), chr(65 + j), _r, "t")
+           for i in range(_k) for j in range(i + 1, _k)]
+    _got = ff_boost.joint_error(_ls, _ps).rel
+    chk(f"{_k} legs at p={_p}, r={_r:+.4f}: closed form matches",
+        abs(_got - _fo) < 5e-5, f"got {_got:+.6f}, expected {_fo:+.6f}")
+    # The direction of the deviation is the load-bearing part, not its size.
+    if _r > 0:
+        chk(f"  and it UNDERSTATES the understatement (safe for a floor)",
+            _got <= _mc + 1e-9, f"{_got:+.6f} vs MC {_mc:+.6f}")
+    else:
+        chk(f"  and it OVERSTATES the overstatement (errs toward refusing)",
+            _got <= _mc + 1e-9, f"{_got:+.6f} vs MC {_mc:+.6f}")
+    # The sweep's observed envelope is 0.951 to 1.061 of simulation. This
+    # records that envelope; it is not a tolerance chosen to make the
+    # arithmetic fit. Both ends matter: below 1 the closed form understates
+    # (safe for a floor), above it overstates (errs toward refusing).
+    chk(f"  inside the sweep's measured 0.95-1.07 envelope",
+        0.95 <= _got / _mc <= 1.07, f"ratio {_got / _mc:.4f}")
+
+# The 2-leg figure in F13's entry reproduces; the 3-leg one does not, and
+# that is recorded here so nobody re-derives the design from the wrong one.
+chk("F13's 2-leg figure of 1.9% reproduces",
+    abs(ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                             [("A", "B", 0.03, "t")]).rel - 0.019) < 1e-3)
+chk("F13's 3-leg figure of 11.5% does NOT — it is 5.7%",
+    abs(ff_boost.joint_error([_jleg(c, .5) for c in "ABC"],
+                             [("A", "B", .03, "t"), ("A", "C", .03, "t"),
+                              ("B", "C", .03, "t")]).rel - 0.0573) < 1e-3,
+    "the backlog entry was 2x high; the conclusion it supported survives")
+
+# --- additivity over pairs, which is why a per-pair gate cannot bound ----
+_one = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                            [("A", "B", .03, "t")]).rel
+_three = ff_boost.joint_error([_jleg(c, .5) for c in "ABC"],
+                              [("A", "B", .03, "t"), ("A", "C", .03, "t"),
+                               ("B", "C", .03, "t")]).rel
+chk("three pairs cost exactly three times one pair",
+    abs(_three - 3 * _one) < 1e-9, f"{_three:+.6f} vs 3x{_one:+.6f}")
+chk("so a per-pair gate at 3% admits a slip carrying 5.7%",
+    0.03 > _one and _three > 0.05, f"{_one:+.4%} each, {_three:+.4%} total")
+
+# --- the leg probabilities matter, so this is never looked up by shape ---
+_lo = ff_boost.joint_error([_jleg("A", .35), _jleg("B", .35)],
+                           [("A", "B", .03, "t")]).rel
+_hi = ff_boost.joint_error([_jleg("A", .65), _jleg("B", .65)],
+                           [("A", "B", .03, "t")]).rel
+chk("the same r costs 3.4x more at p=0.35 than at p=0.65",
+    _lo / _hi > 3.0, f"{_lo:+.4%} vs {_hi:+.4%}")
+
+# --- the SIDES flip the sign ---------------------------------------------
+_over = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                             [("A", "B", .2462, "t")]).rel
+_mix = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5, side="UNDER")],
+                            [("A", "B", .2462, "t")]).rel
+chk("one leg flipped to UNDER flips the joint error's sign",
+    _over > 0 and _mix < 0 and abs(_over + _mix) < 1e-9,
+    f"{_over:+.4%} -> {_mix:+.4%}")
+chk("an unreadable side REFUSES rather than assuming OVER",
+    not ff_boost.joint_error(
+        [_jleg("A", .5), _jleg("B", .5, side="", verdict="UNSCREENED")],
+        [("A", "B", .2462, "t")]).measurable,
+    "the sign of the error depends on it")
+chk("and joint_verdict refuses the slip for it, naming the leg",
+    ff_boost.joint_verdict(
+        [_jleg("A", .5), _jleg("B", .5, side="", verdict="UNSCREENED")],
+        [("A", "B", .2462, "t")])[0] is False)
+chk("a pair naming a leg that is not in the slip refuses too",
+    not ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                             [("A", "GHOST", .2462, "t")]).measurable,
+    "dropping the term would shrink the error toward zero")
+
+# --- the pessimistic end of the interval ---------------------------------
+_pt = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                           [("A", "B", .1774, "t")]).rel
+_pess = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                             [("A", "B", .1774, "t", (.1626, .1922))]).rel
+chk("a pair with an interval is scored at the end that hurts",
+    _pess < _pt, f"{_pess:+.4%} vs point {_pt:+.4%}")
+chk("and that is recorded, not silent",
+    ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                         [("A", "B", .1774, "t", (.1626, .1922))]).pessimistic
+    and not ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                                 [("A", "B", .1774, "t")]).pessimistic)
+# With an UNDER leg the pessimistic end is the interval's HIGH end.
+_pu = ff_boost.joint_error(
+    [_jleg("A", .5), _jleg("B", .5, side="UNDER")],
+    [("A", "B", .1774, "t", (.1626, .1922))]).rel
+chk("for a flipped side the pessimistic end is the HIGH one",
+    abs(_pu + 0.1922 * (ff_boost._phi(0.0) ** 2) / 0.25) < 1e-9,
+    f"{_pu:+.6f}")
+# E3 measured one cell whose interval spans zero, so its sign is unknown.
+_straddle = _C.RECORDED_MARKET_SIDE[("same", "PASS", "PASS_TD")][2]
+chk("E3 has a cell whose interval spans zero",
+    _straddle[0] < 0 < _straddle[1], str(_straddle))
+chk("scored pessimistically it comes out negative, not positive",
+    ff_boost.joint_error(
+        [_jleg("A", .5), _jleg("B", .5)],
+        [("A", "B", _C.RECORDED_MARKET_SIDE[("same", "PASS", "PASS_TD")][0],
+          "t", _straddle)]).rel < 0,
+    "a point estimate would have given it a sign it has not earned")
+
+# --- the gate's three states ---------------------------------------------
+_CI = (0.2286, 0.2625)          # same-team PASS x RECV, all one direction
+_ok, _why = ff_boost.joint_verdict(
+    [_jleg(c, .5) for c in "ABC"],
+    [("A", "B", .2456, "t", _CI), ("A", "C", .2456, "t", _CI),
+     ("B", "C", .2456, "t", _CI)])
+chk("all pairs positive and bracketed: a Slepian FLOOR, at any magnitude",
+    _ok and "Slepian" in _why and "FLOOR" in _why, _why[:120])
+chk("and no threshold is applied to it — 47% still prices",
+    _ok, "the direction is safe whatever the size")
+
+_ok2, _why2 = ff_boost.joint_verdict(
+    [_jleg(c, .5) for c in "ABC"],
+    [("A", "B", .2456, "t", _CI), ("A", "C", -.0765, "t", (-.1029, -.0463))])
+# Revert 4 found this gap: every all-positive fixture above carried
+# intervals, so dropping the `pessimistic` requirement from the Slepian
+# branch changed nothing any check could see. All terms positive, NO
+# interval anywhere — the floor must be denied, because a positive sign
+# taken from a point estimate is not a theorem.
+_okP, _whyP = ff_boost.joint_verdict(
+    [_jleg(c, .5) for c in "ABC"],
+    [("A", "B", .2456, "t"), ("A", "C", .2456, "t"), ("B", "C", .2456, "t")])
+chk("all pairs positive but UNBRACKETED is not a Slepian floor",
+    not _okP and "Slepian" not in _whyP
+    and "point estimate" in _whyP, _whyP[:170])
+chk("and the same pairs WITH intervals are",
+    ff_boost.joint_verdict(
+        [_jleg(c, .5) for c in "ABC"],
+        [("A", "B", .2456, "t", _CI), ("A", "C", .2456, "t", _CI),
+         ("B", "C", .2456, "t", _CI)])[0],
+    "the only difference is whether the sign is bracketed")
+
+chk("mixed signs netting positive are NOT a Slepian floor",
+    not _ok2 and "BOTH ways" in _why2 and "not a floor" in _why2,
+    _why2[:160])
+
+_ok3, _why3 = ff_boost.joint_verdict(
+    [_jleg(c, .5) for c in "ABC"],
+    [("A", "B", -.03, "t", (-.035, -.025)), ("A", "C", -.03, "t", (-.035, -.025)),
+     ("B", "C", -.03, "t", (-.035, -.025))])
+chk("a negative total past the noise it sits in REFUSES",
+    not _ok3 and "OVERSTATES" in _why3, _why3[:140])
+# same-team RECV x RUSH, pessimistic end -0.0334: -2.13% against 2.26% of
+# propagated noise, so 0.94x and inside it.
+_ok4, _why4 = ff_boost.joint_verdict(
+    [_jleg("A", .5), _jleg("B", .5)],
+    [("A", "B", -.0219, "t", (-.0334, -.0104))])
+chk("a small negative pair inside the noise is reported, flagged optimistic",
+    _ok4 and "OPTIMISTIC" in _why4, _why4[:160])
+# And the knife edge, recorded because it is the closest real call on the
+# board: ONE same-team TD x TD pair, scored at the pessimistic end of its
+# own interval, comes out at 1.02x and is refused. Two percent the other
+# way and it would price. Nothing is tuned to make it land either side —
+# this pins where the measurement actually falls, so a change to the
+# arithmetic or to FAIR_UNCERTAINTY_FALLBACK shows up here first.
+_td = _C.RECORDED_MARKET_SIDE[("same", "TD", "TD")]
+_ok5, _why5 = ff_boost.joint_verdict(
+    [_jleg("A", .5), _jleg("B", .5)],
+    [("A", "B", _td[0], "t", _td[2])])
+chk("one same-team TD x TD pair sits just OUTSIDE the gate, at 1.02x",
+    not _ok5 and "1.02x" in _why5, _why5[:170])
+chk("the gate is a RATIO against propagated noise, not a tuned number",
+    ff_boost.JOINT_OVERSTATE_RATIO == 1.0,
+    "lesson 99 — if it needs tuning it is the wrong quantity")
+_noise, _nwhy = ff_boost.product_noise([_jleg(c, .5) for c in "ABC"])
+chk("product_noise propagates the legs' own fair uncertainty",
+    abs(_noise - (3 ** 0.5) * ff_boost.FAIR_UNCERTAINTY_FALLBACK / 0.5)
+    < 1e-9, f"{_noise:.5f}")
+chk("and it SAYS when it fell back rather than measuring",
+    "fallback" in _nwhy, _nwhy)
+
+# --- the real shapes F13 was filed about ---------------------------------
+# These are the measured cells, scored pessimistically, on 50/50 legs.
+def _shape(cells):
+    names = "ABC"
+    k = 3 if len(cells) > 1 else 2
+    legs = [_jleg(names[i], .5) for i in range(k)]
+    slots = [("A", "B"), ("A", "C"), ("B", "C")]
+    prs = []
+    for i, (sa, sb) in enumerate(cells):
+        lo, hi = sorted((sa, sb))
+        e = _C.RECORDED_MARKET_SIDE[("same", lo, hi)]
+        prs.append((slots[i][0], slots[i][1], e[0], f"{sa}x{sb}", e[2]))
+    return ff_boost.joint_verdict(legs, prs)[0], \
+        ff_boost.joint_error(legs, prs).rel
+
+for _label, _cells, _want in [
+        ("QB pass + teammate receiving", [("PASS", "RECV")], True),
+        ("QB passTD + teammate anytime TD", [("PASS_TD", "TD")], True),
+        ("three teammate anytime TDs", [("TD", "TD")] * 3, False),
+        ("two receptions + a back's rushing",
+         [("RECEPTIONS", "RECEPTIONS"), ("RECEPTIONS", "RUSH"),
+          ("RECEPTIONS", "RUSH")], False)]:
+    _got, _rel = _shape(_cells)
+    chk(f"{_label}: {'priced' if _want else 'refused'}",
+        _got is _want, f"got {'priced' if _got else 'refused'} at "
+                       f"{_rel:+.2%}")
+# The point of the asymmetry: a flat threshold on SIZE would have gotten
+# the two safe shapes backwards, since they carry the LARGEST errors here.
+chk("the two shapes that price carry bigger errors than the two refused",
+    abs(_shape([("PASS", "RECV")])[1])
+    > abs(_shape([("TD", "TD")] * 3)[1]),
+    "a threshold on |error| would have refused the safe ones and is why "
+    "this gate is on the SIGN first")
+
+# --- Candidate / report wiring -------------------------------------------
+_qb = _jleg("QB9", .52, market="player_pass_yds", pos="QB", liq=5000)
+_rc = _jleg("WR9", .52, market="player_receptions", pos="WR", liq=250)
+_fc = ff_boost.make_candidate([_qb, _rc], boost_pct=0.50)
+chk("a bounded slip reads FLOOR ONLY, not UNPRICEABLE",
+    _fc.verdict == "FLOOR ONLY", _fc.verdict)
+chk("and FLOOR ONLY is a documented verdict",
+    "FLOOR ONLY" in ff_boost.VERDICTS)
+chk("p_cash stays None — the product is not the joint",
+    _fc.p_cash is None and _fc.ev_pct is None)
+chk("the floor is a separate number under a separate name",
+    _fc.p_cash_floor is not None
+    and abs(_fc.p_cash_floor - 0.52 * 0.52) < 1e-9,
+    f"{_fc.p_cash_floor}")
+chk("the report prints it as a LOWER BOUND",
+    "P(cash) FLOOR" in ff_boost.report([_fc])
+    and "LOWER BOUND" in ff_boost.report([_fc]))
+chk("and does not also claim no EV is reported",
+    "NO EV, NO P(cash)" not in ff_boost.report([_fc]),
+    "the header and the body must not contradict each other")
+_un = ff_boost.make_candidate(
+    [_jleg("A", .52, market="player_longest_reception", pos="WR"),
+     _jleg("B", .52, market="player_rush_yds", pos="RB")], boost_pct=0.50)
+chk("an UNMEASURED pair still refuses outright, with no floor",
+    _un.verdict == "UNPRICEABLE" and _un.p_cash_floor is None
+    and _un.floor[0] is False, f"{_un.verdict} {_un.floor[1][:60]}")
+chk("a priceable slip reports no floor, to avoid two names for one number",
+    ff_boost.make_candidate(
+        [_jleg("A", .52, ev="E1"), _jleg("B", .52, ev="E2")],
+        boost_pct=0.50).p_cash_floor is None)
+chk("a board of bounded slips is BOUNDED ONLY, not LIKELY NEGATIVE",
+    ff_boost.Shortlist(candidates=[_fc], mode="sgp",
+                       boost_pct=0.50).outlook == "BOUNDED ONLY",
+    ff_boost.Shortlist(candidates=[_fc], mode="sgp",
+                       boost_pct=0.50).outlook)
+
+# --- the market keys -----------------------------------------------------
+chk("receptions and anytime TD are mapped; PASS_TD deliberately is not",
+    ff_boost.MARKET_SIDE["player_receptions"] == "RECEPTIONS"
+    and ff_boost.MARKET_SIDE["player_anytime_td"] == "TD"
+    and "PASS_TD" not in ff_boost.MARKET_SIDE.values())
+chk("side_pair reads the table in either side order",
+    ff_boost.side_pair("same", "TD", "PASS") ==
+    ff_boost.side_pair("same", "PASS", "TD") is not None)
+chk("an unmeasured relation/side combination returns None, not zero",
+    ff_boost.side_pair("same", "PASS", "NOT_A_SIDE") is None)
+
+
+# ===========================================================================
+# 74. B57's one varying signal, shown as a column
+# ===========================================================================
+
+section("74. anchor depth as a column, not a sort key")
+
+def _dsc(d):
+    """describe() that FAILS a check instead of crashing the section.
+
+    Lesson 14, and revert 9 proved it was still needed here: removing the
+    no-readings branch made `describe()` format None with ":,.0f", which
+    raised out of the section and took sections 74 onward with it. The
+    suite's own CRASHED line noticed, but a crash reports nothing about
+    WHICH behaviour broke.
+    """
+    try:
+        return d.describe()
+    except Exception as e:
+        return f"<describe() raised {type(e).__name__}: {e}>"
+
+
+_d = ff_boost.anchor_depth([_jleg("A", .5, liq=5000), _jleg("B", .5, liq=250)])
+chk("anchor depth reports the THINNEST leg, not the mean",
+    _d.thinnest == 250, f"{_d.thinnest} (mean would be 2625)")
+chk("and how many legs reported at all",
+    _d.reported == 2 and _d.silent == 0 and _d.total == 2)
+_ds = ff_boost.anchor_depth([_jleg("A", .5, liq=250), _jleg("B", .5)])
+chk("a silent leg is counted as silent, not as thin and not as deep",
+    _ds.thinnest == 250 and _ds.silent == 1 and _ds.reported == 1,
+    _dsc(_ds))
+_dn = ff_boost.anchor_depth([_jleg("A", .5), _jleg("B", .5)])
+chk("no leg reporting is its OWN state, with no number invented",
+    _dn.thinnest is None and "NOT REPORTED" in _dsc(_dn),
+    _dsc(_dn))
+chk("and it says that says nothing either way",
+    "says nothing either way" in _dsc(_dn), _dsc(_dn))
+chk("an empty leg list does not crash",
+    _dsc(ff_boost.anchor_depth([])) == "anchor depth  : no legs")
+chk("the column disclaims being a ranking key",
+    "NOT a ranking key" in _dsc(_d), _dsc(_d))
+chk("the report carries the column",
+    "anchor depth" in ff_boost.report([_fc]))
+# The whole point: it is NOT in the sort key.
+chk("anchor liquidity is absent from Candidate.key",
+    "anchor_liquidity" not in inspect.getsource(ff_boost.Candidate.key.fget)
+    and "anchor_depth" not in inspect.getsource(ff_boost.Candidate.rank.fget),
+    "sorting on it would rank by the market's confidence, not by value")
 
 _summary()
 raise SystemExit(1 if fails else 0)

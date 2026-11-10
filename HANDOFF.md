@@ -1062,3 +1062,31 @@ reality.
     propagated from the legs' own uncertainty — a RATIO, which came out at
     0.98x with nothing to tune. If a gate only works at a value you picked
     by looking at the answer, find the quantity that makes the gate a ratio.
+
+100. **The SIGN of an error decides whether to refuse it. The size only
+     decides afterwards, and sometimes not at all.** F13 was filed to pick
+     a threshold on how far the product of a parlay's legs sits from its
+     true joint, and the measurement that mattered turned out not to be the
+     distance. A positive error means the product UNDERSTATES the joint, so
+     the reported EV is too low: being wrong that way passes on a good slip
+     and never places a bad one, and where every pair points the same way
+     the product is a FLOOR by Slepian's inequality — a theorem, at any
+     magnitude, with no threshold to pick. A negative error is the one that
+     places a bad slip, and only there does size matter. A flat gate on
+     |error| would have refused the two shapes that are safe at +14.55% and
+     +12.79% while admitting nothing useful, because the safe shapes carry
+     the LARGEST errors on this board. Before choosing how much error to
+     tolerate, check whether the error has a direction — and whether one of
+     the directions needs tolerating at all.
+
+101. **A new state has to be propagated to everything that reads the old
+     one, and the header is the easiest to forget.** `FLOOR ONLY` was added
+     because a correlated slip now carries a bounded P(cash). The body was
+     right first time and three readers were not: the candidate header
+     still printed `UNPRICEABLE` directly above that bound, `classify`'s
+     own reason still said "no EV is reported" two lines above a printed EV
+     floor, and a shortlist of nothing but bounded slips summarised as
+     `LIKELY NEGATIVE` — the opposite of what the bound says. All three are
+     the "+15.7% beside a NEGATIVE verdict" failure one layer out, and none
+     of them failed a check, because every check was reading the body. When
+     a state is added, grep for every reader of the state it replaces.
