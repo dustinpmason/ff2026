@@ -7088,5 +7088,109 @@ chk("a league with nobody out carries no elimination line",
     and "ELIMINATED, excluded" not in _r70c.report())
 
 
+# ---------------------------------------------------------------------------
+section("71. a DROP is the same paired read as an add (B139)")
+# `waiver_value` covered the add and nothing covered the cut, so a session
+# evaluating a drop rolled its own and walked into exactly the trap B133
+# exists to stop: four separate runs gave four drop figures spanning 0.21pp,
+# which read as an ordering and was entirely between-run RNG noise. On shared
+# draws all four were identical to three decimals.
+_p71 = {n: np.array(v, dtype=float) for n, v in {
+    "QB1": [22, 18], "RB1": [20, 16], "RB2": [13, 11], "RB3": [9, 7],
+    "RB4": [6, 4], "RB5": [5, 3], "WR1": [18, 14], "WR2": [12, 10],
+    "WR3": [8, 6], "WR4": [7, 5], "TE1": [9, 7], "TE2": [4, 3],
+    "QB2": [21, 17], "RB6": [19, 15], "RB7": [12, 10], "RB8": [8, 6],
+    "WR5": [17, 13], "WR6": [11, 9], "WR7": [7, 5], "TE3": [8, 6]}.items()}
+_A71 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3", "RB4", "RB5"],
+        "WR": ["WR1", "WR2", "WR3", "WR4"], "TE": ["TE1", "TE2"]}
+_B71 = {"QB": ["QB2"], "RB": ["RB6", "RB7", "RB8"],
+        "WR": ["WR5", "WR6", "WR7"], "TE": ["TE3"]}
+_t71 = [{"team_id": "0", "team_name": "me", "roster": _A71},
+        {"team_id": "1", "team_name": "opp", "roster": _B71}]
+
+_dv_star = ff_guillotine.drop_value(_t71, _p71, my_team_id="0",
+                                    candidate="RB1", n_sims=20_000)
+_dv_bench = ff_guillotine.drop_value(_t71, _p71, my_team_id="0",
+                                     candidate="RB5", n_sims=20_000)
+chk("cutting a cost is never negative, by construction",
+    _dv_star.cost >= -1e-12 and _dv_bench.cost >= -1e-12,
+    f"star {_dv_star.cost*100:+.4f}pp bench {_dv_bench.cost*100:+.4f}pp")
+chk("cutting the best player costs materially",
+    _dv_star.cost > 0.05, f"{_dv_star.cost*100:+.3f}pp")
+chk("cutting a bench body costs nothing",
+    abs(_dv_bench.cost) < 1e-12, f"{_dv_bench.cost*100:+.6f}pp")
+
+# --- the TWO kinds of zero, which is the reason this reports ---------------
+# A bye player is absent before lineups are enumerated, so his cost cannot be
+# anything but zero — a fact about the schedule. A bench body who is in many
+# lineups but never the best one is also zero — a fact about THIS roster. A
+# reader acting on those would do different things.
+_dv_bye = ff_guillotine.drop_value(_t71, _p71, my_team_id="0",
+                                   candidate="RB3", n_sims=20_000,
+                                   unavailable=["RB3"])
+chk("a bye player's zero is marked STRUCTURAL",
+    _dv_bye.structural_zero and "free STRUCTURALLY" in _dv_bye.describe(),
+    _dv_bye.describe())
+chk("and he is in no lineup at all, which is why",
+    _dv_bye.appears_in == 0, f"{_dv_bye.appears_in} lineups")
+chk("a bench body's zero is NOT structural — he is in lineups, just not best",
+    not _dv_bench.structural_zero and _dv_bench.appears_in > 0
+    and "free on THIS roster" in _dv_bench.describe(),
+    _dv_bench.describe())
+chk("so the two zeros do not print the same sentence",
+    _dv_bye.describe() != _dv_bench.describe())
+
+# --- refusals -------------------------------------------------------------
+chk("a player not on my roster is refused, not priced",
+    not ff_guillotine.drop_value(_t71, _p71, my_team_id="0",
+                                 candidate="RB6",
+                                 n_sims=5000).on_roster)
+chk("an unresolvable name is refused by name",
+    "does not resolve" in ff_guillotine.drop_value(
+        _t71, _p71, my_team_id="0", candidate="Nobody At All",
+        n_sims=5000).why)
+# The only QB is in every lineup, so there is no without-him comparison.
+_dv_qb = ff_guillotine.drop_value(_t71, _p71, my_team_id="0",
+                                  candidate="QB1", n_sims=20_000)
+chk("the only QB cannot be priced, and says so instead of printing nan",
+    "CANNOT BE PRICED" in _dv_qb.describe()
+    and "nan" not in _dv_qb.describe(),
+    _dv_qb.describe())
+chk("a bad team id is refused",
+    _raises(lambda: ff_guillotine.drop_value(
+        _t71, _p71, my_team_id="99", candidate="RB1", n_sims=1000),
+        ValueError))
+
+# --- the board ------------------------------------------------------------
+_db71 = ff_guillotine.drop_board(_t71, _p71, my_team_id="0", n_sims=20_000,
+                                 unavailable=["RB3"])
+chk("the board prices every rostered player off ONE run",
+    "11 priced, 1 not" in _db71, _db71.splitlines()[0])
+# The property that PROVES the draws are shared, which the count does not:
+# every priced row must report the SAME p_before. One run per candidate —
+# which is what the code did before `_result` was threaded through, and what
+# a session doing this by hand did — gives each row its own baseline, and the
+# spread between them reads as an ordering. That is B133 exactly: four drop
+# figures spanning 0.21pp off four runs, all identical on shared draws.
+_rows71 = [l for l in _db71.splitlines() if "% -> " in l]
+_pb71 = {l.split(": ")[1].split(" -> ")[0] for l in _rows71}
+chk("every priced row shares ONE baseline, proving one set of draws",
+    len(_pb71) == 1,
+    f"{len(_pb71)} distinct baselines across {len(_rows71)} rows: "
+    f"{sorted(_pb71)[:4]}")
+chk("it states the noise floor and that a gap inside it is not an ordering",
+    "is NOT an ordering" in _db71, _db71.splitlines()[1])
+chk("cheapest cut comes first",
+    _db71.splitlines()[2].strip().startswith("RB3"),
+    _db71.splitlines()[2].strip()[:40])
+chk("and the most expensive comes last among the priced",
+    "RB1" in [l.strip().split(":")[0] for l in _db71.splitlines()
+              if "pp)" in l][-1],
+    str([l.strip().split(":")[0] for l in _db71.splitlines()
+         if "pp)" in l][-1]))
+chk("the unpriceable QB is named, not dropped from the board",
+    "QB1" in _db71 and "CANNOT BE PRICED" in _db71)
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

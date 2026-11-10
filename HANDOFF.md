@@ -1016,3 +1016,23 @@ reality.
     passed every one. A field that is supposed to be DERIVED needs at least
     one check that drives the real derivation, with the source data arranged
     to make it true.
+
+96. **Build the mirror of a function when the mirror is the same read.**
+    `waiver_value` paired the comparison for an ADD and shipped with a note
+    explaining why running twice is wrong. Nothing covered a DROP, so the
+    next session to need one rolled its own, ran four simulations, and
+    reported a 0.21pp ordering that was pure between-run noise — the exact
+    failure the add-side docstring warns about, two functions away. Dropping
+    X restricts the lineup set to those without X, which is literally the
+    `p_without` term already computed. When a function exists because a
+    naive approach is wrong, its inverse exists for the same reason, and
+    leaving the inverse unbuilt is an invitation to repeat the mistake.
+
+97. **Prove the mechanism, not just the output.** `drop_board` exists to
+    read every cut off ONE set of draws. The checks counted the rows, read
+    the ordering, and verified the costs — and a revert that ran one
+    simulation per candidate passed all of them, because the fixture's
+    deltas were large enough to survive the noise. What catches it is a
+    property of the MECHANISM: if the draws are shared, every priced row
+    reports the same baseline. One line, and it fails the moment the
+    pairing does.

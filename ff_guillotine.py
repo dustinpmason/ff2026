@@ -1353,3 +1353,152 @@ def render_waiver_board(vals, *, n_sims: int, floor: float = 0.25) -> str:
                  "adding a player cannot raise the best lineup's P(elim). "
                  "Something has broken the pairing; do not act on this board.")
     return "\n".join(L)
+
+
+# ---------------------------------------------------------------------------
+# Drop value — the same paired read, for a cut instead of an add
+# ---------------------------------------------------------------------------
+#
+# B139. `waiver_value` covers the ADD case and nothing covered the DROP case,
+# so a session evaluating a cut rolled its own comparison and walked into
+# exactly the trap B133 exists to stop: four separate runs gave four drop
+# figures spanning 0.21pp, which looked like an ordering and was entirely
+# between-run RNG noise. On shared draws all four were identical to three
+# decimals.
+#
+# The read is the same one: dropping X restricts the legal lineup set to the
+# lineups that do NOT contain X, which is already what `p_without` computes.
+# One run, both numbers off the same draws, no between-run term at all.
+#
+# TWO ZEROS THAT MEAN DIFFERENT THINGS, which is the reason this reports
+# rather than just subtracts:
+#
+#   * a player who appears in NO legal lineup costs exactly zero STRUCTURALLY
+#     — `run()` strips unavailable players before enumerating, so a bye
+#     player is already absent and cutting him cannot move anything;
+#   * a player who appears in some lineups but never the BEST one also costs
+#     zero, which is a real finding about this roster rather than a fact
+#     about the schedule.
+#
+# Both print 0.000 and they are not the same claim.
+
+
+@dataclass
+class DropValue:
+    player: str
+    p_before: float
+    p_after: float
+    appears_in: int          # how many legal lineups contain him
+    total_lineups: int
+    n_sims: int
+    on_roster: bool = True
+    why: str = ""
+
+    @property
+    def cost(self) -> float:
+        """Rise in best-lineup P(elim) from cutting him. Never negative."""
+        return self.p_after - self.p_before
+
+    @property
+    def structural_zero(self) -> bool:
+        """Zero because he was in no lineup to begin with — a bye, usually."""
+        return self.appears_in == 0
+
+    def describe(self, floor: float = 0.25) -> str:
+        if not self.on_roster:
+            return f"{self.player}: NOT ON THIS ROSTER — {self.why}"
+        if self.p_after != self.p_after:               # NaN
+            # He is in EVERY legal lineup, so there is no without-him set to
+            # compare against. Printed as its reason, not as "nan%" — which
+            # is what it did, and a row of nans in a board a person reads to
+            # make a cut is worse than no row.
+            return (f"{self.player}: CANNOT BE PRICED — in all "
+                    f"{self.total_lineups} legal lineups. {self.why}")
+        s = (f"{self.player}: {self.p_before:.3%} -> {self.p_after:.3%}  "
+             f"(+{self.cost * 100:.3f}pp)  in {self.appears_in}/"
+             f"{self.total_lineups} lineups")
+        if self.structural_zero:
+            s += ("  [free STRUCTURALLY — he is in no legal lineup, so this "
+                  "number cannot be anything else]")
+        elif self.cost * 100 <= floor:
+            s += "  [free on THIS roster — never in the best lineup]"
+        return s
+
+
+def drop_value(teams: list[dict], pool: dict[str, np.ndarray], *,
+               my_team_id: str, candidate: str, n_sims: int = 80_000,
+               meta: dict | None = None, week: int | None = None,
+               unavailable=None, _result=None, **kw) -> DropValue:
+    """What cutting `candidate` costs, as a paired delta within one run.
+
+    Pass `_result` to reuse a run you already have — every drop from one
+    roster reads off the same draws, so `drop_board` does exactly that and
+    pays for one simulation rather than one per candidate.
+    """
+    me = next((t for t in teams if str(t.get("team_id")) == str(my_team_id)),
+              None)
+    if me is None:
+        raise ValueError(f"no team with id {my_team_id!r} in this league")
+    who = resolve(candidate, pool)
+    mine = {p for v in me["roster"].values() for p in v}
+    if who is None or who not in mine:
+        return DropValue(candidate, float("nan"), float("nan"), 0, 0, n_sims,
+                         False,
+                         (f"{candidate!r} does not resolve to anyone in the "
+                          f"pool" if who is None else
+                          f"{who} is not on team {my_team_id!r}"))
+    r = _result if _result is not None else run(
+        teams, pool, my_team_id=my_team_id, n_sims=n_sims, meta=meta,
+        week=week, unavailable=unavailable, **kw)
+    without = [i for i, L in enumerate(r.lineups) if who not in L]
+    appears = len(r.lineups) - len(without)
+    if not without:
+        return DropValue(candidate, float(min(r.p_last)), float("nan"),
+                         appears, len(r.lineups), r.n_sims, True,
+                         f"{who} is in EVERY legal lineup — cutting him "
+                         f"leaves no lineup at all, so there is no "
+                         f"comparison to make")
+    return DropValue(candidate, float(min(r.p_last)),
+                     float(min(r.p_last[without])), appears, len(r.lineups),
+                     r.n_sims, True, "paired within one run")
+
+
+def drop_board(teams: list[dict], pool: dict[str, np.ndarray], *,
+               my_team_id: str, candidates=None, n_sims: int = 80_000,
+               meta: dict | None = None, week: int | None = None,
+               unavailable=None, floor: float = 0.25, **kw) -> str:
+    """Every cut, cheapest first, off ONE set of draws.
+
+    `candidates` defaults to the whole roster. The two kinds of zero are
+    distinguished in the output, because "free because he is on a bye" and
+    "free because this roster never starts him" are different claims and a
+    reader acting on them would do different things.
+    """
+    me = next((t for t in teams if str(t.get("team_id")) == str(my_team_id)),
+              None)
+    if me is None:
+        raise ValueError(f"no team with id {my_team_id!r} in this league")
+    if candidates is None:
+        candidates = sorted({p for v in me["roster"].values() for p in v})
+    r = run(teams, pool, my_team_id=my_team_id, n_sims=n_sims, meta=meta,
+            week=week, unavailable=unavailable, **kw)
+    vals = [drop_value(teams, pool, my_team_id=my_team_id, candidate=c,
+                       meta=meta, week=week, unavailable=unavailable,
+                       _result=r, **kw) for c in candidates]
+    ok = sorted([v for v in vals if v.on_roster and v.cost == v.cost],
+                key=lambda v: v.cost)
+    bad = [v for v in vals if not v.on_roster or v.cost != v.cost]
+    se = (min(r.p_last) * (1 - min(r.p_last)) / r.n_sims) ** 0.5
+    L = [f"DROP BOARD — {len(ok)} priced, {len(bad)} not, "
+         f"n_sims={r.n_sims:,}, {len(r.lineups)} legal lineups",
+         f"  1 se of simulation noise is {se * 100:.3f}pp, so a gap under "
+         f"{2 * se * 100:.3f}pp between two cuts is NOT an ordering"]
+    for v in ok:
+        L.append("  " + v.describe(floor))
+    for v in bad:
+        L.append("  " + v.describe(floor))
+    if any(v.cost < -1e-12 for v in ok):
+        L.append("  !! a NEGATIVE cost appeared, which is impossible — "
+                 "removing a player cannot shrink the best lineup's P(elim). "
+                 "The pairing has broken; do not act on this board.")
+    return "\n".join(L)
