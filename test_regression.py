@@ -1806,20 +1806,23 @@ s = classify(SAME_STACK, META)
 chk("QB + his own WR is correlated", s.kind == "same-game-correlated", s.kind)
 chk("a correlated slip is NOT priceable", s.priceable is False)
 chk("the correlated pair is named with its r",
-    any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs), str(s.pairs))
+    any(abs(p[2] - _STC[("QB", "WR")]) < 1e-9 for p in s.pairs),
+    str(s.pairs))
 
 s = classify([leg("QB A", EV1, market="player_pass_yds"),
               leg("TE A1", EV1), leg("WR B1", EV1)], META)
-chk("QB + his own TE is correlated (+0.27)",
-    s.kind == "same-game-correlated" and any(abs(p[2] - 0.27) < 1e-9
+chk("QB + his own TE is correlated, at the TE coefficient",
+    s.kind == "same-game-correlated"
+    and any(abs(p[2] - _STC[("QB", "TE")]) < 1e-9
                                              for p in s.pairs), s.kind)
 
 s = classify([leg("QB A", EV1, market="player_pass_yds"),
               leg("RB A1", EV1, market="player_rush_yds"),
               leg("WR B1", EV1)], META)
-chk("QB + his own RB is correlated (-0.10), not independent",
-    s.kind == "same-game-correlated" and any(abs(p[2] + 0.10) < 1e-9
-                                             for p in s.pairs), s.kind)
+chk("QB + his own RB is correlated and negative, not independent",
+    s.kind == "same-game-correlated"
+    and any(abs(p[2] - _STC[("QB", "RB")]) < 1e-9 for p in s.pairs)
+    and _STC[("QB", "RB")] < 0, s.kind)
 
 # The guillotine's correlation_matrix cannot see the schedule, so it treats
 # every different-team pair as independent. P0 knows the event, so two backs
@@ -1827,8 +1830,10 @@ chk("QB + his own RB is correlated (-0.10), not independent",
 s = classify([leg("RB A1", EV1, market="player_rush_yds"),
               leg("RB B1", EV1, market="player_rush_yds"),
               leg("WR C1", EV2)], META)
-chk("opposing RBs inside one event are correlated (-0.14)",
-    any(abs(p[2] + 0.14) < 1e-9 for p in s.pairs), str(s.pairs))
+chk("opposing RBs inside one event are correlated and negative",
+    any(abs(p[2] - ff_boost.OPPOSING_CORR[("RB", "RB")]) < 1e-9
+        for p in s.pairs)
+    and ff_boost.OPPOSING_CORR[("RB", "RB")] < 0, str(s.pairs))
 
 s = classify([leg("RB A1", EV1, market="player_rush_yds"),
               leg("RB C1", EV2, market="player_rush_yds"),
@@ -1859,13 +1864,15 @@ s = classify([leg("QB A", EV1, market="player_pass_yds"),
 chk("a receiving prop on a CB still pairs with his QB",
     s.kind == "same-game-correlated" and not s.priceable, s.kind)
 chk("the pair is scored off the market, not the roster label",
-    any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs), str(s.pairs))
+    any(abs(p[2] - _STC[("QB", "WR")]) < 1e-9 for p in s.pairs),
+    str(s.pairs))
 
 s = classify([leg("QB A", EV1, market="player_pass_yds"),
               leg("TE A1", EV1, market="player_reception_yds"),
               leg("WR B1", EV1)], META)
 chk("a TE receiving prop takes the TE coefficient, not the WR one",
-    any(abs(p[2] - 0.27) < 1e-9 for p in s.pairs), str(s.pairs))
+    any(abs(p[2] - _STC[("QB", "TE")]) < 1e-9 for p in s.pairs)
+    and _STC[("QB", "TE")] != _STC[("QB", "WR")], str(s.pairs))
 
 # The correlation table was measured on YARDS. anytime-TD is a boost staple
 # and nobody here has measured it, so independence would be a claim.
@@ -1922,7 +1929,8 @@ nopos = BoostLeg(event_id=EV1, book="draftkings",
 s = classify([leg("QB A", EV1, market="player_pass_yds"), nopos,
               leg("WR B1", EV1)], {})
 chk("a known team with an UNKNOWN position is unmeasurable, not WR",
-    not s.priceable and not any(abs(p[2] - 0.31) < 1e-9 for p in s.pairs),
+    not s.priceable
+    and not any(abs(p[2] - _STC[("QB", "WR")]) < 1e-9 for p in s.pairs),
     f"{s.kind} pairs={s.pairs}")
 chk("the player with no position is named", "Spectre" in str(s.unmeasured),
     str(s.unmeasured))
@@ -1939,7 +1947,8 @@ s_cb = classify([leg("QB A", EV1, market="player_pass_yds"),
                  leg("CB A1", EV1, market="player_reception_yds"),
                  leg("WR B1", EV1)], dict(META, **{"CB A1": ("AAA", "CB")}))
 chk("a PRESENT but unmeasured position still resolves off the market",
-    any(abs(p[2] - 0.31) < 1e-9 for p in s_cb.pairs), str(s_cb.pairs))
+    any(abs(p[2] - _STC[("QB", "WR")]) < 1e-9 for p in s_cb.pairs),
+    str(s_cb.pairs))
 chk("and it says so, instead of hiding behind the word 'receiver'",
     any("CB" in str(p[3]) for p in s_cb.pairs)
     if s_cb.pairs and len(s_cb.pairs[0]) > 3
@@ -3116,7 +3125,8 @@ chk("it is refused for the reason the team guard already gave",
 s = classify([_pleg("QB A", "player_pass_yds", "AAA", "QB"),
               _pleg("RB A1", "player_reception_yds", "AAA", " rb ")])
 chk("a position with stray whitespace still RESOLVES once stripped",
-    any(abs(p[2] - 0.20) < 1e-9 for p in s.pairs), f"pairs={s.pairs}")
+    any(abs(p[2] - _STP[("QB", "RB_RECV")]) < 1e-9 for p in s.pairs),
+    f"pairs={s.pairs}")
 
 section("43. verification that can never pass is not caution (B90, B91)")
 # B91. verify_uploaded required BYTE identity, which is unreachable for any
@@ -6639,9 +6649,19 @@ chk("a same-event receptions leg is still UNPRICEABLE, as before",
     _rs.reason[:110])
 
 # --- ff_boost is NOT changed from here -------------------------------------
-chk("ff_boost still ships its own market table, unswapped",
-    ff_boost.SAME_TEAM_CORR[("QB", "WR")] == 0.31,
-    "swapping it gates whether a slip gets an EV and needs sign-off")
+# Signed off and applied 2026-11-10. This asserted the OLD literal while
+# the swap was pending; it now pins ff_boost to the recorded MARKET table,
+# which is the stronger statement — the old check would have passed on any
+# literal that happened to equal 0.31.
+chk("ff_boost ships the recorded MARKET table, not a literal",
+    all(abs(ff_boost.SAME_TEAM_CORR[k] - _C.RECORDED_MARKET[k][0]) < 1e-12
+        for k in ff_boost.SAME_TEAM_CORR),
+    str(ff_boost.SAME_TEAM_CORR))
+chk("and the provisional RB_RECV entry comes from there too",
+    abs(ff_boost.SAME_TEAM_CORR_PROVISIONAL[("QB", "RB_RECV")]
+        - _C.RECORDED_MARKET[("QB", "RB_RECV")][0]) < 1e-12)
+chk("boost's market table still DIFFERS from the guillotine's fantasy one",
+    ff_boost.SAME_TEAM_CORR != ff_guillotine.SAME_TEAM_CORR)
 # ...and the reason that swap is low-risk: the VALUE does not reach the EV.
 # A correlated pair makes a slip unpriceable whatever r is.
 _e1 = ff_boost.BoostLeg(event_id="E1", book="dk", market="player_pass_yds",
@@ -6663,10 +6683,19 @@ ff_boost.SAME_TEAM_CORR.clear()
 ff_boost.SAME_TEAM_CORR.update(_old_stc)
 chk("a correlated slip is unpriceable under BOTH tables",
     _before.priceable is False and _after.priceable is False)
-chk("so the market swap changes the reported r and not the EV",
-    _before.pairs[0][2] != _after.pairs[0][2]
-    and _before.kind == _after.kind,
-    f"{_before.pairs[0][2]:+.4f} -> {_after.pairs[0][2]:+.4f}")
+# The swap is applied, so "before" and "after" are now the same number.
+# What the check is for survives: moving the value does not move the EV.
+# Demonstrated against the OLD literal rather than the shipped value.
+ff_boost.SAME_TEAM_CORR[("QB", "WR")] = 0.31
+_old_table = ff_boost.classify([_e1, _e2])
+ff_boost.SAME_TEAM_CORR.clear()
+ff_boost.SAME_TEAM_CORR.update(_old_stc)
+chk("moving the correlation changes the reported r and not the EV",
+    _old_table.pairs[0][2] != _after.pairs[0][2]
+    and _old_table.priceable == _after.priceable is False
+    and _old_table.kind == _after.kind,
+    f"{_old_table.pairs[0][2]:+.4f} vs {_after.pairs[0][2]:+.4f}, "
+    f"priceable {_old_table.priceable}/{_after.priceable}")
 
 
 # ---------------------------------------------------------------------------

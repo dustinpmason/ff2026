@@ -1036,3 +1036,17 @@ reality.
     property of the MECHANISM: if the draws are shared, every priced row
     reports the same baseline. One line, and it fails the moment the
     pairing does.
+
+98. **A signal with 41x the discriminating power can still be 41x the
+    noise.** B57 asked whether slip selection belongs in the hold band or in
+    leg quality. The band was confirmed useless — 120 of 120 candidates
+    inside it, P(cash) spanning 2.21 points with half the legs pinned at
+    exactly 0.5000. Aggregate model edge spanned 90.91 points across the same
+    candidates, and the conclusion wrote itself: rank by edge. Then the
+    per-leg edge turned out to have sd 0.1258 against the model's own
+    measured level error of sd 0.115 — ratio 1.09. The spread was the error,
+    and ranking on it would have selected the players the model most
+    overrates. **Before treating a wide spread as signal, check it against
+    the known error of the thing producing it.** A quantity that varies a lot
+    is evidence of variance, not of information, and the two are
+    indistinguishable from the spread alone.

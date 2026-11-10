@@ -419,8 +419,32 @@ MODEL_SIDE_GATE = 0.03
 # Measured over 43,228 same-game pairs, 2025-26. Everything absent is ~0.00,
 # INCLUDING WR x WR on the same team (+0.00 over 2,970 pairs) — target
 # competition cancels out team volume. Do not limit slips to stack shapes.
-SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
-OPPOSING_CORR = {("RB", "RB"): -0.14}
+# E3, signed off 2026-11-10. These were four literals whose method was gone
+# and which a 2026-11-05 sweep found unreproducible. They now come from
+# `ff_correlation.RECORDED_MARKET` — the MARKET quantity, one market against
+# another, measured on one documented filter with a pair count and a 95%
+# interval per entry. `ff_guillotine` keeps the FANTASY-POINTS table, which
+# is a different quantity and is allowed to differ.
+#
+# Four of the five old values sat OUTSIDE the measured interval, every one
+# overstating the magnitude:
+#
+#     ("QB","WR")       +0.31  ->  +0.2614   CI +0.241..+0.282   n=7,891
+#     ("QB","TE")       +0.27  ->  +0.2149   CI +0.185..+0.245   n=3,935
+#     ("QB","RB")       -0.10  ->  -0.0755   CI -0.104..-0.047   n=4,737
+#     ("QB","RB_RECV")  +0.20  ->  +0.1705   CI +0.142..+0.198   n=4,649
+#     ("RB","RB") opp   -0.14  ->  -0.0793   CI -0.105..-0.054   n=5,795
+#
+# The swap changes the reported `r` and `factor_note`, NOT any EV: a
+# correlated pair makes a slip unpriceable whatever `r` is, verified by
+# classifying one QB-stack slip under both tables and getting identical
+# `priceable` and `independent_odds`. Re-derive with
+# `python3 ff_correlation.py`.
+from ff_correlation import RECORDED_MARKET as _RM
+
+SAME_TEAM_CORR = {k: _RM[k][0] for k in (("QB", "WR"), ("QB", "TE"),
+                                         ("QB", "RB"))}
+OPPOSING_CORR = {("RB", "RB"): _RM[("RB", "RB")][0]}
 
 # ("QB","RB") above is QB PASSING x RB RUSHING. A back catching passes is a
 # different pair and the code used to miss it: `_pair_r` asked only whether
@@ -448,7 +472,10 @@ OPPOSING_CORR = {("RB", "RB"): -0.14}
 # non-zero, so +0.31 and +0.20 both refuse an EV. This number only reaches
 # the explanation text and the comparison against the book's own
 # correlation_factor, which the instructions tell a session to make.
-SAME_TEAM_CORR_PROVISIONAL = {("QB", "RB_RECV"): 0.20}
+# No longer provisional, and no longer a ratio applied to a literal: E3
+# measured QB passing x RB RECEIVING directly at +0.1705 (n=4,649,
+# CI +0.142..+0.198), on the same filter as every other entry.
+SAME_TEAM_CORR_PROVISIONAL = {("QB", "RB_RECV"): _RM[("QB", "RB_RECV")][0]}
 
 # Every {PASS, RUSH, RECV} x {same team, opposing} pair, measured in one pass
 # so that the gate below rests on numbers rather than on which branch a pair
