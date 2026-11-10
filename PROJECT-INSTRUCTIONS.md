@@ -595,6 +595,60 @@ prop_edge(est, over_odds=r.price, fair_over=r.fair,
 is exactly "over N − 0.5" because these stats are integer-valued. Modelling
 against `threshold` is off by half a yard in the permissive direction.
 
+#### Putting a rung into a SLIP — `rung_legs()`, shipped 2026-11-10 (F12)
+
+Until now a rung could be priced but never chosen, because the leg pool is
+`flatten_odds(line_type="main")`. `ff_boost.rung_legs()` turns priced rungs
+into `BoostLeg`s you can hand straight to `enumerate_candidates`, alongside
+main lines or on their own:
+
+```python
+V = {"Khalil Shakir": ("CLEAR", "OVER", ()), ...}   # from boost_verdict
+legs, refused = ff_boost.rung_legs(
+    f, book="draftkings", market="player_reception_yds",
+    event_id=ev, verdicts=V, meta=meta)
+sl = ff_boost.enumerate_candidates(legs + main_legs, meta,
+                                   boost_pct=0.50, mode="single-game",
+                                   event_id=ev)
+for n in sl.build_notes:            # READ THESE
+    print(n)
+```
+
+**What rungs are FOR, and the one thing they are not for.** B128 measured
+the model's shape disagreement with the market at **3.1x the ladder's own
+precision even with the level pinned away**, so a model-vs-market rung edge
+is noise. Every rung leg therefore carries `model_p=None` by design. Rungs
+let you **PICK a price** — which rung gets a product to the floor — and
+compare market against market. They do not let you say a rung is mispriced.
+Do not report an edge on one.
+
+**Their fair's SHAPE comes from the book being bet.** The LEVEL is pinned to
+an independent anchor, so this is not the circular case the instructions
+forbid, and `rung_legs` refuses a rung whose *anchor* is its own book. But
+the curve between rungs is the book's own, so:
+
+- "which of this book's rungs is cheapest" **holds** — the shared shape
+  cancels. This is F12's purpose.
+- "this rung beats the market" **does not**. Say so if you report one.
+
+`Shortlist.shape_circular_legs` and the report both name this. Do not strip
+it when you summarise.
+
+**Read `sl.build_notes`.** With a ladder in the pool, most combinations are
+one player's own rungs against each other, and those are refused — a rung
+and that player's own main line are **the same bet**, and parlayed together
+they price as independent legs, so the P(cash) is fiction. The count is in
+`build_notes`; without it a correctly-small shortlist reads as a thin pool
+and you will go looking for the wrong problem.
+
+**What `rung_legs` refuses, each by name:** a rung `ladder_fair` could not
+price; a rung with no price for the OVER (a one-sided row is not a price);
+a player with no role verdict (pass `verdicts`; a rung inherits the
+player's main-line screen, not a screen of its own threshold); a verdict
+computed for the UNDER (B126 — a verdict does not carry across sides); and
+a rung anchored to its own book. One bad rung does not take the rest of the
+ladder with it.
+
 #### NEVER hard-code the margin
 
 DK +5.68% and FD +6.54% are measurements from ONE game. They are in this

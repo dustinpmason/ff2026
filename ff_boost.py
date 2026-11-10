@@ -683,6 +683,26 @@ class BoostLeg:
     # is what says whether fair_prob is a settled number or an opening one.
     # Present on live get_odds (Pinnacle 250 on an opening board, rising to
     # 5,000-10,000 by kickoff); absent on Bovada, which returns null.
+    # F12. Which KIND of line this is: "main", "alternate" or "milestone".
+    # Default "main" because that is the only kind the pipeline could build
+    # until now, and because a rung has to declare itself — B128 established
+    # that a rung's fair is good for price selection and market-vs-market
+    # gaps but NOT for a model-vs-market edge, and nothing downstream can
+    # honour that distinction if it cannot see which legs are rungs.
+    line_type: str = "main"
+    # F12. For a rung, the fair is built from TWO books: the LEVEL comes
+    # from the anchor's own two-sided main line and the SHAPE comes from the
+    # ladder, which is usually the book being bet. Those are different kinds
+    # of dependence and the old single `fair_source` string could not tell
+    # them apart, so `circular` read "draftkings" out of
+    # "level pinnacle, shape draftkings ladder" and dropped every DK rung at
+    # intake — silently, and looking exactly like "F12 does not work".
+    #
+    # Set BOTH for a rung. Leaving them empty means "the whole fair came
+    # from fair_source", which is the main-line case and keeps `circular`
+    # answering exactly as it did.
+    level_source: str = ""
+    shape_source: str = ""
     anchor_liquidity: float | None = None
     # B59. The anchor book's OWN minimum tier in THIS pull, derived from its
     # board by `modal_liquidity()`. When set it replaces the module-level
@@ -916,18 +936,69 @@ class BoostLeg:
 
     @property
     def circular(self) -> bool:
-        """True when the fair line came from the book being bet.
+        """True when the fair's LEVEL came from the book being bet.
 
         A book de-vigged against itself is that book's opinion of itself.
         The instructions forbid it on a single prop; it is no more valid
-        inside a slip.
+        inside a slip. This is the disqualifying kind and `_intake` drops
+        on it.
+
+        F12: where `level_source` is set the level is the only part that
+        counts here, because a rung's level comes from an independent
+        anchor while its shape comes from the ladder. `shape_circular`
+        below is the weaker kind, which is reported rather than dropped.
         """
+        if self.level_source:
+            return self.book.lower() in str(self.level_source).lower()
         return self.book.lower() in str(self.fair_source).lower()
+
+    @property
+    def shape_circular(self) -> bool:
+        """True when the fair's SHAPE came from the book being bet.
+
+        NOT a refusal, and not nothing either. For a rung priced off its own
+        book's ladder, the level is pinned to an independent anchor but the
+        CURVE between rungs is this book's. So "is this rung cheap" is
+        answerable relative to the book's other rungs — F12's actual
+        purpose, where the shared shape cancels — while "does this rung beat
+        the market" partly assumes the shape it is testing.
+
+        Pinnacle posts no ladders at all, so there is no second opinion on
+        the shape to measure this against on most boards; `ladder_fair`
+        labels its uncertainty a LOWER BOUND in that case. Reported on the
+        leg and in the report, because silently absorbing it is the one
+        thing the pinning design is most likely to hide.
+        """
+        return (bool(self.shape_source)
+                and self.book.lower() in str(self.shape_source).lower())
+
+    @property
+    def is_rung(self) -> bool:
+        return str(self.line_type or "main").lower() in ("alternate",
+                                                         "milestone")
+
+    def as_quote(self) -> dict:
+        """The leg as a quote dict, for `canonical_bet` / `same_bet`.
+
+        B50/B129's merge point. A rung at N is exactly "over N - 0.5", and
+        `canonical_bet` does that subtraction — so a leg carries its line in
+        `line` and lets the canonical function do the arithmetic rather than
+        doing it here in a second place.
+        """
+        return {"player": self.player, "market": self.market,
+                "line": self.line, "player_id": self.player_id}
 
     def describe(self) -> str:
         ln = f" {self.line}" if self.line is not None else ""
-        return (f"{self.player} {self.market}{ln} {self.side} "
-                f"{self.odds:+.0f} @{self.book}")
+        s = (f"{self.player} {self.market}{ln} {self.side} "
+             f"{self.odds:+.0f} @{self.book}")
+        if self.is_rung:
+            # Named on the leg, not only in a note. A rung and a main line
+            # read identically once the threshold has been canonicalised to
+            # N - 0.5, and the two are priced by different machinery with
+            # different standing (B128).
+            s += f"  [{self.line_type} rung, posted as {self.line + 0.5:g}+]"
+        return s
 
 
 # ---------------------------------------------------------------------------
@@ -2102,6 +2173,31 @@ class Shortlist:
     # nobody checked looks identical to one built to this project's band,
     # and the two answer different questions (B55).
     token_notes: list[str] = field(default_factory=list)
+    # F12. What the enumeration refused on the way, and what it chose. With
+    # rungs in the pool MOST combinations for a player are that player's own
+    # rungs against each other, so a silently smaller shortlist is the
+    # normal outcome and reads as "the pool was thin" unless it is counted.
+    build_notes: list[str] = field(default_factory=list)
+
+    @property
+    def rung_legs(self) -> list[str]:
+        """Legs in this shortlist that are rungs rather than main lines."""
+        return sorted({f"{l.player} {l.line:g}+0.5 @{l.book}"
+                       for c in self.candidates for l in c.legs
+                       if l.is_rung})
+
+    @property
+    def shape_circular_legs(self) -> list[str]:
+        """Rung legs whose SHAPE came from the book being bet.
+
+        Not a refusal — see `BoostLeg.shape_circular`. Surfaced here because
+        a shortlist built entirely out of one book's own ladder is answering
+        "which of this book's rungs is cheapest", which is a real question,
+        and NOT "do these rungs beat the market", which it cannot answer.
+        """
+        return sorted({f"{l.player} @{l.book}"
+                       for c in self.candidates for l in c.legs
+                       if l.shape_circular})
 
     @property
     def playable(self) -> bool:
@@ -2209,6 +2305,135 @@ class Shortlist:
                      + ". `anchor_opening` on those is only as current as "
                        "that constant.")
         return "\n".join(L)
+
+
+# B50/B129 wanted a `same_bet` check here, at the merge point, and it does
+# NOT belong: `same_bet` requires equal canonical keys, a canonical key
+# BEGINS with the normalised player name, and the name guard in
+# `enumerate_candidates` already refuses any combination naming one man
+# twice. A guard that no input can reach reads as coverage (lesson 64), and
+# this one was written, tested against a constructed input, and removed when
+# the input turned out to be impossible.
+#
+# What the name guard genuinely misses is the same player under names that
+# normalise DIFFERENTLY — "Cam Ward" and "Cameron Ward". `same_bet` misses
+# that too, because its key is the normalised name. The `player_id` guard
+# inside `classify` is what catches it, and the enumerator now treats that
+# as a refused combination instead of letting it raise.
+
+
+def rung_legs(fairs, *, book: str, market: str, event_id: str,
+              verdicts=None, odds=None, meta=None,
+              line_type: str = "milestone") -> tuple[list, list]:
+    """BoostLegs from `ff_props.ladder_fair` records. (kept, refused).
+
+    F12's selection half. The pricing shipped 2026-11-09 and nothing could
+    CHOOSE a rung, because the production path pulls `line_type="main"`.
+    This is the merge point B50 and B129 were waiting for.
+
+    THREE things this refuses rather than papering over:
+
+      * A rung `ladder_fair` could not price. `fair is None` means refused,
+        and a leg built on it would carry a fair nobody computed.
+      * A rung with no price for the side being bet. A one-sided row is not
+        a price (B101).
+      * A rung whose player has no verdict. `_intake` drops an UNSCREENED
+        leg and says so, and that is the right behaviour — but a rung
+        arriving with no verdict at all would be dropped there for a reason
+        that reads like a screening failure rather than like a missing
+        input, so it is named here instead.
+
+    `verdicts` maps normalised player name -> (verdict, side, reasons). The
+    role screen is about the PLAYER'S ROLE and the SIDE, not the threshold,
+    so one screen legitimately covers every rung on that side — a collapsed
+    role vetoes a longer OVER at least as hard as a shorter one, so carrying
+    it across thresholds errs the safe way. It is still recorded as having
+    come from the main-line screen rather than from a screen of this rung.
+    """
+    vmap = {}
+    for k, v in (verdicts or {}).items():
+        vmap[norm_player(str(k))] = v
+    omap = {}
+    for k, v in (odds or {}).items():
+        omap[(norm_player(str(k[0])), float(k[1]))] = float(v)
+
+    kept, refused = [], []
+    for f in fairs:
+        who = getattr(f, "player", None)
+        thr = getattr(f, "threshold", None)
+        tag = f"{who} {thr:g}+" if thr is not None else str(who)
+        if not getattr(f, "priceable", False):
+            refused.append((tag, f"ladder_fair refused it: "
+                                 f"{getattr(f, 'why', '') or 'no reason given'}"))
+            continue
+        price = getattr(f, "price", None)
+        if price is None:
+            price = omap.get((norm_player(str(who)), float(thr)))
+        if price is None:
+            refused.append((tag, "no price for the side being bet — a "
+                                 "one-sided row is not a price (B101)"))
+            continue
+        v = vmap.get(norm_player(str(who)))
+        if not v:
+            refused.append((tag, "no role verdict for this player. Run "
+                                 "ff_props.boost_verdict on the OVER and "
+                                 "pass it in `verdicts` — an unscreened leg "
+                                 "is not a clear one, and a rung inherits "
+                                 "the player's screen, not a screen of its "
+                                 "own threshold"))
+            continue
+        verdict, vside = str(v[0]), str(v[1]).upper()
+        reasons = tuple(v[2]) if len(v) > 2 and v[2] else ()
+        if vside != "OVER":
+            refused.append((tag, f"the verdict supplied was computed for "
+                                 f"{vside}, and a rung is an OVER. A verdict "
+                                 f"does not carry across sides (B126)"))
+            continue
+        team = pos = None
+        if meta:
+            team, pos = meta.get(who, (None, None))
+        # BoostLeg validates at construction and RAISES — on a circular
+        # fair, an out-of-range fair_prob, a verdict with no side. Right for
+        # a hand-built leg and wrong for a loop over a whole ladder, where
+        # one bad rung would take the other 149 with it. Refused by name
+        # instead (lesson 14: a check must fail, not crash), and the
+        # message is the validator's own so nothing is paraphrased.
+        try:
+            kept.append(_rung_leg(
+            event_id=event_id, book=book, market=market, player=str(who),
+            side="OVER", odds=float(price), fair_prob=float(f.fair),
+            fair_source=str(getattr(f, "fair_source", "") or ""),
+            devig_method="ladder (own-main crossing)",
+            # The canonical line, NOT the posted N. A rung at N is exactly
+            # "over N - 0.5" and `canonical_bet` relies on `line` carrying
+            # that, which is how a rung collides with its own main line.
+            line=float(getattr(f, "canonical_line", float(thr) - 0.5)),
+            player_id=getattr(f, "player_id", None),
+            verdict=verdict, verdict_side="OVER",
+            verdict_reasons=reasons + (
+                "role screen taken from this player's MAIN line, not from "
+                "this rung — the screen is about the role and the side, not "
+                "the threshold",),
+            team=team, pos=pos,
+            line_type=line_type,
+            level_source=str(getattr(f, "anchor", "") or ""),
+            shape_source=str(book),
+            anchor_liquidity=None,
+            # B128. A rung carries NO model probability, deliberately. The
+            # model's level error against a sharp anchor is sd 11.5pp and
+            # its SHAPE disagrees with the market's by 3.1x the ladder's own
+            # precision even after the level is pinned away, so a
+            # model-vs-market rung edge is noise. None means NOT SUPPLIED,
+            # which is the state ff_betlog already reports as such.
+            model_p=None))
+        except ValueError as e:
+            refused.append((tag, f"refused at construction: {e}"))
+    return kept, refused
+
+
+def _rung_leg(*args, **kw) -> BoostLeg:
+    """Named so the `try` above wraps exactly one thing and reads clearly."""
+    return BoostLeg(*args, **kw)
 
 
 def _intake(legs, mode: str, event_id: str | None) -> tuple[list, list]:
@@ -2369,12 +2594,56 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
 
     seen, cands = set(), []
     n_short, n_long = 0, 0        # measured, not guessed — see the reason below
+    n_dupe = 0                    # combinations refused as one man twice
+    n_same = 0                    # refused: one player's own lines together
+    dupe_reasons: list[str] = []
     for c in combos:
-        names = tuple(sorted(l.player for l in c))
-        if len(set(names)) != len(names) or names in seen:
+        # B129/B50, and F12 is the merge point they were filed against.
+        # This used to key on the RAW player name: DraftKings spells
+        # "D.J. Moore" where Pinnacle spells "DJ Moore", so the same man
+        # arrived as two players and cleared this guard.
+        #
+        # BE HONEST ABOUT WHAT THIS CHANGE BUYS. It is NOT the thing that
+        # stops the slip: `classify` already refuses two legs that
+        # normalise to one player, and it normalises, so the combination
+        # was rejected either way. A revert of this line to the raw name
+        # came back NOT CAUGHT for exactly that reason, and the right
+        # response was to find out why rather than to invent a check.
+        #
+        # What it buys is the REASON. On the raw key the combination fell
+        # through to `classify`, raised, and was counted as an id
+        # collision — so a shortlist that quietly lost half its
+        # combinations blamed `player_id` for a spelling difference, and
+        # pointed a reader at the wrong field. Keyed on the normalised
+        # name it is counted as what it is: one player twice.
+        names = tuple(sorted(norm_player(l.player) for l in c))
+        if len(set(names)) != len(names):
+            # F12 makes this the COMMON case rather than a rarity. With a
+            # player's whole ladder in the pool, most combinations are that
+            # player's own rungs against each other — and those are the
+            # same bet twice, or near enough that parlaying them prices a
+            # fiction. Skipping them is right; skipping them silently is
+            # not, because the shortlist then comes back small and reads as
+            # a thin pool.
+            n_same += 1
+            continue
+        if names in seen:
             continue
         seen.add(names)
-        cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake)
+        # F12. `classify` RAISES on two legs carrying the same player_id
+        # under names that normalise differently — "Cam Ward" and "Cameron
+        # Ward" are one man and two keys, and the ids are what catch it.
+        # That is the right answer for a hand-built slip and the wrong one
+        # here: with rungs in the pool that pair is a NORMAL combination,
+        # and an exception out of this loop takes the whole shortlist with
+        # it. So it is caught and recorded as a refused combination.
+        try:
+            cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake)
+        except ValueError as e:
+            n_dupe += 1
+            dupe_reasons.append("; ".join(sorted(
+                {norm_player(l.player) for l in c})) + f": {e}")
+            continue
         if token is not None and getattr(token, "min_odds", None) is not None:
             # B55. So `token_minimum` can answer once the slip is priced,
             # rather than the caller having to remember to set it.
@@ -2453,9 +2722,38 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                       f"Best candidate is {cands[0].ev_band[0]:+.1%} at the "
                       f"pessimistic end. Measured minimum is ~28% cross-game "
                       f"and ~50% same-game at +300.")
+    build_notes: list[str] = []
+    if n_dupe:
+        build_notes.append(
+            f"{n_dupe} combination(s) refused as naming one player twice "
+            f"under names that normalise differently — caught on player_id, "
+            f"which is the only thing that catches it")
+        build_notes.extend(f"  {r}" for r in dupe_reasons[:5])
+    if n_same:
+        build_notes.append(
+            f"{n_same} combination(s) refused as containing one player "
+            f"twice — with a ladder in the pool that is most of them, and "
+            f"two lines on one man are not two legs")
+    n_rung = sum(1 for l in kept if l.is_rung)
+    if n_rung:
+        build_notes.append(
+            f"{n_rung} of {len(kept)} legs in the pool are rungs rather "
+            f"than main lines (F12). A rung carries NO model probability by "
+            f"design: B128 measured the model's shape disagreement at 3.1x "
+            f"the ladder's own precision even with the level pinned away, "
+            f"so a model-vs-market rung edge is noise. Rungs are here to "
+            f"let you PICK a price, not to claim one is mispriced.")
+        sc = sorted({l.book for l in kept if l.shape_circular})
+        if sc:
+            build_notes.append(
+                f"and the SHAPE of those rungs' fairs came from the book "
+                f"being bet ({', '.join(sc)}) — the level is pinned to an "
+                f"independent anchor, the curve between rungs is not. So "
+                f"'which rung is cheapest' is answerable here and 'does "
+                f"this rung beat the market' is not.")
     return Shortlist(candidates=cands, mode=mode, boost_pct=boost_pct,
                      reason=reason, dropped=dropped,
-                     token_notes=tok_notes)
+                     token_notes=tok_notes, build_notes=build_notes)
 
 
 def price_candidate(cand: Candidate, *, book_odds: float,
@@ -2891,6 +3189,18 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                 out.append(f"  why: {_fwhy}")
             out.append(f"  reference band  : not applicable. "
                        f"{c.hold_band_reason}")
+        if any(l.is_rung for l in c.legs):
+            out.append("  RUNG LEGS: priced by the ladder, NOT by a "
+                       "model-vs-market edge (B128). They are here to let "
+                       "you pick a price.")
+            sc = sorted({l.book for l in c.legs if l.shape_circular})
+            if sc:
+                out.append(f"  and their fairs' SHAPE came from "
+                           f"{', '.join(sc)}, the book being bet — the "
+                           f"LEVEL is pinned to an independent anchor, the "
+                           f"curve between rungs is not. 'Which rung is "
+                           f"cheapest' holds; 'this rung beats the market' "
+                           f"does not.")
         try:
             out.append(f"  {anchor_depth(c.legs).describe()}")
         except Exception as e:                       # pragma: no cover

@@ -1090,3 +1090,30 @@ reality.
      the "+15.7% beside a NEGATIVE verdict" failure one layer out, and none
      of them failed a check, because every check was reading the body. When
      a state is added, grep for every reader of the state it replaces.
+
+102. **Find out why a revert was not caught before writing a check that
+     catches it.** Two reverts in F12 came back NOT CAUGHT and both were
+     telling me the same thing: the line I had just "fixed" was not what
+     protected the behaviour. Keying the enumerator's dedupe on the
+     normalised player name instead of the raw one looked like B129's fix,
+     and reverting it changed nothing — because `classify` already refuses
+     two legs that normalise to one player, and does it downstream of
+     every path into the enumerator. The honest outcome was not a new
+     check asserting the line matters; it was finding out what the change
+     really buys (the REASON reported to the reader, which had been
+     blaming `player_id` for a spelling difference) and checking THAT. A
+     check written to make a revert fail, without understanding why it
+     passed, pins a belief rather than a behaviour.
+
+103. **A check that calls the thing it is testing must survive it
+     failing.** Five reverts in one session came back "0 failures +
+     CRASH": removing a guard let a bad value reach arithmetic that threw,
+     or let an exception escape the function under test, and the check
+     calling it raised out of the section instead of failing — taking
+     every later section with it. The suite's own CRASHED line noticed,
+     which is why the count is never read on its own (lesson 79), but a
+     crash names no behaviour. Where the behaviour under test is "this
+     refuses instead of raising", the check has to call it through a
+     wrapper that turns a raise into a failed assertion. Lesson 14 keeps
+     coming back because every new refusal path is a new place to forget
+     it.

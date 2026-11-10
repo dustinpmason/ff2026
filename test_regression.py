@@ -7754,5 +7754,281 @@ chk("anchor liquidity is absent from Candidate.key",
     and "anchor_depth" not in inspect.getsource(ff_boost.Candidate.rank.fget),
     "sorting on it would rank by the market's confidence, not by value")
 
+# ===========================================================================
+# 75. F12's selection half — a rung can be CHOSEN as a leg
+# ===========================================================================
+#
+# The pricing shipped 2026-11-09 and nothing could select a rung, because
+# the production path pulls line_type="main". This is the merge point B50
+# and B129 were filed against, and the three things that can go wrong here
+# are all silent: a rung dropped at intake by the circularity guard, a rung
+# parlayed with its own main line, and a rung carrying a model edge B128
+# says is noise.
+
+section("75. F12 — selecting a rung as a leg")
+
+
+def _lf(player, thr, price, fair, *, pid=None, book="draftkings",
+        anchor="pinnacle", priceable=True, unc=0.01):
+    return ff_props.LadderFair(
+        book=book, player=player, threshold=thr, canonical_line=thr - 0.5,
+        price=price, q_raw=None, fair=(fair if priceable else None),
+        uncertainty=unc, margin=0.0568, level_shift=0.1, anchor=anchor,
+        anchor_point=49.5, anchor_fair=0.52, level_gap=0.004, player_id=pid,
+        fair_source=f"level {anchor}, shape {book} ladder (margin +5.68%)",
+        why=("" if priceable else "no anchor-chain book posts a two-sided "
+                                  "main line for this player"))
+
+
+def _rl(fairs, **kw):
+    """rung_legs that FAILS a check instead of crashing the section.
+
+    Four reverts proved this necessary: removing a guard inside
+    `rung_legs` lets a bad rung reach `float(f.fair)` with fair=None, and
+    the TypeError raised out of the section and took sections 76+ with it.
+    The suite's CRASHED line noticed, but no check named the behaviour
+    (lesson 14).
+    """
+    kw.setdefault("book", "draftkings")
+    kw.setdefault("market", "player_reception_yds")
+    kw.setdefault("event_id", "E1")
+    try:
+        return ff_boost.rung_legs(fairs, **kw)
+    except Exception as e:
+        return [], [("<rung_legs raised>",
+                     f"{type(e).__name__}: {e} — it should have REFUSED "
+                     f"this rung by name, not raised")]
+
+
+def _why0(refused):
+    """The first refusal's reason, or a sentinel — never an IndexError.
+
+    Lesson 14 again, and three reverts proved it: a revert that makes
+    `rung_legs` ACCEPT a bad rung leaves `refused` empty, and a check
+    indexing `_r[0][1]` then raised out of the section instead of failing,
+    taking everything after it with it.
+    """
+    try:
+        return str(refused[0][1])
+    except Exception:
+        return "<nothing was refused>"
+
+
+_V = {n: ("CLEAR", "OVER", ()) for n in
+      ("Khalil Shakir", "Dalton Kincaid", "Ty Johnson")}
+_M75 = {"Khalil Shakir": ("BUF", "WR"), "Dalton Kincaid": ("BUF", "TE"),
+        "Ty Johnson": ("BUF", "RB")}
+_F75 = [_lf("Khalil Shakir", 60, +120, 0.44, pid="s1"),
+        _lf("Khalil Shakir", 70, +210, 0.31, pid="s1"),
+        _lf("Dalton Kincaid", 50, +150, 0.39, pid="k1"),
+        _lf("Ty Johnson", 40, +135, 0.41, pid="t1")]
+_K75, _R75 = _rl(_F75, verdicts=_V, meta=_M75)
+
+chk("rung_legs builds a leg per priceable rung", len(_K75) == 4 and not _R75,
+    f"{len(_K75)} built, refused {_R75}")
+chk("the leg carries the CANONICAL line, not the posted threshold",
+    all(abs(l.line - (t - 0.5)) < 1e-9 for l, t in
+        zip(_K75, (60, 70, 50, 40))),
+    f"{[l.line for l in _K75]} — a rung at N is exactly over N-0.5 (D18)")
+chk("and it declares itself a rung",
+    all(l.is_rung and l.line_type == "milestone" for l in _K75))
+chk("describe() names it, so a rung and a main line do not read alike",
+    "milestone rung, posted as 60+" in _K75[0].describe(), _K75[0].describe())
+# B128. The whole reason a rung is selectable at all but not edge-able.
+chk("every rung leg carries model_p=None, deliberately",
+    all(l.model_p is None for l in _K75),
+    "B128: the model's shape disagrees with the market's by 3.1x the "
+    "ladder's own precision even with the level pinned away")
+
+# --- the circularity split, which silently dropped every rung -----------
+chk("a rung's LEVEL came from the anchor, so it is NOT circular",
+    not any(l.circular for l in _K75),
+    "before the split, `circular` read 'draftkings' out of 'level "
+    "pinnacle, shape draftkings ladder' and dropped all of them at intake")
+chk("but its SHAPE did come from the book being bet, and says so",
+    all(l.shape_circular for l in _K75))
+# A rung anchored to its own book is fully circular. BoostLeg refuses that
+# at construction, so `rung_legs` must catch it and name it rather than
+# letting one bad rung take the other 149 with it (lesson 14).
+_sa_k, _sa_r = _rl(
+    [_lf("Khalil Shakir", 60, +120, 0.44, pid="s1", anchor="draftkings"),
+     _lf("Dalton Kincaid", 50, +150, 0.39, pid="k1")],
+    verdicts=_V, meta=_M75)
+chk("a rung anchored to its OWN book is refused, by name",
+    len(_sa_k) == 1 and len(_sa_r) == 1
+    and "Khalil Shakir" in str(_sa_r[0][0]) and "circular" in _why0(_sa_r),
+    f"kept={[l.player for l in _sa_k]} refused={_sa_r}")
+chk("and the good rung beside it still survives",
+    _sa_k and _sa_k[0].player == "Dalton Kincaid",
+    "one bad rung must not take the ladder with it")
+# A main line with no level_source keeps the OLD answer: the whole fair
+# came from fair_source, so naming the book being bet is circular and
+# BoostLeg refuses it at construction. The split must not have loosened it.
+try:
+    ff_boost.BoostLeg(
+        event_id="E1", book="draftkings", market="m", player="X",
+        side="OVER", odds=-110, fair_prob=.5, fair_source="draftkings shin",
+        devig_method="shin", line=1.5)
+    _mainok = False
+except ValueError:
+    _mainok = True
+chk("a main line de-vigged against its own book is still refused",
+    _mainok, "the circularity split must not have loosened the main-line "
+             "case, which is the one the instructions forbid outright")
+
+# --- what rung_legs refuses rather than papering over -------------------
+_nope = [
+    ("a rung ladder_fair could not price",
+     [_lf("Khalil Shakir", 60, +120, None, pid="s1", priceable=False)], _V,
+     "ladder_fair refused it"),
+    ("a rung with no price for the side being bet",
+     [_lf("Khalil Shakir", 60, None, 0.44, pid="s1")], _V,
+     "one-sided row is not a price"),
+    ("a rung whose player was never screened",
+     [_lf("Nobody Here", 60, +120, 0.44, pid="n1")], _V,
+     "no role verdict for this player"),
+    ("a verdict computed for the UNDER (B126)",
+     [_lf("Khalil Shakir", 60, +120, 0.44, pid="s1")],
+     {"Khalil Shakir": ("CLEAR", "UNDER", ())},
+     "does not carry across sides"),
+]
+for _label, _fs, _vs, _want in _nope:
+    _k, _r = _rl(_fs, verdicts=_vs, meta=_M75)
+    chk(f"refused: {_label}",
+        not _k and len(_r) == 1 and _want in _why0(_r),
+        f"kept={len(_k)} refused={_r}")
+# The verdict is inherited from the player's main-line screen, and says so.
+chk("an inherited verdict records that it was inherited",
+    any("not from this rung" in r for r in _K75[0].verdict_reasons),
+    str(_K75[0].verdict_reasons))
+
+# --- a rung and its own main line are ONE BET --------------------------
+_main75 = ff_boost.BoostLeg(
+    event_id="E1", book="draftkings", market="player_reception_yds",
+    player="Khalil Shakir", side="OVER", odds=+118, fair_prob=0.44,
+    fair_source="pinnacle shin", devig_method="shin", line=59.5,
+    player_id="s1", verdict="CLEAR", verdict_side="OVER", team="BUF",
+    pos="WR")
+chk("the 60+ rung and Over 59.5 are the SAME bet",
+    ff_props.same_bet(_K75[0].as_quote(), _main75.as_quote()),
+    f"{_K75[0].as_quote()} vs {_main75.as_quote()}")
+chk("the 70+ rung is NOT the same bet as Over 59.5",
+    not ff_props.same_bet(_K75[1].as_quote(), _main75.as_quote()))
+# And the enumerator refuses to put them in one slip — via the NAME guard,
+# which is what actually catches it. `same_bet` cannot add anything here:
+# its key begins with the normalised name, so an equal key implies a name
+# the guard has already refused. A check was written for a canonical guard
+# at this point and removed when no input could reach it (lesson 64).
+_sl75 = ff_boost.enumerate_candidates(
+    _K75 + [_main75], _M75, mode="single-game", event_id="E1",
+    boost_pct=0.50, legs_per_slip=2, floor=100, ceiling=2000)
+chk("no shortlisted slip contains one player twice",
+    all(len({ff_boost.norm_player(l.player) for l in c.legs}) == len(c.legs)
+        for c in _sl75.candidates),
+    f"{[[l.player for l in c.legs] for c in _sl75.candidates]}")
+chk("and the refused combinations are COUNTED, not silently dropped",
+    any("containing one player twice" in n for n in _sl75.build_notes),
+    "with a ladder in the pool that is most of them, so a silent skip "
+    "makes the shortlist read as a thin pool")
+
+# --- the normalised-name dedupe (B129), which was keyed on the RAW name --
+def _dj(name, pid, ev="E1", line=49.5):
+    return ff_boost.BoostLeg(
+        event_id=ev, book="dk", market="player_reception_yds", player=name,
+        side="OVER", odds=-110, fair_prob=0.52, fair_source="pinnacle",
+        devig_method="shin", line=line, player_id=pid, verdict="CLEAR",
+        verdict_side="OVER", team="CHI", pos="WR")
+
+
+# B129's own example: a rung row carrying an id beside a main row carrying
+# NULL. The ids cannot catch that — one of them is missing — so ONLY the
+# normalised name stands between the two spellings and a slip that parlays
+# one man with himself. A first version of this check gave both legs the
+# same id, and a revert to the raw-name key went UNCAUGHT because the id
+# guard in `classify` quietly did the job the name guard was meant to do.
+_djsl = ff_boost.enumerate_candidates(
+    [_dj("D.J. Moore", "m1"), _dj("DJ Moore", None),
+     _dj("Rome Odunze", "o1"), _dj("Cole Kmet", "c1")],
+    mode="single-game", event_id="E1", boost_pct=0.50, legs_per_slip=2,
+    floor=100, ceiling=2000)
+chk("'D.J. Moore' and 'DJ Moore' are one man, not two legs",
+    all(len({ff_boost.norm_player(l.player) for l in c.legs})
+        == len(c.legs) for c in _djsl.candidates),
+    f"{[[l.player for l in c.legs] for c in _djsl.candidates]}")
+# What the normalised key actually buys (see the note in ff_boost): the
+# combination is refused either way, by `classify`. The difference is
+# whether the reader is told "one player twice" or is pointed at
+# `player_id`, which has nothing to do with a spelling difference.
+chk("the refusal blames the NAME, not player_id",
+    any("one player twice" in n for n in _djsl.build_notes)
+    and not any("player_id" in n for n in _djsl.build_notes),
+    str(_djsl.build_notes)[:220])
+chk("and the id-less spelling still reached the shortlist on its own",
+    any(ff_boost.norm_player(l.player) == "dj moore"
+        for c in _djsl.candidates for l in c.legs),
+    "if neither spelling appears at all the check above is vacuous — one "
+    "of them must be usable as a leg, just never beside the other")
+
+# --- the id collision: a SKIP, not a crash -----------------------------
+# "Cam Ward" and "Cameron Ward" normalise differently, so the name guard
+# misses them and `classify` RAISES on the shared player_id. That is right
+# for a hand-built slip and fatal in an enumeration loop.
+# The check itself cannot call the enumerator bare: the behaviour under
+# test IS whether an exception escapes it, so a bare call makes the revert
+# crash the section instead of failing a check (lesson 14).
+try:
+    _camsl = ff_boost.enumerate_candidates(
+        [_dj("Cam Ward", "w9", line=237.5),
+         _dj("Cameron Ward", "w9", line=237.5),
+         _dj("Calvin Ridley", "r1"), _dj("Tyler Lockett", "l1")],
+        mode="single-game", event_id="E1", boost_pct=0.50, legs_per_slip=2,
+        floor=100, ceiling=2000)
+    _camerr = ""
+except Exception as e:
+    _camsl, _camerr = None, f"{type(e).__name__}: {e}"
+chk("a shared player_id under two spellings does not crash the enumeration",
+    _camsl is not None and _camsl.candidates,
+    _camerr or "no candidates survived — an exception here takes the "
+               "whole shortlist with it")
+if _camsl is None:                       # keep the rest of the section alive
+    _camsl = ff_boost.Shortlist(candidates=[], mode="single-game",
+                                boost_pct=0.50)
+chk("it is recorded as a refused combination, naming player_id",
+    any("player_id" in n for n in _camsl.build_notes),
+    str(_camsl.build_notes)[:200])
+chk("and no surviving slip contains that pair",
+    not any({"cam ward", "cameron ward"}
+            <= {ff_boost.norm_player(l.player) for l in c.legs}
+            for c in _camsl.candidates))
+
+# --- the shortlist and report say what these legs are ------------------
+_rsl = ff_boost.enumerate_candidates(
+    _K75, _M75, mode="single-game", event_id="E1", boost_pct=0.50,
+    legs_per_slip=3, floor=300, ceiling=1500)
+chk("a rung slip is actually shortlisted", _rsl.candidates, _rsl.reason[:120])
+chk("the shortlist lists its rung legs", len(_rsl.rung_legs) == 3,
+    str(_rsl.rung_legs))
+chk("and which of them are shape-circular",
+    _rsl.shape_circular_legs, str(_rsl.shape_circular_legs))
+chk("the build notes cite B128 for why a rung carries no model edge",
+    any("B128" in n and "noise" in n and "NO model probability" in n
+        for n in _rsl.build_notes),
+    str(_rsl.build_notes)[:220])
+chk("and say what rungs ARE for, so the note is usable",
+    any("PICK a price" in n and "not to claim one is mispriced" in n
+        for n in _rsl.build_notes), str(_rsl.build_notes)[:220])
+chk("and name the shape caveat rather than absorbing it",
+    any("curve between rungs is not" in n for n in _rsl.build_notes))
+_rep75 = ff_boost.report(_rsl.candidates[:1])
+chk("the report marks the slip as carrying rung legs",
+    "RUNG LEGS" in _rep75 and "pick a price" in _rep75)
+chk("and repeats the shape caveat on the candidate itself",
+    "'this rung beats the market' does not" in _rep75,
+    "a note that lives only on the shortlist is a note nobody reads (B93)")
+chk("a main-line-only slip says none of this",
+    "RUNG LEGS" not in ff_boost.report([ff_boost.make_candidate(
+        [_dj("Rome Odunze", "o1", ev="E1"), _dj("Cole Kmet", "c1", ev="E2")],
+        boost_pct=0.50)]))
+
 _summary()
 raise SystemExit(1 if fails else 0)
