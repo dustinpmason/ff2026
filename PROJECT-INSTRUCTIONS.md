@@ -693,6 +693,20 @@ lvl = threshold_prob(s, r.anchor_point).blended - r.anchor_fair
 If `abs(lvl)` is larger than a few points, the edge is that number wearing a
 rung's clothing. Say so explicitly rather than quoting the edge alone.
 
+**Pinning the model's level does NOT rescue it — measured 2026-11-10.**
+The obvious next move is to pin the MODEL to the anchor too, the same way the
+ladder is pinned, so that only the shapes are compared. Done, over 132 rungs
+and 10 players: median residual **2.50%**, p90 7.74%, against the ladder's own
+0.82% precision. Three times the measurement precision. More games does not
+help — correlation(games, shape error) +0.14, and >=20 games medians 2.36%
+against <20 games' 2.53%.
+
+**What that does not establish is whose shape is wrong.** It measures
+disagreement with the market, not error; calling it error assumes the market
+is right. Settling it needs outcomes, which means logging rung verdicts with
+`model_p` and letting them grade. Until a graded sample exists, do not quote a
+model-vs-rung edge.
+
 **What the ladder IS good for right now**, none of which touches the model's
 level:
 
@@ -2028,6 +2042,101 @@ that night's DraftKings First TD board the overround was **54.2%**, not
 39%, and the default would have overstated every EV. `stake_back_ev`'s
 `market_hold` default is one book, one market, one night (B77) — pass the
 booksum you actually measured.
+
+## Single-leg questions — "do you like CMC over 50 rushing yards?"
+
+Short prompts like *"do you like CMC over 50 rush"*, *"is Nabers 60+ receiving
+worth it"* or *"what about JSN under 5 receptions"* all land here. Every part
+of the answer already exists and **nothing joins them**, so a session
+assembles it from five sections each time and the shape of the answer changes
+run to run. This is the order and the output shape. Do not improvise either.
+
+**The answer is ALLOWED to be "the market says X, the model abstains."** That
+is a complete answer, not a failure to produce one. The threshold model
+abstains on low-event binary stats (B32); F4's falsification means it should
+not claim to beat a price on LEVEL; and B128 measured the model's own level
+error against a sharp anchor at **sd 11.5pp**, which is larger than almost any
+edge worth betting. Say which of those applies rather than manufacturing a
+lean.
+
+### The order
+
+**1. Resolve what he actually said — `ff_boost.resolve_leg()`.**
+
+```python
+q   = ff_props.flatten_odds(resp, line_type="main")
+leg = ff_boost.resolve_leg("CMC over 50 rush yards", q, book="draftkings")
+```
+
+Never hand-build the player/market/line from his text. That is the B44 name
+join and the D18 line grid in one step. If he says 50 and the book posts 49.5,
+`resolve_leg` **refuses and gives you both posted lines** — ask him which, do
+not pick. "Over 50" is a different bet from "over 49.5" and they do not have
+the same probability.
+
+**2. Screen the quote before you price it — `screen_quotes()` (B101).**
+Suspended, pregame-only and one-sided rows are not prices. Read
+`scratch_risk` and `suspended_books`.
+
+**3. Get a fair line from a book that is NOT the one being bet.** An
+unfiltered `get_event_ev(devig="shin")`, or `two_sided_field()` on an
+anchor-chain book. De-vigging DraftKings against itself gives you
+DraftKings' opinion of DraftKings, which is circular.
+
+**4. Check the anchor is real — `anchor_coverage()`.** `fair_source` naming a
+book is not the same as that book having taken money. Report
+`anchor_thin` / `anchor_opening` / `anchor_untested` when they fire, and B60
+when the chain is silently absent. **An exact 0.5000 is the book's prior, not
+its price.**
+
+**5. Price the side he ASKED about — `prop_edge(..., side=...)` (B126).**
+
+```python
+est  = ff_props.threshold_prob(ff_props.player_series(wk, who, stat), line)
+edge = ff_props.prop_edge(est, over_odds=price, fair_over=fair,
+                          fair_source="pinnacle",
+                          market="player_rush_yds",     # never omit
+                          side="OVER")                  # the side he asked
+```
+
+`side=` is not optional here. Without it `prop_edge` answers for the side the
+model happens to like, which is how a verdict computed for the UNDER ended up
+attached to an OVER. `market=` is not optional either: it refuses a TD-shaped
+estimate priced against a first-TD market, a ~3x units error.
+
+A negative edge is a real answer — it means **the model is against the side he
+asked about**. Say that in those words. Do not silently re-answer for the
+other side; if the other side looks better, say so as a separate sentence
+after answering the question he asked.
+
+**6. Run the role pass — `boost_verdict()`, with `usage_trend()` and
+`decline_onset()` behind it.** A role change runs against a SIDE: a collapsed
+role vetoes the OVER and supports the UNDER, so the verdict belongs to the
+side being asked about and nothing else.
+
+**7. If the line is an alternate or a milestone rung, read the ladder section
+and B128 first.** The model cannot pick rungs yet. Price selection and the
+`level gap` flag are what the ladder is for.
+
+### The output shape
+
+Five things, in this order, every time:
+
+1. **The market's number** — the de-vigged fair, and which book anchored it.
+2. **The price** — his book's, and whether it beats the fair.
+3. **The model** — the tier and the gap, or an explicit abstention.
+4. **The role check** — CLEAR / CAUTION / VETO for THAT side, with the reason.
+5. **What would change the answer** — the one thing most likely to move it.
+
+Then a verdict in a sentence. The verdict is allowed to be "the market is
+efficient here and the model has nothing to add", and that is frequently the
+true answer on a main line.
+
+**Never give a bare probability as the headline.** Every estimate here ships
+with a bootstrap interval and a sample verdict, and a mid-season read is six
+to eight games. If the interval spans 40 points, say so in the same breath as
+the number — a point estimate off that sample is the thing this project
+exists not to produce.
 
 ## Touchdown-scorer questions — "who do you like for the first TD?"
 

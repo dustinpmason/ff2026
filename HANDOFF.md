@@ -939,3 +939,16 @@ reality.
     claims about the world go stale. Re-check before spending somebody's
     attention on one — and before writing, because the prompt I handed over
     would have double-counted had the session not refused it.
+
+89. **An experiment that measures disagreement has not measured error.**
+    B128's follow-up pinned the model's level to the anchor and compared the
+    two SHAPES: median residual 2.50% against the ladder's 0.82% precision,
+    3.1x, with no relationship to sample size. The tempting write-up is "the
+    model's shape is wrong by 2.5pp". What was actually measured is that the
+    model and the market DISAGREE by 2.5pp. Calling that error assumes the
+    market's shape is right, which is the assumption F4 was filed against,
+    and the whole reason to build a model is the possibility that it is not.
+    The operational conclusion is the same either way — a rung edge is
+    dominated by a quantity nobody can sign — but the reason matters, because
+    one version closes the question and the other says what would settle it:
+    outcomes, logged and graded. Say which one you have.
