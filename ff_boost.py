@@ -2413,3 +2413,251 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                     f"{r.line if r.line is not None else ''}".rstrip()
                     + ") and it is not on the slip"))
     return out
+
+
+# ---------------------------------------------------------------------------
+# F15, the other half — free text to real legs
+# ---------------------------------------------------------------------------
+#
+# "JSN over 5 receptions, CMC over 50 rush" has to become legs priced at a
+# real book before anything can score it. This is the step the backlog calls
+# the fragile part, and it is right: it is the B44 name join (Brian Thomas Jr.
+# against Brian Thomas) and the D18 line-grid mismatch (his book at 46.5 where
+# the anchor is at 47.5) in a single operation, and a live run dropped 17 of
+# 41 quotes at that join.
+#
+# THE RULE IS REFUSE, NEVER SNAP. A leg that cannot be resolved comes back
+# named, with the candidates or the posted lines beside it, so the ambiguity
+# goes to a person instead of being guessed. Snapping "over 50" onto a posted
+# 49.5 is a different bet with a different probability, and D18 exists because
+# a fair probability for one point is not a fair probability for its
+# neighbour.
+#
+# NO STORED ALIAS TABLE. "JSN" and "CMC" are resolved against the BOARD's own
+# spellings, by initials computed from them — not from a nickname map, which
+# would be a constant that goes stale the moment a rookie arrives (B53's
+# lesson, where a constant's size was mistaken for its coverage). The board
+# is the authority on who is playing.
+
+_MARKET_WORDS = {
+    "player_reception_yds": ("receiving yards", "rec yards", "rec yds",
+                             "receiving yds", "rec"),
+    "player_rush_yds": ("rushing yards", "rush yards", "rush yds",
+                        "rushing yds", "rush"),
+    "player_pass_yds": ("passing yards", "pass yards", "pass yds",
+                        "passing yds", "pass"),
+    "player_receptions": ("receptions", "catches", "recs"),
+    "player_anytime_td": ("anytime td", "anytime touchdown", "td", "touchdown"),
+}
+
+
+def market_from_text(text: str) -> tuple[str | None, str]:
+    """(market_key, why) from a phrase like "rush yards".
+
+    Longest phrase wins, so "rec yards" is not read as "rec". Returns None
+    when nothing matches AND when more than one market matches equally —
+    never a best guess, because the market decides which line grid the
+    number is read against.
+    """
+    t = " ".join(str(text or "").lower().split())
+    hits = []
+    for key, words in _MARKET_WORDS.items():
+        for w in words:
+            if re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", t):
+                hits.append((len(w), key))
+    if not hits:
+        return None, (f"no market named in {text!r} — say receiving yards, "
+                      f"rushing yards, passing yards, receptions or anytime "
+                      f"TD")
+    hits.sort(reverse=True)
+    best = hits[0][0]
+    top = {k for n, k in hits if n == best}
+    if len(top) > 1:
+        return None, (f"{text!r} names more than one market "
+                      f"({', '.join(sorted(top))}) — say which")
+    return hits[0][1], "named"
+
+
+def _initials(name: str) -> str:
+    """Initials of a board spelling, splitting inner capitals too.
+
+    "Christian McCaffrey" -> c + mc + c -> "cmc", which is what people type.
+    "Jaxon Smith-Njigba" -> "jsn". Computed from the board, never stored.
+    """
+    out = []
+    for part in re.split(r"[\s.\-']+", str(name or "")):
+        if not part:
+            continue
+        # McCaffrey -> ["Mc", "Caffrey"]; Smith -> ["Smith"]
+        for chunk in re.findall(r"[A-Z][a-z]*|[a-z]+", part):
+            out.append(chunk[0].lower())
+    return "".join(out)
+
+
+def resolve_player(text: str, names) -> tuple[str | None, str, list[str]]:
+    """(board spelling, why, candidates) for a player named in free text.
+
+    Four passes, each of which must land on EXACTLY ONE board name or it
+    refuses with the candidates listed:
+      1. normalised equality  — the B44 join, done right
+      2. normalised substring — "Burden" for "Luther Burden III"
+      3. initials             — "CMC", "JSN", computed from the board
+      4. refuse
+
+    No edit distance and no nearest match anywhere. A fuzzy join is how a
+    player loses his whole board to a near-miss, which has happened here
+    three times.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return None, "no player named", []
+    names = list(dict.fromkeys(str(n) for n in names if n))
+    want = norm_player(raw)
+
+    exact = [n for n in names if norm_player(n) == want]
+    if len(exact) == 1:
+        return exact[0], "matched on the normalised name", exact
+    if len(exact) > 1:
+        return None, (f"{raw!r} matches {len(exact)} players on this board "
+                      f"under one spelling"), exact
+
+    if want:
+        sub = [n for n in names if want in norm_player(n)]
+        if len(sub) == 1:
+            return sub[0], f"matched {sub[0]!r} on a partial name", sub
+        if len(sub) > 1:
+            return None, (f"{raw!r} is ambiguous on this board"), sub
+
+    key = re.sub(r"[^a-z]", "", raw.lower())
+    ini = [n for n in names if _initials(n) == key]
+    if len(ini) == 1:
+        return ini[0], f"matched {ini[0]!r} on initials", ini
+    if len(ini) > 1:
+        return None, f"{raw!r} is the initials of {len(ini)} players", ini
+
+    return None, f"{raw!r} is not on this board", []
+
+
+@dataclass
+class ResolvedLeg:
+    """One free-text leg, resolved or refused — never partly either."""
+    text: str
+    player: str | None = None
+    market: str | None = None
+    side: str | None = None
+    line: float | None = None
+    quote: dict | None = None
+    why: str = ""
+    posted_lines: tuple[float, ...] = ()
+    candidates: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.quote is not None
+
+    def describe(self) -> str:
+        if self.ok:
+            return (f"{self.player} {self.side} {self.line:g} "
+                    f"{self.market} @{self.quote['book']} "
+                    f"{self.quote['over' if self.side == 'OVER' else 'under']:+.0f}"
+                    f"  ({self.why})")
+        s = f"REFUSED {self.text!r}: {self.why}"
+        if self.candidates:
+            s += "\n    candidates: " + ", ".join(self.candidates[:8])
+        if self.posted_lines:
+            s += ("\n    lines posted here: "
+                  + ", ".join(f"{x:g}" for x in self.posted_lines))
+        return s
+
+
+_LEG_RE = re.compile(
+    r"^\s*(?P<player>.+?)\s+(?P<side>over|under|o|u)\s+"
+    r"(?P<line>\d+(?:\.\d+)?)\s*(?P<market>.*?)\s*$", re.I)
+
+
+def resolve_leg(text: str, quotes: list[dict], *,
+                book: str | None = None) -> ResolvedLeg:
+    """One leg of free text against a board, refused rather than guessed."""
+    raw = " ".join(str(text or "").split())
+    m = _LEG_RE.match(raw)
+    if not m:
+        return ResolvedLeg(raw, why=(
+            "could not read this as a leg — the shape is "
+            "'<player> over|under <number> <market>', e.g. "
+            "'CMC over 50 rush yards'"))
+    side = "OVER" if m.group("side").lower().startswith("o") else "UNDER"
+    line = float(m.group("line"))
+    market, mwhy = market_from_text(m.group("market"))
+    if market is None:
+        return ResolvedLeg(raw, side=side, line=line, why=mwhy)
+
+    rows = [q for q in quotes
+            if q.get("market") == market
+            and (book is None or q.get("book") == book)]
+    if not rows:
+        at = f" at {book}" if book else ""
+        return ResolvedLeg(raw, market=market, side=side, line=line,
+                           why=f"no {market} quotes{at} on this board")
+
+    who, pwhy, cands = resolve_player(m.group("player"),
+                                      [q.get("player") for q in rows])
+    if who is None:
+        return ResolvedLeg(raw, market=market, side=side, line=line,
+                           why=pwhy, candidates=tuple(cands[:8]))
+
+    his = [q for q in rows if q.get("player") == who]
+    posted = tuple(sorted({float(q["line"]) for q in his
+                           if q.get("line") is not None}))
+    exact = [q for q in his if q.get("line") is not None
+             and abs(float(q["line"]) - line) < 1e-9]
+    if not exact:
+        # D18. NOT snapped. The posted lines come back so a person can pick,
+        # which is the useful half of refusing.
+        return ResolvedLeg(
+            raw, player=who, market=market, side=side, line=line,
+            posted_lines=posted,
+            why=(f"{who} has no {line:g} posted for {market}"
+                 + (f" at {book}" if book else "")
+                 + ". NOT snapped to a neighbour: a fair probability for one "
+                   "point is not a fair probability for the next, so pick "
+                   "one of the lines that exists"))
+    q = exact[0]
+    price = q.get("over") if side == "OVER" else q.get("under")
+    if price is None:
+        return ResolvedLeg(
+            raw, player=who, market=market, side=side, line=line,
+            posted_lines=posted, quote=None,
+            why=(f"{who} {line:g} is posted but the {side} side is not "
+                 f"priced — this is a one-sided row"))
+    return ResolvedLeg(raw, player=who, market=market, side=side, line=line,
+                       quote=q, why=pwhy, posted_lines=posted)
+
+
+def resolve_slip(text, quotes: list[dict], *,
+                 book: str | None = None) -> list[ResolvedLeg]:
+    """Free text to resolved legs. Accepts one string or a list of them.
+
+    A string is split on commas and newlines — NOT on "and", which appears
+    inside nothing useful but would also split a market phrase somebody
+    writes as "rush and rec".
+    """
+    if isinstance(text, str):
+        parts = [p for p in re.split(r"[,\n;]+", text) if p.strip()]
+    else:
+        parts = [str(p) for p in text]
+    return [resolve_leg(p, quotes, book=book) for p in parts]
+
+
+def resolve_report(legs: list[ResolvedLeg]) -> str:
+    ok = [l for l in legs if l.ok]
+    no = [l for l in legs if not l.ok]
+    out = [f"{len(ok)} of {len(legs)} legs resolved"]
+    for l in ok:
+        out.append("  " + l.describe())
+    for l in no:
+        out.append("  " + l.describe())
+    if no:
+        out.append("  Nothing was snapped or guessed. Resolve the refusals "
+                   "above before scoring this slip — a slip missing a leg is "
+                   "a different slip.")
+    return "\n".join(out)

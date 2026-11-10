@@ -916,3 +916,15 @@ reality.
     would have put a defect in the backlog that does not exist and sent the
     next session hunting it. Filed as NOT A DEFECT rather than dropped, so
     the next reader of that kink does not raise it again.
+
+87. **Check what the backlog says an item IS before marking it done.** I
+    built `score_slip`, which is the scoring half of F15, and marked F15
+    DONE. The original entry defines it as free text — "JSN over 5
+    receptions, CMC over 50 rush" — resolved to real lines at a real book
+    FIRST, and calls that resolution step **the fragile part**, noting a live
+    run that dropped 17 of 41 quotes at exactly that join. I had also filed a
+    second F15 row instead of updating the existing one, so for twenty
+    minutes the backlog carried the same item as both DONE and OPEN, with the
+    DONE row describing half the work. An item is finished when it does what
+    it was filed to do, not when the part I happened to think of works. Read
+    the entry, not the title.

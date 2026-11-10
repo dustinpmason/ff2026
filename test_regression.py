@@ -6217,5 +6217,162 @@ chk("findings are ordered STOP, then CHECK, then NOTE",
               key=lambda x: {"STOP": 0, "CHECK": 1, "NOTE": 2}[x]))
 
 
+# ---------------------------------------------------------------------------
+section("65. free text to real legs — the half of F15 I shipped without (D18/B44)")
+# The backlog calls this the fragile part and it is right: the B44 name join
+# and the D18 line-grid mismatch in one operation, where a live run dropped
+# 17 of 41 quotes. The rule is REFUSE BY NAME, NEVER SNAP.
+
+
+def _q65(book, player, market, line, over, under, pid=None):
+    return {"book": book, "player": player, "player_id": pid,
+            "market": market, "line": line, "over": over, "under": under,
+            "line_type": "main", "suspended_at": None}
+
+
+_b65 = [
+    _q65("draftkings", "Christian McCaffrey", "player_rush_yds", 49.5, -115, -105, "e1"),
+    _q65("draftkings", "Christian McCaffrey", "player_rush_yds", 54.5, 110, -135, "e1"),
+    _q65("draftkings", "Jaxon Smith-Njigba", "player_receptions", 5.5, -130, 105, "e2"),
+    _q65("draftkings", "Luther Burden III", "player_reception_yds", 50.5, -115, -105, "e9"),
+    _q65("fanduel", "Christian McCaffrey", "player_rush_yds", 51.5, -110, -110, "e1"),
+]
+_names65 = ["Christian McCaffrey", "Jaxon Smith-Njigba", "Luther Burden III",
+            "Brian Thomas Jr.", "Mike Williams", "Marvin Mims Jr."]
+
+# --- the line grid: D18, the whole reason this is not a one-liner ----------
+_cmc = ff_boost.resolve_leg("CMC over 50 rush yards", _b65, book="draftkings")
+chk("a line the book does not post is REFUSED, not snapped",
+    not _cmc.ok and "NOT snapped" in _cmc.why, _cmc.why[:110])
+chk("and the refusal hands back the lines that DO exist",
+    _cmc.posted_lines == (49.5, 54.5), str(_cmc.posted_lines))
+chk("the exact posted line resolves",
+    ff_boost.resolve_leg("CMC over 49.5 rush yards", _b65,
+                         book="draftkings").ok)
+def _px65(text, side_key, board=None, book="draftkings"):
+    """The resolved quote's price, or None — never subscripts a refusal.
+
+    Written first as `.quote["under"]`, which is a TypeError the moment
+    resolution fails. A revert that broke the name join took the rest of this
+    section down with it rather than letting its own three failures report.
+    """
+    l = ff_boost.resolve_leg(text, _b65 if board is None else board,
+                             book=book)
+    return None if l.quote is None else l.quote.get(side_key)
+
+
+chk("and it carries the price for the SIDE asked for, not the other one",
+    _px65("CMC under 49.5 rush yards", "under") == -105,
+    repr(_px65("CMC under 49.5 rush yards", "under")))
+# A whole number IS a legal line and must not be read as its neighbour.
+chk("50 and 49.5 are never the same bet, in either direction",
+    not ff_boost.resolve_leg("CMC over 50 rush yards", _b65,
+                             book="draftkings").ok
+    and not ff_boost.resolve_leg("JSN over 5 receptions", _b65,
+                                 book="draftkings").ok)
+
+# --- the name join: B44, done against the board rather than a table -------
+chk("initials come from the BOARD's spelling, not a stored alias map",
+    ff_boost._initials("Christian McCaffrey") == "cmc"
+    and ff_boost._initials("Jaxon Smith-Njigba") == "jsn",
+    f"{ff_boost._initials('Christian McCaffrey')!r} "
+    f"{ff_boost._initials('Jaxon Smith-Njigba')!r}")
+chk("an inner capital splits, which is where CMC comes from",
+    ff_boost._initials("McCaffrey") == "mc")
+for _t, _want in [("CMC", "Christian McCaffrey"),
+                  ("JSN", "Jaxon Smith-Njigba"),
+                  ("Luther Burden", "Luther Burden III"),
+                  ("Burden", "Luther Burden III")]:
+    chk(f"{_t!r} resolves to {_want!r}",
+        ff_boost.resolve_player(_t, _names65)[0] == _want,
+        str(ff_boost.resolve_player(_t, _names65)[0]))
+chk("the suffix case is the normalised join, not a partial match",
+    "normalised name" in ff_boost.resolve_player("Luther Burden",
+                                                 _names65)[1],
+    ff_boost.resolve_player("Luther Burden", _names65)[1])
+# Ambiguity is refused WITH the candidates, never resolved to a best guess.
+_amb65 = _names65 + ["Christian Watson"]
+_r = ff_boost.resolve_player("Christian", _amb65)
+chk("an ambiguous name is refused and the candidates are listed",
+    _r[0] is None and len(_r[2]) == 2, f"{_r[0]} {_r[2]}")
+chk("a name not on the board is refused by name",
+    ff_boost.resolve_player("Tez", _names65)[0] is None
+    and "not on this board" in ff_boost.resolve_player("Tez", _names65)[1])
+# No edit distance anywhere: a near-miss must miss.
+chk("a near-miss spelling is NOT fuzzy-matched",
+    ff_boost.resolve_player("Jaxon Smith-Njigbaa", _names65)[0] is None)
+
+# --- the market phrase -----------------------------------------------------
+# `"rec yards"` was the first check here and it discriminates nothing: both
+# the long phrase and the short one map to player_reception_yds, so sorting
+# the other way gives the same answer and a revert to shortest-wins passed.
+# This phrase hits two DIFFERENT markets at different lengths.
+chk("the longest market phrase wins when two markets both match",
+    ff_boost.market_from_text("rushing yards td")[0] == "player_rush_yds",
+    str(ff_boost.market_from_text("rushing yards td")[0]))
+chk("and the short word alone still reads as its own market",
+    ff_boost.market_from_text("td")[0] == "player_anytime_td")
+chk("'rec yards' is not read as 'rec'",
+    ff_boost.market_from_text("rec yards")[0] == "player_reception_yds",
+    str(ff_boost.market_from_text("rec yards")[0]))
+for _p, _k in [("rushing yards", "player_rush_yds"),
+               ("rush yds", "player_rush_yds"),
+               ("receptions", "player_receptions"),
+               ("passing yards", "player_pass_yds"),
+               ("anytime td", "player_anytime_td")]:
+    chk(f"{_p!r} reads as {_k}", ff_boost.market_from_text(_p)[0] == _k,
+        str(ff_boost.market_from_text(_p)[0]))
+chk("no market named is refused, not defaulted",
+    ff_boost.market_from_text("")[0] is None
+    and ff_boost.market_from_text("over 50")[0] is None)
+chk("and the refusal says what to write instead",
+    "receiving yards" in ff_boost.market_from_text("")[1])
+
+# --- the book filter and one-sided rows ------------------------------------
+chk("a line posted at another book does not resolve at this one",
+    not ff_boost.resolve_leg("CMC over 51.5 rush yards", _b65,
+                             book="draftkings").ok)
+chk("and it does resolve at the book that posts it",
+    ff_boost.resolve_leg("CMC over 51.5 rush yards", _b65,
+                         book="fanduel").ok)
+_one = [_q65("draftkings", "P", "player_reception_yds", 50.5, -115, None, "e5")]
+chk("a one-sided row refuses the unpriced side by name",
+    not ff_boost.resolve_leg("P under 50.5 rec yards", _one,
+                             book="draftkings").ok
+    and "one-sided" in ff_boost.resolve_leg("P under 50.5 rec yards", _one,
+                                            book="draftkings").why)
+chk("while the side that IS priced resolves",
+    ff_boost.resolve_leg("P over 50.5 rec yards", _one,
+                         book="draftkings").ok)
+
+# --- unreadable text --------------------------------------------------------
+chk("text that is not a leg is refused with the shape it wanted",
+    not ff_boost.resolve_leg("I like CMC tonight", _b65).ok
+    and "<player> over|under <number> <market>"
+    in ff_boost.resolve_leg("I like CMC tonight", _b65).why)
+
+# --- the whole slip ---------------------------------------------------------
+_slip65 = ff_boost.resolve_slip(
+    "CMC over 50 rush yards, Burden over 50.5 receiving yards, "
+    "Tez over 15.5 rec yards", _b65, book="draftkings")
+chk("a slip resolves leg by leg, refusing only what it must",
+    [l.ok for l in _slip65] == [False, True, False],
+    str([l.ok for l in _slip65]))
+_rep65 = ff_boost.resolve_report(_slip65)
+chk("the report counts resolved against total",
+    _rep65.splitlines()[0] == "1 of 3 legs resolved",
+    _rep65.splitlines()[0])
+chk("and it says plainly that nothing was guessed",
+    "Nothing was snapped or guessed" in _rep65)
+chk("a fully resolved slip does not carry that warning",
+    "Nothing was snapped" not in ff_boost.resolve_report(
+        ff_boost.resolve_slip("Burden over 50.5 receiving yards", _b65,
+                              book="draftkings")))
+chk("a list of legs is accepted as well as one string",
+    len(ff_boost.resolve_slip(["CMC over 49.5 rush yards",
+                               "Burden over 50.5 rec yards"], _b65,
+                              book="draftkings")) == 2)
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

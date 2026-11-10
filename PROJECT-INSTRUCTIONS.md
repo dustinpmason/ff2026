@@ -1850,6 +1850,32 @@ score = ff_boost.score_slip(
 print(score.report())
 ```
 
+**Start from the free text, not from hand-built legs.** When Dustin types
+"JSN over 5 receptions, CMC over 50 rush", resolve it against a real board
+first:
+
+```python
+q = ff_props.flatten_odds(resp, line_type="main")
+legs = ff_boost.resolve_slip(dustins_text, q, book="draftkings")
+print(ff_boost.resolve_report(legs))
+```
+
+**Never hand-build a `BoostLeg` from what he typed.** That is the B44 name
+join and the D18 line grid in one step, and a live run dropped 17 of 41
+quotes there. `resolve_slip` refuses rather than guessing:
+
+- A line the book does not post is **REFUSED, not snapped** — and the refusal
+  lists the lines that DO exist, so you can ask him which he meant. "Over 50"
+  is not "over 49.5"; a fair probability for one point is not a fair
+  probability for the next. One round trip, not a dead end.
+- `CMC` and `JSN` resolve by initials computed **from the board's own
+  spellings** — there is no stored nickname table to go stale.
+- An ambiguous name comes back refused with the candidates listed.
+- There is no fuzzy matching anywhere. A near-miss misses.
+
+Resolve the refusals with Dustin before scoring. A slip missing a leg is a
+different slip.
+
 The output is a verdict — `DO NOT PLACE` / `CHECK FIRST` / `NOTHING FOUND
 AGAINST IT` — and a list of findings at three levels. There is no score. A
 slip with one VETO and four CLEARs does not average out to fine.
