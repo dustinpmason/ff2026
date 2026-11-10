@@ -1907,10 +1907,44 @@ def canonical_bet(q: dict) -> tuple | None:
         threshold = float(q["rung_threshold"]) - 0.5
     else:
         return None
-    # player_id is the joiner; the name is the fallback for the boards that
-    # leave it null (DK anytime-TD, D/ST). See the note in flatten_odds.
-    return (q.get("player_id") or q.get("player"),
+    # KEYED ON THE NORMALISED NAME, always — not `player_id or player`, which
+    # is what sat here and which fails in the one direction that matters: it
+    # MISSES a duplicate. A rung row carrying `espn:3915416` and a main row
+    # carrying null for the same player produce two different keys, so the two
+    # rows that are one bet compare as different bets and get parlayed. The
+    # raw-name fallback missed a second way: DraftKings spells "D.J. Moore"
+    # where Pinnacle spells "DJ Moore", and the ladder's anchor join lost all
+    # 18 of his rungs to exactly that before `norm_player` was applied there.
+    #
+    # The name is the only key present on every row, so it is the grouping
+    # key. It can OVER-group — two different players really can share a
+    # spelling — so this key alone is not proof that two quotes are one bet.
+    # `same_bet()` confirms with the id. That split is B127's established
+    # pattern: normalised name to group, `player_id` to refuse.
+    return (norm_player(str(q.get("player") or "")),
             q.get("market"), "over", threshold)
+
+
+def same_bet(a: dict, b: dict) -> bool:
+    """True when two quotes are the SAME wager under different labels.
+
+    `canonical_bet` groups; this confirms. Equal canonical keys and no
+    conflicting `player_id`: two ids that differ mean two players who happen
+    to share a spelling, and a missing id on either side cannot distinguish
+    them, so it defers to the key rather than inventing a distinction.
+
+    Use this, not `==` on the keys, wherever a rung list and a main-line list
+    are merged. A rung at N and that player's own `Over N-0.5` are one bet;
+    parlayed with each other they price as independent legs and the P(cash)
+    that comes out is fiction.
+    """
+    ka, kb = canonical_bet(a), canonical_bet(b)
+    if ka is None or kb is None or ka != kb:
+        return False
+    ia, ib = a.get("player_id"), b.get("player_id")
+    if ia is not None and ib is not None and str(ia) != str(ib):
+        return False
+    return True
 
 
 # `get_event_ev` picks an anchor PER LINE, in this order, and no other book
@@ -2696,3 +2730,828 @@ def two_sided_field(response: dict, *, market: str, book: str,
             f"{player!r} at {book} was suspended at {r['suspended_at']} — "
             f"not bettable, so its price is not a price.")
     return {"Over": float(r["over"]), "Under": float(r["under"])}, r["line"]
+
+
+# ---------------------------------------------------------------------------
+# Milestone ladders
+# ---------------------------------------------------------------------------
+#
+# A milestone ladder ("10+ Receiving Yards", "20+", "30+" ...) is ONE-SIDED by
+# construction, so `devig` cannot touch it: there is no Under price to carry
+# information about how the margin is distributed. That is why this project
+# could read rungs (`flatten_odds(line_type="milestone")`) long before it
+# could price one.
+#
+# The way in is that a ladder is MONOTONE and it crosses the same book's own
+# two-sided main line. Where it crosses, the book has quoted the same event
+# twice — once with vig visible (the main pair de-vigs) and once with the vig
+# baked in (the rung) — and the ratio measures that book's ladder margin
+# directly. Measured on a Vikings/Bills board: DraftKings +5.58% (sd 0.74%,
+# n=15), FanDuel +6.54% (sd 0.26%, n=12).
+#
+# NOTHING HERE IS A HARD-CODED MARGIN. Those two numbers came from fourteen
+# players in one game, and B53's lesson is that a constant's SIZE is not its
+# COVERAGE — a margin frozen in source would be re-verified against every
+# future board by hand, or more likely not at all. So the margin is MEASURED
+# AT RUNTIME off whatever board is in front of it: every player carrying both
+# a ladder and that book's own main line is one observation, and the median
+# across the board is the estimate. A board too thin to measure returns None.
+#
+# THE ANCHOR CHAIN IS ABSENT FROM LADDERS. On that same board DraftKings
+# posted 182 milestone outcomes and FanDuel 132; Pinnacle posted 22 main-line
+# outcomes and ZERO milestone, and Polymarket, Kalshi, Bovada and Smarkets
+# were not on the board at all. So a rung can never be anchored the way this
+# project anchors everything else, and pretending otherwise would make
+# `anchor_untested` mean two different things.
+#
+# What resolves it is that the anchor and the ladder answer DIFFERENT
+# questions. The anchor sets the LEVEL (where the player's distribution sits)
+# and the ladder supplies the SHAPE (how it falls away). So the ladder is
+# de-vigged with its own measured margin and then PINNED so it agrees with
+# the anchor at the anchor's point. The fair probability of a rung is read off
+# that pinned curve, and `fair_source` records both halves, because a curve
+# whose level came from Pinnacle and whose shape came from DraftKings is
+# neither one of them.
+#
+# The pin is a shift in the THRESHOLD domain, not in probability. An additive
+# shift in probability leaves the bounds (a rung can come out above 1), and a
+# multiplicative one distorts a survival curve by a constant ratio it has no
+# reason to obey. A level disagreement IS a yards disagreement: "DraftKings'
+# ladder sits 1.8 yards above Pinnacle's level" is the statement being made,
+# it keeps the curve a valid survival function for free, and the shift is
+# reportable in the units the bet is denominated in.
+#
+# Interpolation between rungs is LINEAR IN LOG-ODDS, not in probability.
+# Measured by hold-one-out on real ladders — drop an interior rung, rebuild it
+# from its neighbours, compare against the price the book actually posted,
+# 253 rungs: probability-linear missed by a median 0.572% in the tail
+# (q < 15%) and 0.739% in the core; logit-linear missed by 0.137% and 0.521%.
+# Logit is 4.2x better where the recommendation value is. The earlier
+# probability-linear reading of the ladder margin's dispersion was therefore
+# measuring its own interpolation error as much as the book's.
+#
+# NO RUNG IS EXTRAPOLATED. Outside the span the book actually posted there is
+# no curve, and inventing one is D18 with a new way in — a fair probability
+# for a point nobody quoted. `ladder_fair` refuses instead.
+
+# An observation count below this is not a median, it is an anecdote. Four is
+# the floor at which the dispersion gate below can fail for the right reason;
+# the real boards measured 15 and 12.
+LADDER_MARGIN_MIN_N = 4
+
+# Dispersion above which the median is not a measurement of one thing. The
+# two measured books came in at 0.74% and 0.26% AFTER the logit correction,
+# so this sits well clear of them and still catches a board where the
+# crossings disagree about what the margin even is.
+LADDER_MARGIN_MAX_SD = 0.025
+
+# A per-rung margin outside this range is not a margin. Negative is an arb
+# inside one book, which does not happen (`two_sided_hold` refuses the same
+# thing for the same reason); above 30% and the "ladder" is a different kind
+# of product, or the main line being crossed belongs to another market.
+LADDER_MARGIN_PLAUSIBLE = (0.0, 0.30)
+
+# A rung whose own uncertainty is this large a FRACTION of its probability is
+# not priceable. This is the one judgment call in the block and it is here as
+# a named constant so it can be reverted and re-measured rather than argued
+# about: cross-book agreement on de-vigged rungs ran ~1.1pp absolute in the
+# deep tail, which at a 4% rung is a quarter of the whole number. Absolute
+# accuracy holding up into the tail (1.14% vs 0.88% in the core, only 1.30x)
+# does NOT mean relative accuracy does, and it is the relative figure that
+# decides whether an edge survives.
+LADDER_MAX_REL_UNCERTAINTY = 0.25
+
+# A level disagreement this large in probability points gets flagged. The pin
+# ABSORBS the gap by construction — that is what it is for — so without a flag
+# a book whose ladder disagrees with the anchor about the player would price
+# exactly like one that agrees, and the disagreement would be invisible in the
+# output. 3pp is roughly three times the measured cross-book agreement on
+# de-vigged rungs (median 0.94%, mean 1.43% over 119 shared rungs), which is
+# the level at which a gap stops looking like two books rounding differently.
+LADDER_LEVEL_GAP_FLAG = 0.03
+
+# Below this much variation in the book's OWN de-vigged main lines, the
+# margin's denominator is effectively a constant and its dispersion stops
+# being a measure of how well the margin is known.
+#
+# Measured on one board: DraftKings' own-main fair ran 0.3366..0.5122 (sd
+# 0.0485) while FanDuel's was EXACTLY 0.5000 on all twelve crossings (sd
+# 0.0000) — FanDuel posts symmetric pairs on this market. FanDuel's margin
+# then came back with an sd of 0.34% against DraftKings' 1.06%, which reads as
+# the better-measured number and is the opposite: the only thing varying in it
+# is the ladder, because the denominator never moves. The gate sits two orders
+# of magnitude clear of both.
+#
+# This is a second instance of something already settled in this project
+# rather than a new discovery: Pinnacle quoting -114/-114 across a yardage
+# board was isolated and confirmed as genuine book behaviour, not a data
+# artifact. What is new is that it also costs the ladder margin's error bar,
+# because that sd is propagated into every rung's uncertainty.
+LADDER_FLAT_DENOMINATOR_SD = 0.005
+
+
+def _logit(p: float) -> float:
+    p = min(max(float(p), 1e-9), 1.0 - 1e-9)
+    return math.log(p / (1.0 - p))
+
+
+def _expit(z: float) -> float:
+    if z >= 0:
+        return 1.0 / (1.0 + math.exp(-z))
+    e = math.exp(z)
+    return e / (1.0 + e)
+
+
+@dataclass
+class LadderMargin:
+    """What one book charges on its milestone ladder, measured on this board.
+
+    `margin is None` means NOT MEASURED, which is a different state from zero
+    and must not become it — B39/D16's rule, that an unchecked state must not
+    look like a checked one, applied to the one number the rest of this block
+    divides by.
+    """
+    book: str
+    margin: float | None
+    n: int
+    sd: float
+    why: str
+    observations: list[tuple] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
+    # Spread of the book's OWN de-vigged main lines across the crossings. When
+    # this is ~0 the book posts symmetric pairs, `sd` above is measuring the
+    # ladder against a constant, and it understates how well the margin is
+    # known. Carried rather than folded into `sd` so the two stay separable.
+    denominator_sd: float = float("nan")
+
+    @property
+    def measured(self) -> bool:
+        return self.margin is not None
+
+    @property
+    def flat_denominator(self) -> bool:
+        """True when the book's own main lines carry no level variation."""
+        return (self.denominator_sd == self.denominator_sd
+                and self.denominator_sd < LADDER_FLAT_DENOMINATOR_SD)
+
+    def describe(self) -> str:
+        if not self.measured:
+            return f"{self.book}: ladder margin NOT measured — {self.why}"
+        s = (f"{self.book}: ladder margin {self.margin:+.2%} "
+             f"(median of {self.n} own-main crossings, sd {self.sd:.2%})")
+        if self.flat_denominator:
+            s += (f"\n  ! {self.book} posts symmetric main lines here "
+                  f"(own-fair sd {self.denominator_sd:.4f}), so that "
+                  f"{self.sd:.2%} is the ladder varying against a constant "
+                  f"0.5 and UNDERSTATES the margin's error")
+        return s
+
+
+@dataclass
+class LadderFair:
+    """The fair probability of one rung, with every input that produced it."""
+    book: str
+    player: str
+    threshold: float          # the N of "N+", as posted
+    canonical_line: float     # the equivalent main line: N - 0.5
+    price: float | None
+    q_raw: float | None       # implied by the price, vig included
+    fair: float | None        # de-vigged AND level-pinned; None when refused
+    uncertainty: float | None  # 1 sd on `fair`, propagated
+    margin: float | None
+    level_shift: float | None  # the pin, in log-odds
+    anchor: str | None
+    anchor_point: float | None
+    anchor_fair: float | None
+    # Book minus anchor at the anchor's own point, in probability points. The
+    # pin removes this from the fair; the flag reports it, because a level
+    # disagreement that got silently absorbed is the one thing the pinning
+    # design is most likely to hide.
+    level_gap: float | None = None
+    player_id: object = None
+    fair_source: str = ""
+    flags: list[str] = field(default_factory=list)
+    why: str = ""
+
+    @property
+    def priceable(self) -> bool:
+        return self.fair is not None
+
+    def describe(self) -> str:
+        head = f"{self.player} {self.threshold:g}+ @{self.book}"
+        if not self.priceable:
+            return f"{head}: NOT PRICEABLE — {self.why}"
+        s = (f"{head}: fair {self.fair:.1%} +/- {self.uncertainty:.1%} "
+             f"(price implies {self.q_raw:.1%})")
+        if self.flags:
+            s += "  [" + ", ".join(self.flags) + "]"
+        return s
+
+
+def _anchor_index(quotes: list[dict]) -> tuple[dict, dict]:
+    """Index anchor-side quotes by player_id AND by normalised name."""
+    by_id: dict[str, list[dict]] = {}
+    by_name: dict[str, list[dict]] = {}
+    for q in quotes:
+        pid = q.get("player_id")
+        if pid is not None:
+            by_id.setdefault(str(pid), []).append(q)
+        by_name.setdefault(norm_player(str(q.get("player") or "")),
+                           []).append(q)
+    return by_id, by_name
+
+
+def _anchor_for(pid, name: str, by_id: dict,
+                by_name: dict) -> tuple[list[dict], str]:
+    """The anchor rows for one player, preferring the player_id join.
+
+    B44/B101's rule is never to join player data on a raw name. The first
+    version of this joined on the TUPLE `(player_id, player)`, which obeys
+    the letter of that rule and fails in a new way: `player_id` is routinely
+    absent — `flatten_odds`' own docstring notes DraftKings' anytime-TD board
+    carries null ids — so when the ladder's book reports an id and the
+    anchor's book does not, the tuples differ and the join silently MISSES.
+    A miss is refused rather than mispriced, so it is not dangerous, but it
+    costs anchor coverage invisibly, which is the one thing B60 exists to
+    stop. The real board hid it: DraftKings and Pinnacle both carried ids.
+
+    So: UNION the id index and the name index rather than trying them in
+    order. Short-circuiting on the id was the first attempt and it found the
+    ladder's OWN book's main line — same payload, same id — and returned
+    before the name index could offer the anchor's title-only row, which
+    carries no id at all. Rows whose id actively conflicts are excluded — two players really can share a name, and `norm_player` exists
+    because one of them already lost his whole board to this join.
+    """
+    cand = by_name.get(name, [])
+    ids = {str(c["player_id"]) for c in cand
+           if c.get("player_id") is not None}
+    # Two DIFFERENT players sharing one normalised spelling. An anchor row
+    # with no id is then unattributable — it could be either of them — so it
+    # is dropped rather than guessed.
+    ambiguous = len(ids) > 1
+    out, seen, dropped = [], set(), 0
+    for c in cand:
+        cid = c.get("player_id")
+        cid = None if cid is None else str(cid)
+        if pid is not None and cid is not None and cid != str(pid):
+            dropped += 1
+            continue
+        if cid is None and ambiguous:
+            dropped += 1
+            continue
+        if id(c) not in seen:
+            seen.add(id(c))
+            out.append(c)
+    # A row the id index knows but the name index does not: the two books
+    # spell him differently enough that `norm_player` did not collapse them.
+    # The id is the stronger key, so it wins.
+    if pid is not None:
+        for c in by_id.get(str(pid), []):
+            if id(c) not in seen:
+                seen.add(id(c))
+                out.append(c)
+    if not out:
+        if dropped:
+            return [], (f"{dropped} anchor row(s) match the name but belong "
+                        f"to a different player_id than {pid} — two players "
+                        f"share this spelling, so the join is refused rather "
+                        f"than guessed")
+        return [], "no anchor row for this player under id or name"
+    by = "player_id" if (pid is not None and str(pid) in by_id) else "name"
+    note = f"joined on {by}"
+    if dropped:
+        note += f", {dropped} same-name row(s) excluded on a conflicting id"
+    return out, note
+
+
+def ladder_margin(quotes: list[dict], *, book: str,
+                  method: str = "auto") -> LadderMargin:
+    """Measure `book`'s milestone margin from its OWN main-line crossings.
+
+    `quotes` must carry BOTH line types for the book, which means two
+    `flatten_odds` calls concatenated — it filters by `line_type`, so one call
+    can never see both. Passing only one type is the likely mistake and it is
+    reported as such rather than returning a confident None.
+
+    The margin is measured against the SAME book's main line, never against
+    the anchor's. Measuring it against Pinnacle multiplies the book's margin
+    by the two books' disagreement about the player, and the result is not a
+    margin at all: on a real board that produced James Cook at -1.55%, a
+    negative margin, which is an arb inside one book and does not happen. The
+    sign was the tell that two quantities had been multiplied together.
+    """
+    rows = [q for q in quotes if q.get("book") == book]
+    if not rows:
+        return LadderMargin(book, None, 0, float("nan"),
+                            f"no quotes at all for {book!r} in the {len(quotes)} "
+                            f"rows passed — check the book key spelling")
+    ladders: dict[tuple, dict[float, float]] = {}
+    main_rows: list[dict] = []
+    for q in rows:
+        who = q.get("player")
+        key = (q.get("player_id"), norm_player(str(who or "")), who)
+        if q.get("line_type") == "milestone":
+            t = q.get("rung_threshold")
+            p = _num(q.get("over"))
+            if t is not None and p is not None:
+                # canonical_bet's equivalence, not a new one: a rung at N is
+                # exactly "over N - 0.5" because these stats are integers.
+                ladders.setdefault(key, {})[float(t) - 0.5] = p
+        elif q.get("line_type") == "main" and q.get("line") is not None:
+            if _num(q.get("over")) is not None and _num(q.get("under")) is not None:
+                main_rows.append(q)
+
+    mains = main_rows
+    if not ladders and not mains:
+        return LadderMargin(book, None, 0, float("nan"),
+                            f"{book} has neither ladders nor two-sided main "
+                            f"lines in these rows")
+    if not ladders:
+        return LadderMargin(book, None, 0, float("nan"),
+                            f"{book} has {len(mains)} two-sided main lines but "
+                            f"no milestone rungs — pass the output of "
+                            f"flatten_odds(line_type='milestone') too")
+    if not mains:
+        return LadderMargin(book, None, 0, float("nan"),
+                            f"{book} has {len(ladders)} ladders but no "
+                            f"two-sided main line to cross them against — "
+                            f"pass flatten_odds(line_type='main') too")
+
+    obs, rejected = [], []
+    by_id, by_name = _anchor_index(main_rows)
+    for key, curve in sorted(ladders.items(), key=lambda kv: str(kv[0])):
+        pid, nkey, who = key
+        found, jwhy = _anchor_for(pid, nkey, by_id, by_name)
+        if not found:
+            rejected.append(f"{who}: ladder but no own main line — {jwhy}")
+            continue
+        mn = found[0]
+        pt = float(mn["line"])
+        own = devig(float(mn["over"]), float(mn["under"]), method)[0]
+        q = _ladder_interp(curve, pt)
+        if q is None:
+            lo, hi = min(curve), max(curve)
+            rejected.append(f"{who}: own main {pt:g} is outside the ladder's "
+                            f"span {lo:g}..{hi:g} — not extrapolated")
+            continue
+        # No `own <= 0` guard. `devig` returns a fair probability strictly
+        # inside (0, 1) for every one of 192 extreme price pairs across all
+        # three methods, so the guard that was here could not fire, and a
+        # guard no input can trip is dead code — deleted twice already in
+        # this project (B126, B127) for reading as a check that passed.
+        m = q / own - 1.0
+        lo, hi = LADDER_MARGIN_PLAUSIBLE
+        if not lo <= m <= hi:
+            rejected.append(f"{who}: implied margin {m:+.2%} outside "
+                            f"{lo:.0%}..{hi:.0%}")
+            continue
+        obs.append((who, pt, own, q, m))
+
+    if len(obs) < LADDER_MARGIN_MIN_N:
+        return LadderMargin(
+            book, None, len(obs), float("nan"),
+            f"only {len(obs)} usable crossing(s), need "
+            f"{LADDER_MARGIN_MIN_N}: a median off fewer is an anecdote",
+            obs, rejected)
+
+    ms = sorted(o[4] for o in obs)
+    med = _median(ms)
+    sd = _pstdev(ms)
+    den_sd = _pstdev(o[2] for o in obs)
+    if sd > LADDER_MARGIN_MAX_SD:
+        return LadderMargin(
+            book, None, len(obs), sd,
+            f"crossings disagree too much to be one margin: sd {sd:.2%} "
+            f"above the {LADDER_MARGIN_MAX_SD:.1%} gate, range "
+            f"{ms[0]:+.2%}..{ms[-1]:+.2%}. Something other than vig is "
+            f"moving these — stale rungs, or a main line from another market.",
+            obs, rejected, den_sd)
+    return LadderMargin(book, med, len(obs), sd, "measured from own-main "
+                        "crossings", obs, rejected, den_sd)
+
+
+def _median(xs) -> float:
+    s = sorted(float(x) for x in xs)
+    n = len(s)
+    if not n:
+        return float("nan")
+    h = n // 2
+    return s[h] if n % 2 else (s[h - 1] + s[h]) / 2.0
+
+
+def _pstdev(xs) -> float:
+    s = [float(x) for x in xs]
+    if len(s) < 2:
+        return 0.0
+    m = sum(s) / len(s)
+    return (sum((x - m) ** 2 for x in s) / len(s)) ** 0.5
+
+
+def _ladder_interp(curve: dict[float, float], t: float) -> float | None:
+    """Implied probability at `t` on a ladder of American prices.
+
+    Linear in LOG-ODDS between the two bracketing rungs — measured 4.2x more
+    accurate than probability-linear in the tail by hold-one-out on real
+    ladders. Returns None outside the posted span: there is no curve there and
+    extrapolating one is D18.
+    """
+    if not curve:
+        return None
+    ts = sorted(curve)
+    t = float(t)
+    if t < ts[0] or t > ts[-1]:
+        return None
+    qs = {k: american_to_prob(v) for k, v in curve.items()}
+    for a, b in zip(ts, ts[1:]):
+        if a <= t <= b:
+            if t == a:
+                return qs[a]
+            if t == b:
+                return qs[b]
+            w = (t - a) / (b - a)
+            return _expit(_logit(qs[a]) + w * (_logit(qs[b]) - _logit(qs[a])))
+    return qs[ts[-1]]
+
+
+def _ladder_pin(curve: dict[float, float], margin: float,
+                pt: float, target: float) -> tuple[float | None, float, str]:
+    """The log-odds shift `c` that makes the de-vigged ladder hit `target`.
+
+    Returns (c, gap, why), `gap` in probability points at the anchor's own
+    point. `c` is None when the pin is impossible.
+
+    THE PIN IS A PROPORTIONAL-ODDS SHIFT applied to the whole curve:
+
+        S*(t) = expit(logit(S(t)) + c)
+
+    Closed-form, keeps the curve inside (0, 1) and monotone for free, and —
+    the property that decides it — evaluates the ladder ONLY at points the
+    book actually posted, plus the anchor's own point.
+
+    A shift in the THRESHOLD domain was the first attempt, because "DraftKings
+    sits 1.8 yards above Pinnacle" is the more natural sentence. It fails on
+    real boards, and not rarely. Pinnacle's main line frequently coincides
+    with a ladder's BOTTOM rung — Aaron Jones at 9.5 against a ladder starting
+    at 9.5 — and when the book sits a shade below the anchor there, the
+    required shift is NEGATIVE and lands off the end of the posted ladder. The
+    solve then fails and takes every rung on that ladder down with it: eight
+    good rungs discarded over a 2pp level nudge, and the same for every
+    low-volume player whose first rung IS his main line. Refusing was correct
+    given the transform; the transform was what needed replacing.
+
+    The equivalent in threshold units is computed separately by
+    `_ladder_shift_yards` as a READABLE DIAGNOSTIC ONLY, and is allowed to be
+    unavailable without costing the pin. A number that exists for the report
+    must never become a number the pricing depends on.
+    """
+    q = _ladder_interp(curve, pt)
+    if q is None:
+        lo, hi = min(curve), max(curve)
+        return None, float("nan"), (
+            f"the anchor's point {pt:g} is outside the ladder's posted span "
+            f"{lo:g}..{hi:g}, so there is nothing there to pin to — not "
+            f"extrapolated")
+    # No range guards on `s` or `target`. `american_to_prob` and `devig` both
+    # stay strictly inside (0, 1) at every extreme either can be handed, so
+    # the two guards that were here could not fire. Dead code reads as a check
+    # that passed, which is the B126/B127 mistake.
+    s = q / (1.0 + margin)
+    return _logit(target) - _logit(s), target - s, "proportional-odds pin"
+
+
+def _ladder_shift_yards(curve: dict[float, float], margin: float,
+                        pt: float, target: float) -> float | None:
+    """The level gap in THRESHOLD units, for the report only.
+
+    Solves S(pt + δ) = target by bisection inside the posted span. Monotone by
+    construction, so bisection cannot land on a second root. Returns None when
+    the target is not reachable inside the span — common, and harmless here
+    because nothing prices off this number.
+    """
+    ts = sorted(curve)
+    lo, hi = ts[0] - pt, ts[-1] - pt
+    if lo > hi:
+        return None
+
+    def s(d: float) -> float | None:
+        qq = _ladder_interp(curve, pt + d)
+        return None if qq is None else qq / (1.0 + margin)
+
+    slo, shi = s(lo), s(hi)
+    if slo is None or shi is None:
+        return None
+    if not (min(slo, shi) - 1e-12 <= target <= max(slo, shi) + 1e-12):
+        return None
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        v = s(mid)
+        if v is None:
+            return None
+        if v > target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _ladder_interp_error(curve: dict[float, float]) -> float | None:
+    """This ladder's OWN interpolation error, by hold-one-out on its rungs.
+
+    Measured rather than assumed, for the same reason the margin is: a figure
+    from another board is a figure whose coverage nobody rechecked. Needs at
+    least two interior rungs to drop; returns None below that, and the caller
+    must then report the fair as uncertainty-unknown rather than exact.
+    """
+    ts = sorted(curve)
+    if len(ts) < 4:
+        return None
+    errs = []
+    for i in range(1, len(ts) - 1):
+        t = ts[i]
+        sub = {k: v for k, v in curve.items() if k != t}
+        pred = _ladder_interp(sub, t)
+        if pred is not None:
+            errs.append(abs(pred - american_to_prob(curve[t])))
+    return _median(errs) if len(errs) >= 2 else None
+
+
+def ladder_fair(quotes: list[dict], *, book: str,
+                anchor: str | None = None,
+                method: str = "auto",
+                margin: LadderMargin | None = None,
+                cross: LadderCross | None = None) -> list[LadderFair]:
+    """Fair probability for every rung `book` posts, level-pinned to an anchor.
+
+    `quotes` is the concatenation of `flatten_odds(line_type="main")` and
+    `flatten_odds(line_type="milestone")` for one event and market — the
+    ladder needs its own book's main line to measure the margin, and the
+    anchor's main line to set the level.
+
+    `anchor` defaults to the first `ANCHOR_CHAIN` book that posts a two-sided
+    main line for the player. Per-player, not per-board: Pinnacle covering
+    nine of twelve players is not Pinnacle covering the board, and B60 is
+    about exactly the gap between those two statements.
+
+    Every returned rung is either priceable with its inputs recorded, or
+    refused with a reason. None is never a price.
+    """
+    rows = [q for q in quotes if q.get("line_type") in ("main", "milestone")]
+    mg = margin if margin is not None else ladder_margin(
+        rows, book=book, method=method)
+
+    ladders: dict[tuple, dict[float, float]] = {}
+    prices: dict[tuple, dict[float, dict]] = {}
+    anchor_rows: list[dict] = []
+    for q in rows:
+        who = q.get("player")
+        key = (q.get("player_id"), norm_player(str(who or "")), who)
+        if q.get("book") == book and q.get("line_type") == "milestone":
+            t = q.get("rung_threshold")
+            p = _num(q.get("over"))
+            if t is not None and p is not None:
+                ladders.setdefault(key, {})[float(t) - 0.5] = p
+                prices.setdefault(key, {})[float(t) - 0.5] = q
+        elif q.get("line_type") == "main" and q.get("line") is not None:
+            if _num(q.get("over")) is not None and _num(q.get("under")) is not None:
+                anchor_rows.append(q)
+
+    out: list[LadderFair] = []
+    by_id, by_name = _anchor_index(anchor_rows)
+    for key, curve in sorted(ladders.items(), key=lambda kv: str(kv[0])):
+        pid, nkey, who = key
+        ierr = _ladder_interp_error(curve)
+        cands, join_why = _anchor_for(pid, nkey, by_id, by_name)
+        chain = (anchor,) if anchor else ANCHOR_CHAIN
+        pick = None
+        for name in chain:
+            for c in cands:
+                # Matched on the quote's own `book`, which `flatten_odds` has
+                # ALREADY normalised through `book_key`. A `book_key(c)` call
+                # sat here too and was dead: a flattened quote carries neither
+                # `key` nor `title`, so it returned None every time while
+                # implying a normalisation that happens upstream. Dead code
+                # that reads as a safeguard is the B126/B127 fault.
+                #
+                # That upstream normalisation is what lets a title-only
+                # Pinnacle payload — the B60 signature, `key` absent and
+                # `title` "Pinnacle" against a lowercase chain — still anchor
+                # a ladder here.
+                if c.get("book") == name:
+                    pick = (name, c)
+                    break
+            if pick:
+                break
+
+        shift = gap = a_pt = a_fair = None
+        base_flags: list[str] = []
+        refuse = ""
+        if not mg.measured:
+            refuse = f"ladder margin not measured — {mg.why}"
+        elif pick is None:
+            have = sorted({str(c.get("book")) for c in cands}) or ["none"]
+            refuse = (f"no anchor-chain book posts a two-sided main line for "
+                      f"{who} — present: {', '.join(have)} ({join_why}). The "
+                      f"ladder gives a shape with no level to pin it to.")
+        else:
+            a_name, a_row = pick
+            a_pt = float(a_row["line"])
+            a_fair = devig(float(a_row["over"]), float(a_row["under"]),
+                           method)[0]
+            shift, gap, pin_why = _ladder_pin(curve, mg.margin, a_pt, a_fair)
+            if shift is None:
+                refuse = (f"{a_name} puts {who}'s fair at {a_fair:.1%} on "
+                          f"{a_pt:g}, but {pin_why}")
+            elif abs(gap) >= LADDER_LEVEL_GAP_FLAG:
+                yd = _ladder_shift_yards(curve, mg.margin, a_pt, a_fair)
+                # The yards figure is a diagnostic and is allowed to be
+                # missing. When it is, the gap is still reported in the
+                # probability points the pin actually used, rather than the
+                # flag going quiet because the prettier number was unavailable.
+                where = f", about {yd:+.1f} in {mg.book} line units" if yd is not None else ""
+                base_flags.append(
+                    f"level gap: {book}'s ladder implies "
+                    f"{a_fair - gap:.1%} at {a_pt:g} where {a_name} is fair "
+                    f"at {a_fair:.1%} ({gap:+.1%}{where})")
+
+        for t in sorted(curve):
+            q_row = prices[key][t]
+            price = _num(q_row.get("over"))
+            q_raw = american_to_prob(price) if price is not None else None
+            rec = LadderFair(
+                book=book, player=who, threshold=t + 0.5, canonical_line=t,
+                price=price, q_raw=q_raw, fair=None, uncertainty=None,
+                margin=mg.margin, level_shift=shift, level_gap=gap,
+                anchor=pick[0] if pick else None,
+                anchor_point=a_pt, anchor_fair=a_fair, player_id=pid,
+                flags=list(base_flags), why=refuse)
+            if refuse:
+                out.append(rec)
+                continue
+            # `t` is a rung the book posted, so `q_raw` is the price's own
+            # implied probability and cannot be None here: `curve` is built
+            # only from rungs whose price parsed. No guard — a guard no input
+            # can trip is dead code, which this project has now deleted twice.
+            fair = _expit(_logit(q_raw / (1.0 + mg.margin)) + shift)
+            # Uncertainty: the margin's own dispersion and the ladder's
+            # measured interpolation error, added in quadrature. A rung with
+            # too few neighbours to hold one out reports the margin term only
+            # and says so, rather than reporting a tighter number than it has.
+            mterm = fair * mg.sd / (1.0 + mg.margin)
+            terms = [mterm]
+            if ierr is None:
+                rec.flags.append("interp error unmeasured (ladder too short "
+                                 "to hold one out)")
+            else:
+                terms.append(ierr)
+            # The cross-book term is the only one that sees model risk in the
+            # pin itself. Without it the propagated figure is about three
+            # times too tight in the tail, which makes the deep-tail gate
+            # below silently unreachable — a gate that cannot fire is worse
+            # than no gate, because it reads as a check that passed.
+            if mg.flat_denominator:
+                rec.flags.append(
+                    f"{book} posts symmetric main lines here, so the margin's "
+                    f"{mg.sd:.2%} sd understates its own error")
+            if cross is not None and cross.measured:
+                terms.append(cross.median)
+            else:
+                rec.flags.append(
+                    "uncertainty is a LOWER BOUND: no cross-book check, so "
+                    "it carries no term for the pin's own model risk")
+            unc = sum(t ** 2 for t in terms) ** 0.5
+            if q_row.get("suspended_at") is not None:
+                rec.flags.append(f"suspended at {q_row['suspended_at']}")
+            rec.fair = fair
+            rec.uncertainty = unc
+            rec.fair_source = (f"level {rec.anchor}, shape {book} ladder "
+                               f"(margin {mg.margin:+.2%})")
+            if fair > 0 and unc / fair > LADDER_MAX_REL_UNCERTAINTY:
+                rec.flags.append(
+                    f"deep tail: +/-{unc:.1%} is "
+                    f"{unc / fair:.0%} of a {fair:.1%} rung, over the "
+                    f"{LADDER_MAX_REL_UNCERTAINTY:.0%} gate — the "
+                    f"uncertainty swamps any edge")
+            out.append(rec)
+    return out
+
+
+@dataclass
+class LadderCross:
+    """Independently-pinned ladders at two books, compared rung by rung.
+
+    This is the only runtime estimate of how wrong a pinned ladder can be for
+    reasons the propagated uncertainty cannot see. `ladder_fair` propagates
+    the margin's dispersion and the ladder's own interpolation error, and both
+    are small — on a real board they come to about 0.4pp on a 3% rung. The
+    offline validation put the actual disagreement between two books' pinned
+    ladders at 1.14pp in the deep tail, roughly three times that. The
+    difference is model risk in the proportional-odds pin itself plus the books
+    genuinely disagreeing, neither of which is in the error propagation and
+    neither of which can be reasoned about from one ladder.
+
+    Measured rather than taken from that offline run, for the reason nothing
+    else here is hard-coded either: a figure from one board is a figure whose
+    coverage nobody rechecked.
+
+    The disagreement is treated as CONSTANT IN ABSOLUTE TERMS rather than
+    split into bands. Measured, it barely varies — 1.14% in the deep tail
+    against 0.88% in the core, a ratio of 1.30 — so one scalar is what the
+    data supports, and a band structure would be reading shape into noise.
+    What does NOT follow is that the relative error is constant: 1.1pp is a
+    third of a 3% rung and a fiftieth of a 50% one, which is exactly why
+    `LADDER_MAX_REL_UNCERTAINTY` gates on the ratio.
+    """
+    books: tuple[str, ...]
+    n: int
+    median: float | None
+    mean: float
+    p90: float
+    why: str
+    players: int = 0
+
+    @property
+    def measured(self) -> bool:
+        return self.median is not None
+
+    def describe(self) -> str:
+        if not self.measured:
+            return f"cross-book check NOT measured — {self.why}"
+        return (f"cross-book check: {'/'.join(self.books)} disagree by a "
+                f"median {self.median:.2%} over {self.n} shared rungs across "
+                f"{self.players} player(s) (mean {self.mean:.2%}, "
+                f"p90 {self.p90:.2%})")
+
+
+def ladder_cross_check(quotes: list[dict], *, books: tuple[str, str],
+                       anchor: str | None = None,
+                       method: str = "auto") -> LadderCross:
+    """Price both books' ladders independently and compare the shared rungs.
+
+    Each book is de-vigged by its OWN measured margin and pinned to the SAME
+    anchor, so a disagreement that survives is not a margin difference and not
+    a level difference. It is the two books disagreeing about the shape, which
+    is the quantity the pin cannot check on its own.
+    """
+    a, b = books
+    # A book against ITSELF agrees perfectly by construction, which comes back
+    # as a measured disagreement of 0.0 — and that is worse than no check at
+    # all: `ladder_fair` would drop its "uncertainty is a LOWER BOUND" flag
+    # and add a zero model-risk term, so the output would claim to have been
+    # cross-validated by the very ladder it was derived from.
+    if a == b:
+        return LadderCross(
+            (a, b), 0, None, float("nan"), float("nan"),
+            f"both books are {a!r}: a ladder agrees with itself by "
+            f"construction, so this measures nothing. Pass two different "
+            f"books, or no cross-check at all.")
+    fa = {(f.player, f.canonical_line): f
+          for f in ladder_fair(quotes, book=a, anchor=anchor, method=method)
+          if f.priceable}
+    fb = {(f.player, f.canonical_line): f
+          for f in ladder_fair(quotes, book=b, anchor=anchor, method=method)
+          if f.priceable}
+    shared = sorted(set(fa) & set(fb))
+    if len(shared) < LADDER_MARGIN_MIN_N:
+        return LadderCross(
+            (a, b), len(shared), None, float("nan"), float("nan"),
+            f"only {len(shared)} rung(s) priceable at both {a} and {b}, need "
+            f"{LADDER_MARGIN_MIN_N} — one scalar off fewer is an anecdote")
+    diffs = sorted(abs(fa[k].fair - fb[k].fair) for k in shared)
+    return LadderCross(
+        (a, b), len(diffs), _median(diffs),
+        sum(diffs) / len(diffs), diffs[int(0.9 * (len(diffs) - 1))],
+        "measured from independently-pinned ladders",
+        len({k[0] for k in shared}))
+
+
+def ladder_report(fairs: list[LadderFair], margin: LadderMargin | None = None,
+                  *, limit: int | None = None) -> str:
+    """Human-readable ladder pricing, refusals included rather than dropped."""
+    lines: list[str] = []
+    if margin is not None:
+        lines.append(margin.describe())
+        if margin.rejected:
+            lines.append(f"  {len(margin.rejected)} crossing(s) not used:")
+            for r in margin.rejected[:6]:
+                lines.append(f"    - {r}")
+            if len(margin.rejected) > 6:
+                lines.append(f"    ... and {len(margin.rejected) - 6} more")
+        lines.append("")
+    ok = [f for f in fairs if f.priceable]
+    no = [f for f in fairs if not f.priceable]
+    lines.append(f"{len(ok)} rung(s) priced, {len(no)} refused")
+    shown = ok if limit is None else ok[:limit]
+    for f in shown:
+        lines.append("  " + f.describe())
+    if limit is not None and len(ok) > limit:
+        lines.append(f"  ... and {len(ok) - limit} more priced")
+    if no:
+        lines.append("  ! NOT PRICEABLE")
+        seen: set[str] = set()
+        for f in no:
+            if f.why in seen:
+                continue
+            seen.add(f.why)
+            n = sum(1 for g in no if g.why == f.why)
+            lines.append(f"    {n} rung(s): {f.why}")
+    return "\n".join(lines)

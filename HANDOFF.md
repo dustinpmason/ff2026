@@ -791,3 +791,98 @@ reality.
     worked around. Before adding a check that something was done wrong,
     confirm there is a supported way to do it right, and build that first.
 
+76. **A blocker worth respecting is still worth re-measuring.** F12 was
+    filed as blocked on anchor quality. Re-measuring found the blocker
+    intact (Pinnacle: zero alternate props) AND that the neighbouring
+    figure B51 rested on was badly stale (1 event of 15, against 14/14
+    measured a day earlier). The right move was neither to build around
+    the blocker nor to inherit it — it was to take the half-hour and find
+    out, which also surfaced B127 as the piece that HAD become buildable.
+
+77. **A transform that reads better can still be the wrong transform.** The
+    ladder's level pin started as a shift in the THRESHOLD domain, because
+    "DraftKings sits 1.8 yards above Pinnacle" is the sentence a person
+    actually wants. It fails on real boards, and not rarely: the anchor's
+    main line is frequently the ladder's BOTTOM rung (Aaron Jones at 9.5
+    against a ladder starting at 9.5), and when the book sits a shade below
+    the anchor there, the required shift is negative and lands off the end
+    of the posted ladder. That refused all eight of his rungs over a 2pp
+    nudge, and would have done the same for every low-volume player whose
+    first rung is his main line. A proportional-odds shift is closed-form,
+    stays inside (0, 1) and monotone for free, and evaluates the ladder only
+    where the book actually quoted. The readable number survived as a
+    diagnostic that is ALLOWED to be missing. When a transform's appeal is
+    its interpretability, keep the interpretation as output and choose the
+    transform on how it fails.
+
+78. **A fixture's own offset reads as the code's error.** The synthetic
+    ladder placed its main line at `round(median) - 0.5`, where the
+    generated curve's true survival is not 0.5, so the crossing measured a
+    0.88pp LEVEL offset as margin: recovery came back 7.05% against a built
+    6.00% and looked like a 1pp error in the measurement code. Moving the
+    main to `median + 0.5`, where the curve's survival is exactly 0.5,
+    brought it to 5.51% — the residual being integer price rounding, which
+    is real. Before trusting a recovery check, confirm the fixture's own
+    invariants hold exactly at the point the measurement reads them.
+
+79. **A harness that reads only the failure count calls a crash a pass.**
+    Two reverts came back NOT CAUGHT. The suite had in fact printed
+    `CRASHED in section 63` and explicitly refused to claim a pass; the
+    revert harness's regex read only the "N failed" number and saw 0.
+    Lesson 14 has been about checks that crash instead of failing — this is
+    the same mistake one level up, in the thing that grades the checks. A
+    tool that judges a test suite must read the suite's own verdict rather
+    than reconstruct one from a number. Both underlying checks were then
+    made to fail cleanly: one crashed in its body (dividing by an empty
+    list once the gate it relied on was removed), the other in its DETAIL
+    string, formatting `None` with `:+.3%`. A detail argument is evaluated
+    eagerly and can take down a run whose check body was correctly guarded.
+
+80. **Tight dispersion can mean a constant denominator, not precision.**
+    FanDuel's ladder margin measured sd 0.34% against DraftKings' 1.06% and
+    read as the better-measured of the two. It is the opposite: FanDuel's
+    own de-vigged main lines were EXACTLY 0.5000 on all twelve crossings,
+    so the only thing varying in the ratio was the ladder. DraftKings' ran
+    0.3366..0.5122. A ratio's error bar is not evidence about the ratio when
+    one side of it never moves — and that sd was being propagated into every
+    rung's uncertainty, where it would have made the tail look three times
+    better known than it is. This is the same half-yard-grid behaviour
+    already documented for Pinnacle's yardage board, observed at a second
+    book and costing something new.
+
+81. **A self-comparison does not merely produce a circular number — it can
+    strip a warning.** `ladder_cross_check` run with the same book twice
+    returned a MEASURED disagreement of 0.0, which removed `ladder_fair`'s
+    "uncertainty is a LOWER BOUND" label and added a zero model-risk term:
+    output claiming to have been cross-validated against the very ladder it
+    was derived from. The first check written for it passed on a clause that
+    accepted `median == 0.0` as evidence of refusal, so it was too weak to
+    notice. "Do not de-vig a book against itself" is already a rule here;
+    this is its third instance and the first where the damage was a silenced
+    caveat rather than a wrong figure.
+
+82. **A tuple is not a safeguard if a name is in it.** The ladder's anchor
+    join keyed on `(player_id, player)`. That satisfies the letter of "never
+    join player data on a raw name" while smuggling the name in as half the
+    key, and the live board held the exact case: DraftKings spells
+    "D.J. Moore", Pinnacle spells "DJ Moore", one `player_id`
+    espn:3915416 — the tuples differed, the join missed, and all 18 of his
+    rungs were refused as unanchored while both books were quoting him under
+    the same id. Fixing it took that board from 132 priced rungs to 150. The
+    same audit found `canonical_bet` keyed on `player_id or player`, which
+    fails the same way and in the dangerous direction: it MISSES a duplicate,
+    so the two rows that are one bet get parlayed with each other and price
+    as independent legs. An id is the right joiner; an id AND a name is a
+    name. This is B44/B101's fourth instance and the first wearing a
+    disguise.
+
+83. **A join with two keys needs a union, not a preference order.** The first
+    fix tried the id index and returned on a hit, which looks obviously
+    right. It found the LADDER's own book's main line — same payload, same
+    id — and returned before the name index could offer the anchor's
+    title-only row, which carries no `player_id` at all. The indices have to
+    be merged, with a conflicting id excluding that ROW rather than refusing
+    the whole join, and an id-less row dropped only once a spelling is
+    genuinely ambiguous. A short-circuit on the stronger key silently
+    answers a different question: "is there any row with this id", not "which
+    rows are this player".

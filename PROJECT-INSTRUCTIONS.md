@@ -251,6 +251,28 @@ Protect+" premium. Pass `fees=0.22`, not a $7.53 stake: the payout maths
 multiplies the stake by the price, so folding a premium into it corrupts
 every figure that follows.
 
+**Two legs on one player are refused, however the books spell him (B127).**
+`classify` normalises the name and also compares `player_id` where both legs
+carry one, so "Luther Burden III" from an ALT board and "Luther Burden" from
+a main line are caught as one man. This matters because the shape it admits
+otherwise can be **impossible**: OVER 75.5 and UNDER 50.5 on one receiver is
+an empty event, and the old raw-name check priced it as though it had a
+probability. If a refusal looks wrong — two genuinely different men who share
+a name, which B44 records — say so rather than working around it.
+
+**Alternate and milestone rungs ARE priceable as of 2026-11-09 — see
+"Alternate / milestone ladders" below.** Pinnacle still carries no alternates
+(re-measured on the MNF board: DraftKings 15 milestone markets, FanDuel 15,
+**Pinnacle none**), and a rung is still one-sided so it cannot be de-vigged
+pairwise. Neither matters any more: the ladder's margin is measured where it
+crosses its OWN book's two-sided main line, and the LEVEL is pinned to the
+anchor's main line, which Pinnacle does carry. Use `ladder_fair()`. What you
+still cannot do is have the optimiser SELECT a rung as a leg — the leg pool is
+main lines only — and roughly a sixth of rungs are refused outright because no
+anchor-chain book covers that player. Quote a rung's fair only from
+`ladder_fair`, never by anchoring it on two recreational books agreeing with
+each other.
+
 **Evaluate the side you are BETTING, not the side the model likes (B126).**
 `prop_edge` picks the side its own edge points at unless you say otherwise.
 That is the right default for "what does the model like here" and the wrong
@@ -455,7 +477,9 @@ special case for slate-wide coverage calls.
   `player_receptions`, `player_anytime_td`.
 - Filter to `line_type == "main"` for each book's primary two-sided line.
   `milestone` rungs (e.g. "180+ Passing Yards") are one-sided and cannot be
-  de-vigged.
+  de-vigged PAIRWISE — but they can now be priced, via the crossing with the
+  book's own main line. See "Alternate / milestone ladders" below, and pass
+  BOTH line types to it.
 - `propline_get_best_line` returns redacted prices on the free tier. Line-shop
   manually from `get_odds` instead, and say that's what you did.
 
@@ -477,6 +501,11 @@ s = screen_quotes(quotes, game_started=False)
 rungs ("280+ Passing Yards") are one-sided by construction and come back with
 `under=None`, which the screen flags rather than pricing. Anytime-TD is the
 same: one row per player, no "No" side.
+
+A one-sided rung is not an unpriceable rung — `ladder_fair()` prices it from
+the ladder's crossing with the main line. But it needs BOTH line types, and
+this function filters, so concatenate two calls. A single
+`line_type="milestone"` call cannot measure a margin and will say so.
 
 Feeding the native shape straight into `screen_quotes` used to read **the
 Under's price as the Over's price** — a plainly two-sided market was then
@@ -507,6 +536,168 @@ if s.scratch_risk:
   the book is never polled again. The screen drops these in-play.
 - **`max_age`** — also pass it on the `get_odds` call itself: 120s in-play,
   900s pregame. Unset, a 20-minute-old price reads as current.
+
+### Alternate / milestone ladders — `ladder_margin()`, `ladder_fair()`
+
+A milestone ladder is the `N+` grid a book posts beside a main line: "10+
+Receiving Yards", "20+", "30+". These are the lines Dustin asked for, and the
+reason is sound — a book is sharpest on the LEVEL, where the volume is, while
+the ladder encodes a SHAPE assumption, and shape is what `threshold_prob`
+estimates from a game log. The ladder may be the one place this project has a
+comparative advantage.
+
+**Shipped 2026-11-09. Before this, rungs were readable but unpriceable.**
+
+#### Why it was blocked, and what unblocked it
+
+A rung is ONE-SIDED, so `devig` cannot touch it: there is no Under price to
+say how the margin is distributed. And Pinnacle posts no alternates at all —
+on event 53177 DraftKings had 182 milestone outcomes and FanDuel 132 against
+**Pinnacle's zero**, with Polymarket, Kalshi, Bovada and Smarkets absent from
+the board entirely. So the whole `ANCHOR_CHAIN` is missing from ladders.
+
+Both dissolve because a ladder is MONOTONE and it crosses the same book's own
+two-sided main line. At that crossing the book has quoted one event twice —
+once with the vig visible, once with it baked in — so the ratio measures that
+book's ladder margin, with no anchor alternate needed. The LEVEL then comes
+from the anchor's MAIN line, which Pinnacle does carry.
+
+**The anchor sets the level; the ladder supplies the shape.** The pinned
+curve is neither book's, and `fair_source` says so.
+
+#### The call sequence
+
+`flatten_odds` filters by `line_type`, so it can never see both types in one
+call. Pass the CONCATENATION or the margin cannot be measured at all:
+
+```python
+q = (flatten_odds(resp, line_type="main", market="player_reception_yds")
+     + flatten_odds(resp, line_type="milestone", market="player_reception_yds"))
+
+mg = ladder_margin(q, book="draftkings")        # measured off THIS board
+x  = ladder_cross_check(q, books=("draftkings", "fanduel"))
+f  = ladder_fair(q, book="draftkings", margin=mg, cross=x)
+print(ladder_report(f, mg))
+```
+
+Then feed a priced rung into the existing machinery — there is no new edge
+concept:
+
+```python
+est = threshold_prob(player_series(wk, "Justin Jefferson", "receiving_yards"),
+                     r.canonical_line)          # NOT r.threshold
+prop_edge(est, over_odds=r.price, fair_over=r.fair,
+          fair_source=f"ladder+{r.anchor}", market="player_reception_yds",
+          side="OVER")
+```
+
+`canonical_line` is `N - 0.5` and is the number to model against: a rung at N
+is exactly "over N − 0.5" because these stats are integer-valued. Modelling
+against `threshold` is off by half a yard in the permissive direction.
+
+#### NEVER hard-code the margin
+
+DK +5.68% and FD +6.54% are measurements from ONE game. They are in this
+document as evidence that the method works, **not as constants to use.**
+`ladder_margin` re-measures off whatever board is in front of it, which is
+B53's rule — a constant's size is not its coverage. If a margin figure ever
+appears in source, that is the bug.
+
+#### What it refuses, and what each refusal means
+
+`margin is None` is NOT a margin of zero, and every fair in the block divides
+by it. Check `mg.measured` before quoting anything.
+
+- **"no anchor-chain book posts a two-sided main line for X"** — the real
+  remaining limit. 32 of 182 DK rungs on the MNF board. The ladder gives a
+  shape with no level to pin it to. **Do not price these off the book's own
+  main line** — that is de-vigging a book against itself, which these
+  instructions forbid elsewhere and which `ladder_fair` will not do.
+- **"only N usable crossing(s), need 4"** — thin board, no median.
+- **"crossings disagree too much to be one margin"** — sd over 2.5%.
+  Something other than vig is moving them: stale rungs, or a main line from
+  another market. Not something to average through.
+- **"outside the ladder's posted span — not extrapolated"** — D18 on the rung
+  grid. There is no curve past the last rung the book posted.
+
+#### The flags, and what to do about each
+
+- **`level gap: ...`** — the book's ladder and the anchor disagree about the
+  player by 3pp or more at the anchor's own point. The pin ABSORBS this by
+  construction, so without the flag a disagreeing book would price exactly
+  like an agreeing one. On a real board James Cook carried +3.7% and every
+  one of his rungs came out with the fair ABOVE the posted price. **This is
+  the signal Dustin is after** — value arising before the model says
+  anything — but it is also the single most likely thing to be a stale line,
+  so check `last_update` on both sides before acting on it.
+- **`deep tail: ±X is N% of an M% rung`** — fires on roughly 9% of priced
+  rungs, the longest ones. Absolute accuracy holds into the tail (1.14% vs
+  0.88% in the core, only 1.30x); RELATIVE accuracy does not, and it is the
+  relative figure that decides whether an edge survives. Do not recommend a
+  flagged rung.
+- **`uncertainty is a LOWER BOUND: no cross-book check`** — you passed no
+  `cross=`, so the figure carries nothing for the pin's own model risk and is
+  about 3x too tight in the tail. Pass `ladder_cross_check` with two
+  DIFFERENT books. The same book twice is refused: a ladder agrees with
+  itself by construction, and accepting it would silently strip this very
+  warning.
+- **`<book> posts symmetric main lines here`** — that book's own de-vigged
+  mains are all exactly 0.5000 (FanDuel, 12 of 12), so the margin's sd is the
+  ladder varying against a constant and UNDERSTATES its own error. Same
+  half-yard-grid behaviour already documented for Pinnacle's yardage board;
+  here it costs the error bar. Treat that book's rungs as less well known
+  than its tight sd suggests, whatever the number says.
+
+#### The model cannot pick a rung yet — B128, and it is not close
+
+The pricing above gets the MARKET's fair for a rung to about **±0.8pp**.
+Measured the model against Pinnacle's own de-vigged main line on the same
+board — `est.blended`, which is exactly what `prop_edge` compares, since
+`edge_over = p - fair_over`:
+
+    median +5.7%   mean +2.0%   sd 11.5%   range -19.1%..+16.9%   n=11
+
+Ty Johnson +16.9, Dawson Knox +13.6, Aaron Jones +13.3, T.J. Hockenson −19.1,
+Justin Jefferson −17.3. **The model's level error is roughly 14x the ladder's
+measurement uncertainty.**
+
+So `prop_edge(est, fair_over=r.fair)` on a rung is dominated by the model
+disagreeing with Pinnacle about the PLAYER, not by anything about the rung. It
+would call OVER on every Ty Johnson rung and UNDER on every Hockenson rung for
+that reason alone, and the ladder's careful ±0.8pp would be noise beside it.
+
+**So do not recommend a rung from a model-vs-fair edge.** If you quote one at
+all, report the model's level gap at the anchor's own point beside it:
+
+```python
+lvl = threshold_prob(s, r.anchor_point).blended - r.anchor_fair
+```
+
+If `abs(lvl)` is larger than a few points, the edge is that number wearing a
+rung's clothing. Say so explicitly rather than quoting the edge alone.
+
+**What the ladder IS good for right now**, none of which touches the model's
+level:
+
+1. **Price selection.** Given Dustin already wants exposure to a player,
+   which rung is cheapest against the market's own consensus. This is F12's
+   original purpose — "PICK a price rather than take the one on offer."
+2. **The `level gap` flag.** A book's ladder against the anchor is
+   market-vs-market and involves no model at all. James Cook's +3.7% put the
+   fair above the posted price on all ten of his rungs.
+3. **Sanity-checking a rung Dustin already chose.**
+
+#### What is NOT built
+
+**Nothing selects a rung as a leg yet.** `ff_boost.enumerate_candidates` still
+pulls `line_type="main"` only. So a rung can be priced and discussed, but it
+cannot yet be put in a boost slip by the optimiser. If you are hand-building a
+slip with a rung in it, run `canonical_bet()` on every leg first: a rung at N
+and that player's own `Over N-0.5` main line are THE SAME BET, and parlaying
+them prices as two independent legs and produces a fiction.
+
+Also unmeasured: every margin figure here is one game, and the cross-book term
+needs two books carrying ladders on the same market.
 
 ### Hobby-tier endpoints (subscribed 2026-10-29)
 

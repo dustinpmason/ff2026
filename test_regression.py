@@ -4247,6 +4247,139 @@ chk("and the one usable verdict still gets its bucket",
 shutil.rmtree(_tmp52, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old52
 
+section("62. two legs on one man, under two spellings (B127)")
+# Found by taking F12's blocker seriously rather than building around it.
+# Measured on tonight's MNF board: DraftKings 15 milestone markets / 182
+# outcomes, FanDuel 15 / 132, **Pinnacle zero** — so F12 stays blocked on
+# anchor quality exactly as filed. But a live slip already mixed a FanDuel
+# ALT milestone leg ("Luther Burden III 50+ Yards") with main-line legs,
+# and `classify` deduped on RAW NAMES.
+# ---------------------------------------------------------------------------
+def _dup(pl, line, side, pid=None):
+    return BoostLeg(player=pl, market="player_reception_yds", line=line,
+                    side=side, odds=-110, book="draftkings", fair_prob=0.5,
+                    fair_source="pinnacle", devig_method="shin",
+                    event_id="e1", team="CHI", pos="WR", verdict="CLEAR",
+                    verdict_side=side, player_id=pid)
+
+
+# The worst shape: an empty event priced as if it had a probability.
+_imposs = [_dup("Luther Burden III", 75.5, "OVER"),
+           _dup("Luther Burden", 50.5, "UNDER"),
+           _dup("Rome Odunze", 48.5, "OVER")]
+chk("a slip that cannot cash is refused, not priced",
+    _raises(lambda: classify(_imposs, {}), ValueError))
+chk("and the refusal says the spellings differ, so the reader knows why "
+    "the old check missed it",
+    "spellings differ" in _err(lambda: classify(_imposs, {})))
+# The milder shape is still not independent.
+_band = [_dup("Luther Burden III", 50.5, "OVER"),
+         _dup("Luther Burden", 75.5, "UNDER"),
+         _dup("Rome Odunze", 48.5, "OVER")]
+chk("a band on one man across two spellings is refused too",
+    _raises(lambda: classify(_band, {}), ValueError))
+chk("the normaliser agrees the two spellings are one man",
+    ff_props.norm_player("Luther Burden III")
+    == ff_props.norm_player("Luther Burden"))
+# The exact-name case must still work, or the fix traded one gap for another.
+chk("an exact repeat is still refused",
+    _raises(lambda: classify(
+        [_dup("Rome Odunze", 50.5, "OVER"), _dup("Rome Odunze", 48.5, "OVER"),
+         _dup("DJ Moore", 40.5, "OVER")], {}), ValueError))
+chk("three different players still build",
+    classify([_dup("Luther Burden III", 50.5, "OVER"),
+              _dup("Rome Odunze", 48.5, "OVER"),
+              _dup("DJ Moore", 40.5, "OVER")], {}).priceable)
+# The ids catch what normalising cannot: one man, two names that normalise
+# apart.
+_nick = [_dup("Cam Ward", 50.5, "OVER", "espn:1"),
+         _dup("Cameron Ward", 75.5, "UNDER", "espn:1"),
+         _dup("Rome Odunze", 48.5, "OVER", "espn:2")]
+chk("the normaliser does NOT catch a nickname, so this is a real second gap",
+    ff_props.norm_player("Cam Ward") != ff_props.norm_player("Cameron Ward"))
+chk("but a shared player_id does",
+    _raises(lambda: classify(_nick, {}), ValueError))
+chk("and the refusal says only the id caught it",
+    "only the id caught this" in _err(lambda: classify(_nick, {})))
+chk("distinct ids still build",
+    classify([_dup("A", 50.5, "OVER", "espn:1"),
+              _dup("B", 48.5, "OVER", "espn:2"),
+              _dup("C", 40.5, "OVER", "espn:3")], {}).priceable)
+# B50 stays uncalled, and now for a REASON rather than a pending merge
+# point: its key carries the player, so two legs sharing a canonical key
+# are the same player and the guard above has already refused them.
+chk("canonical_bet still exists and still maps a rung to its main line",
+    ff_props.canonical_bet(
+        {"player": "x", "market": "m", "rung_threshold": 238})
+    == ff_props.canonical_bet(
+        {"player": "x", "market": "m", "line": 237.5}),
+    str(ff_props.canonical_bet(
+        {"player": "x", "market": "m", "rung_threshold": 238})))
+chk("and it does NOT snap a whole-number main line onto a rung (D18)",
+    ff_props.canonical_bet(
+        {"player": "x", "market": "m", "line": 237.0})
+    != ff_props.canonical_bet(
+        {"player": "x", "market": "m", "rung_threshold": 238}))
+# The key was `player_id or player`, which MISSES a duplicate — the only
+# direction that matters here, because a missed duplicate gets parlayed with
+# itself. A rung row carrying an id and a main row carrying null for the same
+# player produced two different keys. The real board had the raw-name half of
+# it too: "D.J. Moore" at DraftKings against "DJ Moore" at Pinnacle.
+chk("a rung with a player_id and a main without still map to ONE bet",
+    ff_props.canonical_bet(
+        {"player": "D.J. Moore", "market": "m", "rung_threshold": 49,
+         "player_id": "espn:3915416"})
+    == ff_props.canonical_bet(
+        {"player": "D.J. Moore", "market": "m", "line": 48.5}),
+    "the old `player_id or player` key made these two different bets")
+chk("and two spellings of one man map to ONE bet",
+    ff_props.canonical_bet({"player": "D.J. Moore", "market": "m",
+                            "line": 48.5})
+    == ff_props.canonical_bet({"player": "DJ Moore", "market": "m",
+                               "line": 48.5}))
+# The key groups and can OVER-group; `same_bet` is what confirms.
+chk("same_bet confirms a grouped pair",
+    ff_props.same_bet(
+        {"player": "D.J. Moore", "market": "m", "rung_threshold": 49,
+         "player_id": "espn:3915416"},
+        {"player": "DJ Moore", "market": "m", "line": 48.5,
+         "player_id": "espn:3915416"}))
+chk("and refuses two players who merely share a spelling",
+    not ff_props.same_bet(
+        {"player": "Mike Williams", "market": "m", "line": 48.5,
+         "player_id": "espn:111"},
+        {"player": "Mike Williams", "market": "m", "line": 48.5,
+         "player_id": "espn:999"}))
+chk("a missing id defers to the key rather than inventing a distinction",
+    ff_props.same_bet(
+        {"player": "Mike Williams", "market": "m", "line": 48.5},
+        {"player": "Mike Williams", "market": "m", "rung_threshold": 49,
+         "player_id": "espn:111"}))
+chk("and a row with no threshold is still incomparable, not equal",
+    not ff_props.same_bet({"player": "x", "market": "m"},
+                          {"player": "x", "market": "m"}))
+# Nothing above asserts that two DIFFERENT bets are different: blanking the
+# key comparison entirely left every check passing, because each one happened
+# to be about a pair that IS the same bet or that conflicts on an id. A
+# predicate needs its false cases pinned as hard as its true ones.
+chk("same_bet refuses two different thresholds",
+    not ff_props.same_bet({"player": "x", "market": "m", "line": 48.5},
+                          {"player": "x", "market": "m", "line": 49.5}))
+chk("same_bet refuses two different players, ids absent",
+    not ff_props.same_bet({"player": "Alvin Kamara", "market": "m",
+                           "line": 48.5},
+                          {"player": "Chris Olave", "market": "m",
+                           "line": 48.5}))
+chk("same_bet refuses the same player in two different markets",
+    not ff_props.same_bet(
+        {"player": "x", "market": "player_reception_yds", "line": 48.5},
+        {"player": "x", "market": "player_rush_yds", "line": 48.5}))
+chk("and a rung does NOT equal the main line half a point the other way",
+    not ff_props.same_bet({"player": "x", "market": "m",
+                           "rung_threshold": 49},
+                          {"player": "x", "market": "m", "line": 49.0}),
+    "D18 on the rung grid: Over 49.0 pushes at 49, 49+ cannot")
+
 section("61. a verdict belongs to ONE side (B126)")
 # The Cade Otton near-miss. `boost_verdict` vetoes "a role change running
 # against THE SIDE BEING BET" (B80), and `prop_edge` could only ever answer
@@ -5270,6 +5403,570 @@ chk("the zero-coverage reason reads as English",
     ff_betlog._independence([{"player": f"P{_i}"} for _i in range(4)])[1])
 shutil.rmtree(_tmp53, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old53
+
+
+
+# ---------------------------------------------------------------------------
+section("63. milestone ladders: de-vig, level pin, and what they refuse (F12)")
+# A ladder is one-sided, so `devig` cannot touch it. The way in is that it
+# CROSSES the same book's own two-sided main line, and the ratio at the
+# crossing measures that book's ladder margin. Every number in the block is
+# measured at runtime — no margin constant, because B53's lesson is that a
+# constant's size is not its coverage, and a margin frozen in source is one
+# nobody rechecks.
+#
+# The anchor chain is ABSENT from ladders: on a real Vikings/Bills board
+# DraftKings posted 182 milestone outcomes and FanDuel 132, against Pinnacle's
+# ZERO. So a rung's level comes from the anchor's MAIN line and its shape from
+# the book's ladder, and `fair_source` has to say both.
+
+
+def _q(book, player, *, main=None, over=None, under=None, rung=None,
+       price=None, pid=None, susp=None):
+    """One `flatten_odds`-shaped row. Keyword-only on purpose: the B24 bug was
+    an Under price read as an Over, and a positional fixture builder is how
+    that gets re-created in a test."""
+    return {"book": book, "player": player, "player_id": pid,
+            "line_type": "main" if rung is None else "milestone",
+            "line": main, "over": over if rung is None else price,
+            "under": under, "rung_threshold": rung, "suspended_at": susp,
+            "market": "player_reception_yds"}
+
+
+def _ladder(book, player, pt, rungs, *, pid=None, main=(-110, -110)):
+    """A book's main line plus a ladder, as two line types concatenated."""
+    rows = [_q(book, player, main=pt, over=main[0], under=main[1], pid=pid)]
+    for t, pr in rungs.items():
+        rows.append(_q(book, player, rung=t, price=pr, pid=pid))
+    return rows
+
+
+# A ladder whose prices are generated from a known survival curve, so the
+# margin the measurement recovers can be compared against the one built in
+# rather than against another run of the same code.
+def _synth(book, player, pt, median_yards, margin, thresholds, *, pid=None):
+    import math as _m
+    rows = [_q(book, player, main=pt, over=-110, under=-110, pid=pid)]
+    for t in thresholds:
+        # P(X >= t) for an exponential with the given median, then vigged up.
+        p = 0.5 ** ((t - 0.5) / median_yards)
+        q = min(p * (1.0 + margin), 0.98)
+        price = -100 * q / (1 - q) if q >= 0.5 else 100 * (1 - q) / q
+        rows.append(_q(book, player, rung=t, price=round(price), pid=pid))
+    return rows
+
+
+_P = ff_props
+
+
+def _unmeasured(fn) -> bool:
+    """True when fn() comes back NOT measured. False when it raises.
+
+    A check that asserts something is refused must FAIL when the refusal is
+    removed, not CRASH — lesson 14. Removing `ladder_cross_check`'s minimum-n
+    gate makes it divide by an empty list, and the revert test read the
+    resulting crash as "no check failed" because the suite's own crash line
+    was not in the harness's regex. Two mistakes stacked: a check that could
+    not fail cleanly, and a harness that could not see a crash.
+    """
+    try:
+        return not fn().measured
+    except BaseException:                                    # noqa: BLE001
+        return False
+
+# --- the margin, measured against the book's OWN main line -----------------
+# Six players on one synthetic board, all built with a 6% margin. Recovering
+# roughly that from prices alone is the only check that the crossing
+# arithmetic is right rather than merely self-consistent.
+_MEDIANS = [("A", 40.0), ("B", 55.0), ("C", 30.0),
+            ("D", 48.0), ("E", 62.0), ("F", 35.0)]
+# Out to 200+, which is where a real board's ladders go: DraftKings posted
+# rungs down to a 2.4% fair on the Vikings/Bills card. Stopping at 100+ left
+# the shortest fair at 17%, so the deep-tail gate had nothing to fire on and
+# four checks failed for want of a tail rather than for want of a gate.
+_RUNGS = [10, 20, 30, 40, 50, 60, 80, 100, 130, 160, 200, 250]
+_board = []
+for _i, (_who, _med) in enumerate(_MEDIANS):
+    # The main line goes at median + 0.5, where the generated curve's true
+    # survival is exactly 0.5 and so matches the -110/-110 pair's de-vigged
+    # fair. Anywhere else builds a LEVEL offset into the fixture which the
+    # crossing then reads as margin: at round(median) - 0.5 the recovery came
+    # back 7.05% against a built 6.00%, which looks like a 1pp error in the
+    # code and is a 1pp error in the fixture.
+    _board += _synth("dk", _who, _med + 0.5, _med, 0.06, _RUNGS, pid=f"p{_i}")
+_mg = _P.ladder_margin(_board, book="dk")
+chk("a ladder margin is measured from the book's own main-line crossings",
+    _mg.measured, _mg.why)
+chk("and it recovers the margin the fixture was built with",
+    _mg.measured and abs(_mg.margin - 0.06) < 0.015,
+    f"built 6.00%, recovered {_mg.margin:.2%}" if _mg.measured else _mg.why)
+chk("the observation count is the number of crossings, not of rungs",
+    _mg.n == 6, f"n={_mg.n} over 6 players x 8 rungs")
+
+# B53 again, in the one place it would bite hardest: NOT measured must not
+# read as a margin of zero, because every fair in the block divides by it.
+chk("an unmeasurable margin is None, never 0.0",
+    _P.ladder_margin([], book="dk").margin is None)
+chk("and `measured` is the property callers gate on",
+    _P.ladder_margin([], book="dk").measured is False)
+
+# --- what the margin measurement refuses ------------------------------------
+chk("a book absent from the rows is named, not silently unmeasurable",
+    "no quotes at all" in _P.ladder_margin(_board, book="caesars").why,
+    _P.ladder_margin(_board, book="caesars").why)
+_mains_only = [r for r in _board if r["line_type"] == "main"]
+chk("mains without ladders says to pass the milestone call too",
+    "no milestone rungs" in _P.ladder_margin(_mains_only, book="dk").why,
+    _P.ladder_margin(_mains_only, book="dk").why)
+_rungs_only = [r for r in _board if r["line_type"] == "milestone"]
+chk("ladders without mains says to pass the main call too",
+    "no two-sided main line" in _P.ladder_margin(_rungs_only, book="dk").why,
+    _P.ladder_margin(_rungs_only, book="dk").why)
+# A one-sided "main" row is neither: it cannot be de-vigged and it is not a
+# rung, so the board has nothing to cross.
+_one_sided = [_q("dk", "A", main=40.5, over=-110, under=None)]
+chk("a one-sided main row leaves nothing to cross",
+    "neither ladders nor two-sided main lines"
+    in _P.ladder_margin(_one_sided, book="dk").why,
+    _P.ladder_margin(_one_sided, book="dk").why)
+
+# Below the floor the median is an anecdote. Three players, not six.
+_thin = [r for r in _board if r["player"] in ("A", "B", "C")]
+chk("too few crossings is refused with the count and the floor",
+    not _P.ladder_margin(_thin, book="dk").measured
+    and "need 4" in _P.ladder_margin(_thin, book="dk").why,
+    _P.ladder_margin(_thin, book="dk").why)
+chk("and the floor is the named constant, not a literal",
+    _P.LADDER_MARGIN_MIN_N == 4)
+
+# Crossings that disagree are not one margin. Built with margins from 2% to
+# 26% across six players, which is dispersion no vig explains.
+_spread = []
+for _i, _m in enumerate([0.02, 0.06, 0.10, 0.15, 0.20, 0.26]):
+    _spread += _synth("dk", f"S{_i}", 39.5, 40.0, _m,
+                      [10, 20, 30, 40, 50, 60, 80], pid=f"s{_i}")
+_sp = _P.ladder_margin(_spread, book="dk")
+chk("crossings that disagree too much are refused, not averaged",
+    not _sp.measured and "disagree too much" in _sp.why, _sp.why)
+chk("and the refusal reports the dispersion it measured",
+    _sp.measured is False and f"{_sp.sd:.2%}" in _sp.why, _sp.why)
+# The revert this is guarding: taking the median anyway would return a
+# confident ~12% margin off a 2%..26% spread.
+chk("the dispersion gate is what refuses it, not the count",
+    _sp.n >= _P.LADDER_MARGIN_MIN_N, f"n={_sp.n}")
+
+# A rung grid that does not reach the main line gives no crossing. Not
+# extrapolated — D18's rule is that a fair probability for one point is not a
+# fair probability for a neighbouring one.
+_far = _synth("dk", "Z", 9.5, 40.0, 0.06, [60, 70, 80, 90], pid="z")
+chk("a main line outside the ladder's span is not extrapolated to",
+    any("outside the ladder's span" in r
+        for r in _P.ladder_margin(_board + _far, book="dk").rejected),
+    "; ".join(_P.ladder_margin(_board + _far, book="dk").rejected[:2]))
+# ...and the rejection does not quietly cost the measurement.
+chk("one unusable crossing does not sink the rest of the board",
+    _P.ladder_margin(_board + _far, book="dk").measured)
+
+# --- interpolation is LINEAR IN LOG-ODDS ------------------------------------
+# Measured by hold-one-out on real ladders, 253 interior rungs: probability-
+# linear missed by a median 0.572% where q < 15% and 0.739% in the core;
+# logit-linear by 0.137% and 0.521%. 4.2x better where the recommendation
+# value is. A survival curve is convex in the tail, so a straight line in
+# probability space cuts the corner and always reads HIGH between rungs.
+_curve = {9.5: -200, 19.5: 100, 29.5: 400, 39.5: 900}
+_mid = _P._ladder_interp(_curve, 24.5)
+_lin = (ff_props.american_to_prob(100) + ff_props.american_to_prob(400)) / 2
+chk("interpolation sits below the probability-linear reading, not on it",
+    _mid < _lin - 1e-4, f"logit {_mid:.4f} vs prob-linear {_lin:.4f}")
+chk("a posted rung interpolates to exactly its own price",
+    abs(_P._ladder_interp(_curve, 19.5)
+        - ff_props.american_to_prob(100)) < 1e-12)
+chk("outside the posted span there is no curve, and None is returned",
+    _P._ladder_interp(_curve, 5.0) is None
+    and _P._ladder_interp(_curve, 99.0) is None)
+chk("the ends themselves are inside the span",
+    _P._ladder_interp(_curve, 9.5) is not None
+    and _P._ladder_interp(_curve, 39.5) is not None)
+chk("and it is monotone across the whole span",
+    all(_P._ladder_interp(_curve, t) >= _P._ladder_interp(_curve, t + 0.5)
+        for t in [9.5 + 0.5 * i for i in range(60)]))
+
+# --- the pin ----------------------------------------------------------------
+# A proportional-odds shift, solved closed-form. The first attempt shifted in
+# the THRESHOLD domain, which reads better — "DraftKings sits 1.8 yards above
+# Pinnacle" — and fails on real boards: the anchor's main line often IS the
+# ladder's bottom rung (Aaron Jones at 9.5 against a ladder starting at 9.5),
+# and when the book sits a shade below the anchor there, the needed shift is
+# negative and lands off the end of the posted ladder. That refused all eight
+# of his rungs over a 2pp nudge.
+_c, _gap, _why = _P._ladder_pin(_curve, 0.06, 19.5, 0.40)
+chk("the pin makes the de-vigged ladder hit the anchor's fair exactly",
+    _c is not None
+    and abs(_P._expit(_P._logit(ff_props.american_to_prob(100) / 1.06) + _c)
+            - 0.40) < 1e-9,
+    _why)
+chk("the pin reports the level gap in probability points",
+    _c is not None and abs(_gap - (0.40 - ff_props.american_to_prob(100)
+                                   / 1.06)) < 1e-12)
+# The case that killed the threshold-domain pin: anchor at the bottom rung,
+# book below the anchor, so the shift must be negative.
+_bot = {9.5: -110, 19.5: 120, 29.5: 400}
+_cb = _P._ladder_pin(_bot, 0.06, 9.5, 0.55)[0]
+chk("a pin at the ladder's bottom rung works when the shift is negative",
+    _cb is not None
+    and abs(_P._expit(_P._logit(ff_props.american_to_prob(-110) / 1.06) + _cb)
+            - 0.55) < 1e-9,
+    "this is what the threshold-domain pin refused")
+chk("the pin never needs a point outside the posted ladder",
+    _P._ladder_pin(_bot, 0.06, 4.0, 0.55)[0] is None
+    and "outside the ladder's posted span"
+    in _P._ladder_pin(_bot, 0.06, 4.0, 0.55)[2],
+    _P._ladder_pin(_bot, 0.06, 4.0, 0.55)[2])
+# The yards figure is a DIAGNOSTIC and is allowed to be missing. A number
+# that exists for the report must never become one the pricing depends on.
+chk("the yards-equivalent is computable inside the span",
+    _P._ladder_shift_yards(_curve, 0.06, 19.5, 0.40) is not None)
+chk("and is None when unreachable, without costing the pin",
+    _P._ladder_shift_yards(_bot, 0.06, 9.5, 0.55) is None
+    and _P._ladder_pin(_bot, 0.06, 9.5, 0.55)[0] is not None)
+
+# --- fair probabilities for every rung --------------------------------------
+# Pinnacle is the anchor and posts only a main line; dk posts the ladder.
+_pin_row = [_q("pinnacle", "A", main=39.5, over=-105, under=-115, pid="p0")]
+_dk = _synth("dk", "A", 39.5, 40.0, 0.06,
+             [10, 20, 30, 40, 50, 60, 80, 100], pid="p0")
+_f = _P.ladder_fair(_board + _pin_row, book="dk", margin=_mg)
+_fa = [r for r in _f if r.player == "A"]
+chk("every rung the book posts comes back, priced or refused",
+    len(_fa) == len(_RUNGS), f"{len(_fa)} rows for {len(_RUNGS)} rungs")
+chk("a priced rung carries a fair probability",
+    all(r.priceable for r in _fa), "; ".join(r.why for r in _fa if r.why)[:120])
+_curve_a = {r.canonical_line: r.price for r in _fa}
+_at_anchor = _P._expit(
+    _P._logit(_P._ladder_interp(_curve_a, 39.5) / (1 + _mg.margin))
+    + _fa[0].level_shift)
+chk("the pinned curve passes through the anchor's fair at the anchor's point",
+    abs(_at_anchor - ff_props.devig(-105, -115, "auto")[0]) < 1e-9,
+    f"pinned {_at_anchor:.6f} vs anchor fair "
+    f"{ff_props.devig(-105, -115, 'auto')[0]:.6f}")
+chk("the fair is below the price's own implied probability on a flat ladder",
+    all(r.fair < r.q_raw for r in _fa if abs(r.level_gap or 0) < 0.005),
+    "de-vig has to remove something")
+chk("fair probabilities fall as the threshold rises",
+    all(a.fair >= b.fair for a, b in zip(_fa, _fa[1:])),
+    " ".join(f"{r.threshold:g}+:{r.fair:.3f}" for r in _fa))
+chk("fair_source names BOTH halves, because the curve is neither book's",
+    "level pinnacle" in _fa[0].fair_source
+    and "shape dk ladder" in _fa[0].fair_source, _fa[0].fair_source)
+chk("the rung's canonical line is N - 0.5, matching canonical_bet",
+    all(abs(r.canonical_line - (r.threshold - 0.5)) < 1e-12 for r in _fa))
+
+# --- what ladder_fair refuses -----------------------------------------------
+chk("no measured margin means no priced rung, and the reason is the margin's",
+    all(not r.priceable and "ladder margin not measured" in r.why
+        for r in _P.ladder_fair(_spread + _pin_row, book="dk")),
+    _P.ladder_fair(_spread + _pin_row, book="dk")[0].why)
+# The real constraint on a real board: Pinnacle covered 10 of 15 players, so a
+# third of the rungs have a shape and no level.
+_no_anchor = _P.ladder_fair(_board, book="dk")
+chk("a player no anchor-chain book covers is refused, not priced off the book",
+    all(not r.priceable for r in _no_anchor)
+    and "no anchor-chain book" in _no_anchor[0].why, _no_anchor[0].why)
+chk("and the refusal names which books ARE present",
+    "present: dk" in _no_anchor[0].why, _no_anchor[0].why)
+# A non-chain book's main line is not an anchor. This is the check that stops
+# the pin from quietly using DraftKings' own main as its own level, which
+# would make every ladder self-consistent and anchored to nothing.
+chk("a book outside ANCHOR_CHAIN does not become the level",
+    "dk" not in _P.ANCHOR_CHAIN
+    and all(r.anchor is None for r in _no_anchor))
+# An anchor whose main line is nowhere near the ladder cannot pin it.
+_off = [_q("pinnacle", "Z", main=4.5, over=-110, under=-110, pid="z")]
+_fz = [r for r in _P.ladder_fair(_board + _far + _off, book="dk",
+                                 margin=_mg) if r.player == "Z"]
+chk("an anchor point outside the ladder's span refuses that ladder",
+    _fz and all(not r.priceable for r in _fz)
+    and "outside the ladder's posted span" in _fz[0].why,
+    _fz[0].why if _fz else "no rows for Z")
+chk("and that refusal does not touch the other players' ladders",
+    any(r.priceable for r in _P.ladder_fair(_board + _far + _off + _pin_row,
+                                            book="dk", margin=_mg)))
+
+# --- the level gap is FLAGGED, never silently absorbed ----------------------
+# The pin removes the gap by construction, which is the whole point of it. So
+# without a flag, a book that disagrees with the anchor about the player
+# prices exactly like one that agrees, and the disagreement leaves no trace.
+_wide = [_q("pinnacle", "A", main=39.5, over=-250, under=+200, pid="p0")]
+_fw = [r for r in _P.ladder_fair(_board + _wide, book="dk", margin=_mg)
+       if r.player == "A"]
+chk("a level gap past the gate is flagged on every rung of that ladder",
+    _fw and all(any("level gap" in g for g in r.flags) for r in _fw),
+    _fw[0].flags[0] if _fw and _fw[0].flags else "no flag")
+chk("the flag reports both sides of the disagreement and its size",
+    _fw and "where pinnacle is fair at" in _fw[0].flags[0],
+    _fw[0].flags[0] if _fw and _fw[0].flags else "")
+chk("a gap inside the gate stays quiet",
+    not any("level gap" in g for r in _fa for g in r.flags),
+    # Formatted defensively: `f"{None:+.2%}"` raises, and a detail argument
+    # is evaluated eagerly, so a revert that blanks `level_gap` took the whole
+    # run down instead of failing this check. Lesson 14 in a detail string.
+    f"gap {_fa[0].level_gap:+.2%} under {_P.LADDER_LEVEL_GAP_FLAG:.0%}"
+    if isinstance(_fa[0].level_gap, float)
+    else f"level_gap={_fa[0].level_gap!r}")
+_gap_num = _fw[0].level_gap if _fw else None
+chk("the gap is carried as a number too, not only as prose",
+    _gap_num is not None and abs(_gap_num) >= _P.LADDER_LEVEL_GAP_FLAG,
+    f"{_gap_num:+.3%}" if isinstance(_gap_num, float) else repr(_gap_num))
+# A gap in the book's favour pushes the fair ABOVE the posted price, which is
+# the only way this block ever reports a rung as value on its own.
+chk("a gap toward the anchor can lift the fair above the posted price",
+    any(r.fair > r.q_raw for r in _fw), "that is the level-gap signal")
+
+# --- uncertainty, and the deep tail ----------------------------------------
+_x = _P.ladder_cross_check(_board + _pin_row + _dk, books=("dk", "dk"))
+chk("a book compared against ITSELF is refused, not reported as agreement",
+    not _x.measured and "agrees with itself" in _x.why, _x.why)
+# Written first as `_x.n == 0 or not _x.measured or _x.median == 0.0`, which
+# PASSED on the third clause: the same book twice came back MEASURED with a
+# disagreement of 0.0, which would have stripped `ladder_fair`'s LOWER BOUND
+# flag and added a zero model-risk term — output claiming to have been
+# cross-validated against the ladder it was derived from. The guard in
+# `ladder_cross_check` exists because this check was too weak to fail.
+
+# Two real books, independently pinned to the same anchor. fd needs its OWN
+# four crossings before its margin measures at all, so it gets the whole
+# board, not one player — built with a slightly longer median and a wider
+# margin so the two disagree by a realistic amount rather than not at all.
+_fd = []
+for _i, (_who, _med) in enumerate(_MEDIANS):
+    _fd += _synth("fd", _who, _med + 0.5, _med + 2.0, 0.07, _RUNGS,
+                  pid=f"p{_i}")
+_both = _board + _fd + _pin_row
+_xc = _P.ladder_cross_check(_both, books=("dk", "fd"))
+chk("two independently-pinned ladders give a measured disagreement",
+    _xc.measured, _xc.why)
+chk("and it is reported with its own n and spread",
+    _xc.measured and _xc.n >= 4 and _xc.p90 >= _xc.median,
+    _xc.describe())
+chk("too few shared rungs is refused rather than averaged",
+    _unmeasured(lambda: _P.ladder_cross_check(
+        _board + _pin_row + [_q("fd", "A", rung=10, price=-200, pid="p0")],
+        books=("dk", "fd"))))
+
+_fu = [r for r in _P.ladder_fair(_both, book="dk", margin=_mg, cross=_xc)
+       if r.player == "A"]
+_fn = [r for r in _P.ladder_fair(_both, book="dk", margin=_mg)
+       if r.player == "A"]
+chk("without a cross-book check the uncertainty is labelled a LOWER BOUND",
+    all(any("LOWER BOUND" in g for g in r.flags) for r in _fn),
+    "the propagated figure carries no term for the pin's own model risk")
+chk("and with one, that label is gone",
+    not any("LOWER BOUND" in g for r in _fu for g in r.flags))
+chk("the cross-book term makes the uncertainty strictly wider",
+    all(a.uncertainty > b.uncertainty for a, b in zip(_fu, _fn)),
+    f"{_fu[0].uncertainty:.4f} vs {_fn[0].uncertainty:.4f}")
+# B93b. A gate that cannot fire is worse than no gate: it reads as a check
+# that passed. On the real board this fires on 12 of 132 priced rungs.
+_deep = [r for r in _fu if any("deep tail" in g for g in r.flags)]
+chk("the deep-tail gate FIRES on a real ladder's longest rungs",
+    0 < len(_deep) < len(_fu),
+    f"{len(_deep)} of {len(_fu)} rungs")
+chk("and it fires on the tail, not on the core",
+    _deep and max(r.fair for r in _deep) < min(r.fair for r in _fu
+                                               if r not in _deep),
+    f"flagged up to {max(r.fair for r in _deep):.1%}" if _deep else "")
+chk("the gate is on the RELATIVE figure, which is what decides an edge",
+    _deep and all(r.uncertainty / r.fair > _P.LADDER_MAX_REL_UNCERTAINTY
+                  for r in _deep))
+# Absolute accuracy holding into the tail does not mean relative does: the
+# measured cross-book disagreement was 1.14% deep and 0.88% core, only 1.30x,
+# while 1.1pp is a third of a 3% rung and a fiftieth of a 50% one.
+chk("absolute uncertainty barely grows toward the tail",
+    max(r.uncertainty for r in _fu) / min(r.uncertainty for r in _fu) < 2.0,
+    f"{min(r.uncertainty for r in _fu):.4f}..{max(r.uncertainty for r in _fu):.4f}")
+chk("but the relative figure grows by an order of magnitude",
+    max(r.uncertainty / r.fair for r in _fu)
+    / min(r.uncertainty / r.fair for r in _fu) > 8.0)
+# A ladder too short to hold a rung out cannot measure its own interpolation
+# error, and says so rather than reporting a tighter number than it has.
+_short = _synth("dk", "Y", 19.5, 20.0, 0.06, [10, 20, 30], pid="y")
+_sa = [_q("pinnacle", "Y", main=19.5, over=-110, under=-110, pid="y")]
+_fy = [r for r in _P.ladder_fair(_board + _short + _sa, book="dk",
+                                 margin=_mg) if r.player == "Y"]
+chk("a ladder too short to hold one out says its interp error is unmeasured",
+    _fy and all(any("interp error unmeasured" in g for g in r.flags)
+                for r in _fy),
+    _fy[0].flags[0] if _fy and _fy[0].flags else "no flag")
+chk("a long enough ladder measures it and does not carry that flag",
+    not any("interp error unmeasured" in g for r in _fa for g in r.flags))
+
+# --- a suspended rung is not a price ---------------------------------------
+_susp = list(_board) + _pin_row
+for _r in _susp:
+    if _r["player"] == "A" and _r["line_type"] == "milestone" \
+            and _r["rung_threshold"] == 50:
+        _r["suspended_at"] = "2026-11-10T01:00:00Z"
+chk("a suspended rung is flagged, because a suspended price is not a price",
+    any("suspended at" in g
+        for r in _P.ladder_fair(_susp, book="dk", margin=_mg)
+        if r.player == "A" and r.threshold == 50 for g in r.flags))
+chk("and its neighbours are not",
+    not any("suspended at" in g
+            for r in _P.ladder_fair(_susp, book="dk", margin=_mg)
+            if r.player == "A" and r.threshold != 50 for g in r.flags))
+
+# --- the report shows refusals rather than dropping them -------------------
+_rep = _P.ladder_report(_P.ladder_fair(_both, book="dk", margin=_mg,
+                                       cross=_xc), _mg)
+chk("the report leads with the measured margin and its n",
+    _line(_rep, "dk: ladder margin").startswith("dk: ladder margin")
+    and "crossings" in _line(_rep, "dk: ladder margin"),
+    _line(_rep, "dk: ladder margin"))
+_count_line = [l for l in _rep.splitlines() if "rung(s) priced" in l]
+chk("it counts priced and refused separately on one line",
+    len(_count_line) == 1 and "refused" in _count_line[0],
+    _count_line[0] if _count_line else "no count line")
+chk("refusals are grouped by reason, with a count each",
+    "! NOT PRICEABLE" in _rep or all(
+        r.priceable for r in _P.ladder_fair(_both, book="dk", margin=_mg,
+                                            cross=_xc)))
+# B124's lesson: assert on the line that NAMES the thing, not anywhere in the
+# report, because the same figure often appears on a neighbouring line.
+chk("the margin line reports the measured value, not a neighbouring figure",
+    f"{_mg.margin:+.2%}" in _line(_rep, "dk: ladder margin"),
+    _line(_rep, "dk: ladder margin"))
+
+# --- the margin's OWN join is normalised too --------------------------------
+# Not from an observed miss: on the real board no book spelled a player two
+# ways across its own line types (0 of 355 rows). It is the same key choice as
+# the anchor join, pinned here so a revert to the raw name fails rather than
+# passing because this one payload happened to be consistent. A book feeding
+# its ladder and its main line from different sources is exactly where this
+# shows up, and it would present as a silently unmeasurable margin.
+# A coherent generated ladder, with ONLY the main row respelled — so the
+# crossing is a real one and the spelling is the single variable.
+# player_id NONE on both rows: with an id present the id index joins them
+# regardless of spelling, so the normalisation is only load-bearing for the
+# id-less rows — and those are real (Pinnacle carried a null id for Justin
+# Jefferson on this very board). A fixture WITH ids passes either way and
+# pins nothing.
+_spell = _synth("dk", "DJ Moore", 48.5, 48.0, 0.06, _RUNGS, pid=None)
+_spell[0] = dict(_spell[0], player="D.J. Moore")
+_mg_spell = _P.ladder_margin(_board + _spell, book="dk")
+chk("the margin crosses a ladder and main spelled two ways in ONE book",
+    _mg_spell.measured
+    and not any("D.J. Moore" in r or "DJ Moore" in r
+                for r in _mg_spell.rejected),
+    "; ".join(_mg_spell.rejected[:2]) or f"n={_mg_spell.n}")
+chk("and that crossing really is counted, not merely not-rejected",
+    _mg_spell.n == _mg.n + 1, f"{_mg.n} -> {_mg_spell.n}")
+
+# --- the anchor join: id first, name as fallback, conflicts refused --------
+# Measured on the real MNF board: fixing this took DraftKings from 132 priced
+# rungs to 150. The first version keyed on the TUPLE `(player_id, player)`,
+# which obeys the letter of "never join on a raw name" and smuggles the name
+# in anyway — and the board had the exact case: DraftKings spells
+# "D.J. Moore", Pinnacle spells "DJ Moore", SAME player_id espn:3915416. The
+# tuples differed, the join missed, and all 18 of his rungs were refused as
+# unanchored while both books were quoting him by the same id.
+_DJ_ID = "espn:3915416"
+_dj = _synth("dk", "D.J. Moore", 48.5, 48.0, 0.06, _RUNGS, pid=_DJ_ID)
+_dj_anchor = [_q("pinnacle", "DJ Moore", main=48.5, over=-110, under=-110,
+                 pid=_DJ_ID)]
+_fdj = [r for r in _P.ladder_fair(_board + _dj + _dj_anchor, book="dk",
+                                  margin=_mg) if r.player == "D.J. Moore"]
+chk("one player_id, two spellings, still joins (the live D.J. Moore case)",
+    _fdj and all(r.priceable for r in _fdj) and _fdj[0].anchor == "pinnacle",
+    _fdj[0].why if _fdj and _fdj[0].why else f"{len(_fdj)} rungs priced")
+# Justin Jefferson carried player_id None on BOTH sides of that same board, so
+# the name fallback is not a nicety — without it he has no anchor at all.
+_jj = _synth("dk", "Justin Jefferson", 77.5, 77.0, 0.06, _RUNGS, pid=None)
+_jj_anchor = [_q("pinnacle", "Justin Jefferson", main=77.5, over=-110,
+                 under=-110, pid=None)]
+_fjj = [r for r in _P.ladder_fair(_board + _jj + _jj_anchor, book="dk",
+                                  margin=_mg) if r.player == "Justin Jefferson"]
+chk("no player_id on either side joins on the normalised name",
+    _fjj and all(r.priceable for r in _fjj),
+    _fjj[0].why if _fjj and _fjj[0].why else f"{len(_fjj)} rungs priced")
+# Two different players, one spelling. B44's reason for existing.
+_twin = _synth("dk", "Mike Williams", 39.5, 40.0, 0.06, _RUNGS, pid="espn:111")
+_twin_anchor = [_q("pinnacle", "Mike Williams", main=39.5, over=-110,
+                   under=-110, pid="espn:999")]
+_ftw = [r for r in _P.ladder_fair(_board + _twin + _twin_anchor, book="dk",
+                                  margin=_mg) if r.player == "Mike Williams"]
+chk("a conflicting player_id under one name is REFUSED, not guessed",
+    _ftw and all(not r.priceable for r in _ftw)
+    and "excluded on a conflicting id" in _ftw[0].why,
+    _ftw[0].why if _ftw else "no rows")
+# The refusal above is the no-anchor-chain one carrying the join note,
+# because dk's OWN main for this player is a candidate and only the
+# anchor's conflicting row is dropped. With no own main either, the join
+# itself comes back empty and says so in its own words.
+_bare = [_q("dk", "Mike Williams", rung=_t, price=-150 - 20 * _i,
+            pid="espn:111") for _i, _t in enumerate(_RUNGS)]
+_fbare = [r for r in _P.ladder_fair(_board + _bare + _twin_anchor,
+                                    book="dk", margin=_mg)
+          if r.player == "Mike Williams"]
+chk("with no own main either, the join reports the id conflict directly",
+    _fbare and all(not r.priceable for r in _fbare)
+    and "belong to a different player_id" in _fbare[0].why,
+    _fbare[0].why if _fbare else "no rows")
+# ...and an id-less anchor row is unattributable once a name is ambiguous.
+_amb = _twin_anchor + [
+    _q("pinnacle", "Mike Williams", main=60.5, over=-110, under=-110,
+       pid="espn:222"),
+    _q("pinnacle", "Mike Williams", main=12.5, over=-110, under=-110,
+       pid=None)]
+_fam = [r for r in _P.ladder_fair(_board + _twin + _amb, book="dk",
+                                  margin=_mg) if r.player == "Mike Williams"]
+chk("an id-less anchor row is dropped when two ids share the spelling",
+    _fam and all(not r.priceable for r in _fam),
+    _fam[0].why if _fam else "no rows")
+chk("and the refusal counts every row it excluded",
+    _fam and "3 same-name row(s) excluded" in _fam[0].why,
+    _fam[0].why if _fam else "")
+
+# --- a title-only anchor still anchors (B60's signature, through flatten) ---
+# `ladder_fair` matches the anchor on the quote's own `book` field, because
+# `flatten_odds` already normalised it through `book_key`. A second
+# `book_key(c)` call sat in that match and was DEAD — a flattened quote has
+# neither `key` nor `title`, so it returned None every time while implying a
+# normalisation that happens one layer up. Deleting it is only safe if the
+# upstream normalisation really does handle the B60 shape, so that is what
+# this checks, through the real `flatten_odds` rather than a hand-built row.
+_b60 = {"bookmakers": [
+    {"title": "Pinnacle",                       # key ABSENT — the B60 shape
+     "markets": [{"key": "player_reception_yds", "line_type": "main",
+                  "outcomes": [
+                      {"description": "A", "name": "Over", "point": 40.5,
+                       "price": -105},
+                      {"description": "A", "name": "Under", "point": 40.5,
+                       "price": -115}]}]}]}
+_b60_rows = ff_props.flatten_odds(_b60, line_type="main")
+chk("flatten_odds normalises a title-only Pinnacle to the chain key",
+    _b60_rows and _b60_rows[0]["book"] == "pinnacle",
+    _b60_rows[0]["book"] if _b60_rows else "no rows")
+chk("and book_key on a FLATTENED quote returns None, which is why it went",
+    ff_props.book_key(_b60_rows[0]) is None if _b60_rows else False)
+_f60 = [r for r in _P.ladder_fair(_board + _b60_rows, book="dk", margin=_mg)
+        if r.player == "A"]
+chk("so a title-only anchor still pins a ladder",
+    _f60 and all(r.priceable for r in _f60)
+    and _f60[0].anchor == "pinnacle",
+    _f60[0].why or _f60[0].anchor if _f60 else "no rows")
+
+# --- dead guards stay deleted ----------------------------------------------
+# `devig` returns a fair strictly inside (0, 1) for all 192 extreme price
+# pairs across all three methods, and `american_to_prob` likewise, so the
+# three range guards that were here could not fire. Deleted per B126/B127:
+# dead code reads as a check that passed.
+chk("devig never leaves (0,1), which is why those guards went",
+    all(0.0 < ff_props.devig(_o, _u, _m)[0] < 1.0
+        for _m in ("auto", "shin", "multiplicative")
+        for _o in (-1e7, -110, 110, 1e7) for _u in (-1e7, -110, 110, 1e7)))
+chk("so a pin off extreme prices still returns a shift, not a refusal",
+    _P._ladder_pin({9.5: -1000000, 19.5: 1000000}, 0.0, 14.5, 0.999)[0]
+    is not None)
 
 
 _summary()

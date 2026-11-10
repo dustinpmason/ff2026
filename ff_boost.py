@@ -1032,12 +1032,62 @@ def _from_measured(relation: str, sa: str, sb: str,
 def classify(legs, meta=None) -> Structure:
     """Derive the structure FROM THE LEGS. Never takes a caller's word."""
     legs = list(legs)
-    names = [l.player for l in legs]
-    if len(set(names)) != len(names):
-        dupe = next(n for n in names if names.count(n) > 1)
-        raise ValueError(
-            f"{dupe!r} appears twice in one slip. Two legs on one player are "
-            f"not independent and most books will not combine them.")
+    # B127. This compared RAW NAMES, the join this project forbids
+    # everywhere else (B44, B68b, and normalize_name's own docstring). A
+    # live slip carried "Luther Burden III" from FanDuel's milestone board;
+    # a main line reads "Luther Burden". Two legs on one man, two
+    # spellings, and `classify` returned priceable=True with a reason
+    # asserting "every pair is independent to within the 3% gate".
+    #
+    # The worst shape it let through cannot cash at all: OVER 75.5 and
+    # UNDER 50.5 on the same receiver is an empty event, priced as if it
+    # had a probability. Anything milder — OVER 50.5 with UNDER 75.5 — is
+    # a band, where the joint is nothing like the product.
+    #
+    # `norm_player` already existed and already agreed the two spellings
+    # are one man.
+    keyed = [(norm_player(l.player) or l.player, l) for l in legs]
+    seen: dict[str, BoostLeg] = {}
+    for k, l in keyed:
+        if k in seen:
+            a, b = seen[k], l
+            raise ValueError(
+                f"{a.player!r} and {b.player!r} are the same player "
+                f"({k!r}) and both appear in this slip — "
+                f"{a.side} {a.line} and {b.side} {b.line}. Two legs on one "
+                f"man are not independent and most books will not combine "
+                f"them; opposite sides at different lines may not even be "
+                f"possible together. The spellings differ, which is why "
+                f"this was reached by normalising rather than by matching "
+                f"the names.")
+        seen[k] = l
+
+    # B50/B127. `canonical_bet` was wired in here first and then removed:
+    # its key is (player, market, "over", threshold), so two legs sharing a
+    # canonical key MUST be the same player, which the guard above has
+    # already refused. The block could not fire on any input, and a guard
+    # whose removal changes nothing reads as coverage (lesson 64). B50's
+    # concern — a rung and a main line being the same wager — is real and
+    # is covered by that guard, since both legs name one man.
+    #
+    # What the name guard CAN miss is the same player under names that
+    # normalise differently: "Cam Ward" and "Cameron Ward" are one man and
+    # two keys. The ids catch that when both legs carry one.
+    ids: dict[str, BoostLeg] = {}
+    for l in legs:
+        pid = getattr(l, "player_id", None)
+        if not pid:
+            continue
+        if pid in ids:
+            a = ids[pid]
+            raise ValueError(
+                f"{a.player!r} and {l.player!r} carry the SAME player_id "
+                f"({pid}) and both appear in this slip — {a.side} {a.line} "
+                f"and {l.side} {l.line}. Two legs on one man are not "
+                f"independent, and opposite sides at different lines may "
+                f"not be possible together at all. The names normalise "
+                f"differently, so only the id caught this.")
+        ids[pid] = l
 
     if meta:
         for l in legs:
