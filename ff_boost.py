@@ -2124,9 +2124,154 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
 # Reporting
 # ---------------------------------------------------------------------------
 
-def report(cands, boost_label: str = "") -> str:
+# B57. Below this spread in the ranking quantity, an ordering of candidates
+# is not an ordering. Measured on the real MNF board (event 53177, 120
+# priceable 3-leg combinations): P(cash) spanned **2.21 points** with sd
+# 0.47, five of ten de-vigged fairs sat within 0.5pp of exactly 0.5000, and
+# independent odds clustered +543..+611. Every main line on a board sits near
+# -112, so three near-coin-flips multiply to the same place whichever three
+# they are.
+#
+# 1 point of P(cash) is the gate because it is already generous: at a ~12.5%
+# joint, a 1-point spread is 8% of the quantity, and the differences B57 saw
+# were ~1.5 points with half of them resting on fairs pinned at exactly
+# 0.5000 by the book's half-yard grid (B54).
+#
+# This is NOT fixed by ranking on something else. Aggregate model edge spans
+# 41x more, and that spread is the model's own level error: per-leg
+# `model_p - fair_prob` measured sd 0.1258 against B128's model level error
+# of sd 0.115, a ratio of 1.09. Ranking on it would sort candidates by how
+# wrong the model is about each player. CI width is worse — it barely varies
+# (1.21x) and correlates NEGATIVELY with the model's error (-0.51, n=11), so
+# ranking by confidence picks the legs the model is most wrong about. Sample
+# verdict did not vary at all: every leg on the board read ADEQUATE.
+#
+# So the report says the ordering is not meaningful rather than inventing a
+# signal to replace it. An UNPRICED shortlist is a set to go and get quotes
+# for; `ev_pct` against real SGP quotes is a different number and is allowed
+# to rank.
+# How many candidates count as "the ones being considered". The full range
+# is the wrong window: a board can span 2.21 points across 120 combinations
+# while its top two differ by 0.30, and nobody bets candidate 120.
+RANK_MEANINGFUL_TOP_N = 10
+
+# How many times the propagated uncertainty an ADJACENT gap must clear before
+# one candidate can be said to beat the next. A ranked list asserts exactly
+# that, pair by pair, so the adjacent gap is the quantity — not the
+# head-to-tail spread, which a long tail inflates while the head stays flat.
+#
+# 1.0 is deliberately the loosest defensible bar: it asks only that the gap
+# exceed the noise, not that it clear it with margin.
+RANK_MEANINGFUL_RATIO = 1.0
+
+# Per-leg uncertainty in a de-vigged fair, used when the board cannot supply
+# one. Measured as the cross-book disagreement between two independently
+# de-vigged ladders, 106 shared rungs: median 0.76%, and the same figure
+# appears as ~0.8pp in the ladder work. Only a fallback — `fair_uncertainty`
+# measures it off the board in hand whenever two books quote the same leg.
+FAIR_UNCERTAINTY_FALLBACK = 0.008
+
+
+def fair_uncertainty(legs, quotes=None) -> tuple[float, str]:
+    """How far a de-vigged fair can be wrong, measured off the board.
+
+    When `quotes` carries two books on the same player and line, their
+    de-vigged fairs disagree by a measurable amount and the median of those
+    disagreements IS the uncertainty. With nothing to measure it falls back
+    to a figure from the ladder work and says so, because a fallback dressed
+    as a measurement is the failure this project keeps filing.
+    """
+    if not quotes:
+        return FAIR_UNCERTAINTY_FALLBACK, "no quotes supplied, using the measured fallback"
+    from ff_props import devig as _dv, norm_player as _np
+    by_leg: dict[tuple, list[float]] = {}
+    for q in quotes:
+        o, u = q.get("over"), q.get("under")
+        if o is None or u is None or q.get("line") is None:
+            continue
+        key = (_np(str(q.get("player") or "")), q.get("market"),
+               float(q["line"]))
+        by_leg.setdefault(key, []).append(_dv(float(o), float(u), "auto")[0])
+    spreads = [max(v) - min(v) for v in by_leg.values() if len(v) > 1]
+    if len(spreads) < 4:
+        return FAIR_UNCERTAINTY_FALLBACK, (
+            f"only {len(spreads)} leg(s) quoted by two books, too few to "
+            f"measure — using the measured fallback")
+    spreads.sort()
+    med = spreads[len(spreads) // 2] if len(spreads) % 2 else (
+        spreads[len(spreads) // 2 - 1] + spreads[len(spreads) // 2]) / 2
+    return med, (f"measured from {len(spreads)} legs quoted by two books")
+
+
+def rank_is_meaningful(cands, quotes=None) -> tuple[bool, str]:
+    """Whether an ordering of these candidates asserts anything.
+
+    Returns (meaningful, why). Judged on the candidates IN HAND rather than
+    asserted: a board whose legs genuinely differ produces a real spread and
+    gets ranked normally.
+    """
+    cands = list(cands)
+    if len(cands) < 2:
+        return True, "fewer than two candidates — nothing to order"
+    priced = [c for c in cands if c.priced]
+    if priced and len(priced) == len(cands):
+        return True, ("priced against real SGP quotes, which differ between "
+                      "candidates by more than the product of the legs does")
+    # Judged on the TOP candidates, not the full range. The full range
+    # passes on a board whose ordering is nonetheless noise: the real MNF
+    # board spans 2.21 points across 120 candidates and its top two differ
+    # by 0.30. B57's own words were "the ordering of candidates 1 through 40
+    # was close to noise" — a wide tail does not make the head separable,
+    # and nobody bets candidate 120.
+    top = sorted([c for c in cands if c.p_cash is not None],
+                 key=lambda c: c.key)[:RANK_MEANINGFUL_TOP_N]
+    ps = [c.p_cash for c in top]
+    if len(ps) < 2:
+        return True, "fewer than two priceable candidates"
+
+    # The ADJACENT gap, because that is what a ranked list claims. The
+    # head-to-tail spread passes on a board whose head is flat: the real MNF
+    # board spans 2.21 points over 120 candidates, 1.45 over its top ten, and
+    # its median adjacent gap is 0.358.
+    gaps = sorted(abs(a - b) for a, b in zip(ps, ps[1:]))
+    gap = (gaps[len(gaps) // 2] if len(gaps) % 2
+           else (gaps[len(gaps) // 2 - 1] + gaps[len(gaps) // 2]) / 2)
+
+    # Propagate each leg's fair uncertainty through the product. A product of
+    # k legs carries the relative error of each, added in quadrature.
+    u, uwhy = fair_uncertainty(top, quotes)
+    k = max(len(c.legs) for c in top)
+    base = sum(ps) / len(ps)
+    noise = base * (u / 0.5) * (k ** 0.5)
+    ratio = gap / noise if noise > 0 else float("inf")
+    if ratio >= RANK_MEANINGFUL_RATIO:
+        return True, (f"the median adjacent gap over the top {len(ps)} is "
+                      f"{gap * 100:.3f} points against {noise * 100:.3f} of "
+                      f"propagated noise ({ratio:.2f}x) — {uwhy}")
+    flat = sum(1 for c in top for l in c.legs
+               if abs(l.fair_prob - 0.5) < 0.005)
+    tot = sum(len(c.legs) for c in top)
+    return False, (
+        f"the median adjacent gap over the top {len(ps)} of {len(cands)} is "
+        f"{gap * 100:.3f} points, against {noise * 100:.3f} points of noise "
+        f"propagated from the legs' own fair uncertainty ({ratio:.2f}x, "
+        f"needs {RANK_MEANINGFUL_RATIO:.1f}x) — {uwhy}"
+        + (f". {flat} of {tot} of their legs have a fair within 0.5pp of "
+           f"exactly 0.5000" if flat else "")
+        + ". Candidate 1 does not beat candidate 2. Get real SGP quotes and "
+          "rank on those.")
+
+
+def report(cands, boost_label: str = "", quotes=None) -> str:
     """Human-readable, and deliberately loud about what it does not know."""
     out = []
+    _ok, _why = rank_is_meaningful(cands, quotes)
+    if not _ok:
+        out.append("!! THE ORDER BELOW IS NOT A RANKING")
+        out.append(f"   {_why}")
+        out.append("   Treat these as a SET. Nothing here says candidate 1 "
+                   "beats candidate 2.")
+        out.append("")
     for i, c in enumerate(cands, 1):
         out.append(f"--- candidate {i}: {c.structure.kind}  "
                    f"[{c.verdict}] {boost_label}".rstrip())

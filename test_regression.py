@@ -7221,5 +7221,169 @@ chk("the unpriceable QB is named, not dropped from the board",
     "QB1" in _db71 and "CANNOT BE PRICED" in _db71)
 
 
+# ---------------------------------------------------------------------------
+section("72. a shortlist says when its own order is not a ranking (B57)")
+# B57: the +600 ceiling fixed the zero-candidate failure and the band then
+# filtered nothing — 616 of 616 BetMGM combinations inside it, ranking left
+# to P(cash) differences of ~1.5 points, half of them resting on fairs of
+# exactly 0.5000. "The ordering of candidates 1 through 40 was close to
+# noise."
+#
+# Measured on the real MNF board: 120 of 120 priceable, independent odds
+# +543..+611, head-to-tail 2.21 points, top ten 1.45, and the median ADJACENT
+# gap 0.358 against 0.366 points of propagated noise — 0.98x. Adjacent
+# candidates are indistinguishable, which is what a ranked list denies.
+#
+# Neither replacement works. Aggregate model edge spans 41x more and that
+# spread IS the model's level error (per-leg sd 0.1258 against B128's 0.115,
+# ratio 1.09). CI width barely varies (1.21x) and correlates NEGATIVELY with
+# the model's error (-0.51), so ranking by confidence picks the legs it is
+# most wrong about. Sample verdict did not vary at all.
+_E72 = "E72"
+
+
+def _l72(name, fair, odds=-110, line=50.5, team="AAA", pos="WR"):
+    return ff_boost.BoostLeg(
+        event_id=_E72, book="dk", market="player_reception_yds", player=name,
+        side="OVER", odds=odds, fair_prob=fair, fair_source="pinnacle",
+        devig_method="shin", line=line, player_id=name.lower(),
+        verdict="CLEAR", verdict_side="OVER", team=team, pos=pos)
+
+
+# A flat board: every fair within a whisker of 0.5000, which is what the
+# half-yard grid produces (B54).
+_flat = [ff_boost.make_candidate(
+    [_l72(f"F{i}a", 0.5000), _l72(f"F{i}b", 0.5000 + i * 0.0002),
+     _l72(f"F{i}c", 0.5000)], boost_pct=0.5) for i in range(10)]
+_flat = [c for c in _flat if c.structure.priceable and c.p_cash]
+_ok_flat, _why_flat = ff_boost.rank_is_meaningful(_flat)
+chk("a flat board's ordering is refused as a ranking",
+    not _ok_flat, _why_flat[:110])
+chk("and the refusal reports the adjacent gap against the noise",
+    "median adjacent gap" in _why_flat and "propagated" in _why_flat,
+    _why_flat[:90])
+chk("it names how many legs sit at exactly 0.5000",
+    "within 0.5pp of exactly 0.5000" in _why_flat)
+chk("and says plainly that candidate 1 does not beat candidate 2",
+    "does not beat candidate 2" in _why_flat)
+
+# A board whose legs genuinely differ must still rank.
+_wide = [ff_boost.make_candidate(
+    [_l72(f"W{i}a", 0.40 + i * 0.03), _l72(f"W{i}b", 0.55),
+     _l72(f"W{i}c", 0.50)], boost_pct=0.5) for i in range(10)]
+_wide = [c for c in _wide if c.structure.priceable and c.p_cash]
+_ok_wide, _why_wide = ff_boost.rank_is_meaningful(_wide)
+chk("a board with real differences IS ranked",
+    _ok_wide, _why_wide[:110])
+chk("so the gate is not simply always-off",
+    _ok_wide != _ok_flat)
+
+# The gate is on the ADJACENT gap, not the head-to-tail spread — a long tail
+# inflates the spread while the head stays flat, which is exactly the real
+# board (2.21 points overall, 1.45 across the top ten, 0.358 adjacent).
+_tail = _flat + [ff_boost.make_candidate(
+    [_l72("Ta", 0.20), _l72("Tb", 0.20), _l72("Tc", 0.20)], boost_pct=0.5)]
+_tail = [c for c in _tail if c.structure.priceable and c.p_cash]
+chk("a wide tail does not make a flat head rankable",
+    not ff_boost.rank_is_meaningful(_tail)[0],
+    ff_boost.rank_is_meaningful(_tail)[1][:100])
+
+# Priced candidates rank normally: a real SGP quote differs between
+# candidates by far more than the product of the legs does.
+_priced = [ff_boost.price_candidate(c, book_odds=500 + 20 * i)
+           for i, c in enumerate(_flat)]
+chk("priced candidates are allowed to rank",
+    ff_boost.rank_is_meaningful(_priced)[0],
+    ff_boost.rank_is_meaningful(_priced)[1][:90])
+chk("one candidate is trivially ordered",
+    ff_boost.rank_is_meaningful(_flat[:1])[0])
+
+# --- a board right AT the boundary, which is what pins the arithmetic ----
+# The flat and wide fixtures above are far from the gate, so they survive any
+# change to how the noise is propagated. This one sits at ~0.78x: it fails
+# the gate, and it flips to passing the moment the leg count stops entering
+# the propagation (dropping the sqrt(3) shrinks the noise and lifts the ratio
+# to ~1.35). Reverts to the propagation passed every other check here.
+_edge72 = [ff_boost.make_candidate(
+    [_l72(f"E{i}a", 0.50 + i * 0.012), _l72(f"E{i}b", 0.50),
+     _l72(f"E{i}c", 0.50)], boost_pct=0.5) for i in range(10)]
+_edge72 = [c for c in _edge72 if c.structure.priceable and c.p_cash]
+_ok_edge, _why_edge = ff_boost.rank_is_meaningful(_edge72)
+chk("a board just under the gate is refused",
+    not _ok_edge, _why_edge[:100])
+chk("and its ratio really is near the gate, not miles from it",
+    0.6 < float(_why_edge.split("(")[-1].split("x")[0]) < 1.0,
+    _why_edge.split("(")[-1][:24])
+
+# --- the window is the TOP candidates, not all of them --------------------
+# A long tail inflates a head-to-tail spread while the head stays flat. The
+# real board: 2.21 points overall, 1.45 across the top ten, 0.358 adjacent.
+# A single far-separated LEADER is the case that discriminates, because it
+# sits inside the top-N window and blows up a head-to-tail measure while
+# leaving every adjacent gap below it untouched.
+_lead72 = [ff_boost.make_candidate(
+    [_l72("La", 0.80), _l72("Lb", 0.80), _l72("Lc", 0.80)],
+    boost_pct=0.5)] + _flat
+_lead72 = [c for c in _lead72 if c.structure.priceable and c.p_cash]
+chk("one runaway leader does not make the flat field behind it rankable",
+    not ff_boost.rank_is_meaningful(_lead72)[0],
+    ff_boost.rank_is_meaningful(_lead72)[1][:100])
+chk("because the MEDIAN adjacent gap ignores a single outlier",
+    "median adjacent gap" in ff_boost.rank_is_meaningful(_lead72)[1])
+# ...and widening the window past the top N must not change the verdict on a
+# field that is flat throughout.
+chk("adding more flat candidates does not change the answer",
+    ff_boost.rank_is_meaningful(_flat)[0]
+    == ff_boost.rank_is_meaningful(_flat + _flat)[0] is False)
+# The case that actually pins the window: a flat HEAD with a widely-spaced
+# tail BELOW it. Windowed to the top ten the head is all that is seen and the
+# order is refused; looking at all 25, the median adjacent gap is dominated
+# by the spread-out tail nobody would bet and the order passes. A runaway
+# leader does not discriminate here because the median ignores one outlier.
+_tailspread = _flat + [ff_boost.make_candidate(
+    [_l72(f"S{i}a", 0.44 - i * 0.02), _l72(f"S{i}b", 0.44 - i * 0.02),
+     _l72(f"S{i}c", 0.44 - i * 0.02)], boost_pct=0.5) for i in range(15)]
+_tailspread = [c for c in _tailspread
+               if c.structure.priceable and c.p_cash]
+chk("a flat head with a spread-out tail below it is still refused",
+    not ff_boost.rank_is_meaningful(_tailspread)[0],
+    ff_boost.rank_is_meaningful(_tailspread)[1][:110])
+chk("and the window really is the top ten, not all of them",
+    f"top 10 of {len(_tailspread)}"
+    in ff_boost.rank_is_meaningful(_tailspread)[1],
+    ff_boost.rank_is_meaningful(_tailspread)[1][:80])
+
+# --- the uncertainty is MEASURED off the board where it can be ------------
+_q72 = []
+for i, (ln, a, b) in enumerate([(50.5, -110, -110), (60.5, -105, -115),
+                                (40.5, -120, 100), (70.5, -115, -105),
+                                (30.5, -110, -110)]):
+    _q72.append({"book": "pinnacle", "player": f"P{i}", "player_id": f"p{i}",
+                 "market": "player_reception_yds", "line": ln, "over": a,
+                 "under": b, "line_type": "main"})
+    _q72.append({"book": "draftkings", "player": f"P{i}", "player_id": f"p{i}",
+                 "market": "player_reception_yds", "line": ln, "over": a - 6,
+                 "under": b + 4, "line_type": "main"})
+_u, _uwhy = ff_boost.fair_uncertainty(_flat, _q72)
+chk("fair uncertainty is measured when two books quote the same legs",
+    "measured from 5 legs" in _uwhy, _uwhy)
+chk("and the measured figure is a real disagreement, not zero",
+    _u > 0, f"{_u:.5f}")
+_uf, _ufwhy = ff_boost.fair_uncertainty(_flat, None)
+chk("with nothing to measure it falls back and SAYS it fell back",
+    _uf == ff_boost.FAIR_UNCERTAINTY_FALLBACK
+    and "fallback" in _ufwhy, _ufwhy)
+chk("too few two-book legs also falls back, with the count",
+    "too few to measure" in ff_boost.fair_uncertainty(_flat, _q72[:4])[1],
+    ff_boost.fair_uncertainty(_flat, _q72[:4])[1])
+# The report carries the warning.
+chk("report() leads with the warning when the order is not a ranking",
+    ff_boost.report(_flat).startswith("!! THE ORDER BELOW IS NOT A RANKING"),
+    ff_boost.report(_flat).splitlines()[0])
+chk("and omits it when the order is real",
+    not ff_boost.report(_wide).startswith("!!"),
+    ff_boost.report(_wide).splitlines()[0][:70])
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

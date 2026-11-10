@@ -1050,3 +1050,15 @@ reality.
     the known error of the thing producing it.** A quantity that varies a lot
     is evidence of variance, not of information, and the two are
     indistinguishable from the spread alone.
+
+99. **When a threshold needs tuning to give the right answer, it is the
+    wrong quantity.** B57's ranking gate went through three fixed
+    thresholds. One point of P(cash) passed the real board at 2.21; narrowing
+    the window to the top ten still passed at 1.45; and the next move was
+    obviously to lower the number until the board failed, which would have
+    encoded one afternoon's data as a constant. The quantity was wrong, not
+    the number. A ranked list asserts that candidate 1 beats candidate 2, so
+    the measurement is the ADJACENT gap, and the comparison is to the noise
+    propagated from the legs' own uncertainty — a RATIO, which came out at
+    0.98x with nothing to tune. If a gate only works at a value you picked
+    by looking at the answer, find the quantity that makes the gate a ratio.
