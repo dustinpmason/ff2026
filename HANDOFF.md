@@ -952,3 +952,15 @@ reality.
     dominated by a quantity nobody can sign — but the reason matters, because
     one version closes the question and the other says what would settle it:
     outcomes, logged and graded. Say which one you have.
+
+90. **Measure the blast radius before asking for a sign-off.** E3 was filed
+    expecting the rebuilt market table to be a live behaviour change needing
+    Dustin's approval, because `_pair_r` feeds `classify()`. Measured, it is
+    not: a correlated pair makes a slip UNPRICEABLE whatever `r` is, so the
+    same QB-stack slip classifies identically under both tables with
+    identical odds. The value reaches the reported `r` and `factor_note` and
+    stops there. The sign-off is still worth asking for, but for a much
+    smaller thing than the entry predicted — and the difference between "this
+    changes what you bet" and "this changes a line of a report" is exactly
+    what a person needs to answer. Run the before/after before writing the
+    question.

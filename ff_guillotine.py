@@ -149,8 +149,30 @@ STALE_VARIANCE_INFLATION = 1.35
 # pair added to one table and not the other — is pinned by a suite check on
 # the KEY SETS, which is the part that must stay in step; the values are
 # E3's business and are expected to differ once it lands.
-SAME_TEAM_CORR = {("QB", "WR"): 0.31, ("QB", "TE"): 0.27, ("QB", "RB"): -0.10}
-OPPOSING_CORR = {("RB", "RB"): -0.14}
+# E3, 2026-11-10. These are no longer literals and are no longer a duplicate
+# of `ff_boost`'s. They come from `ff_correlation.RECORDED_FANTASY`, which is
+# the FANTASY-POINTS table — the quantity this module actually correlates —
+# measured on one documented filter with a pair count and an interval per
+# entry. `ff_boost` keeps its own MARKET table, which is a different
+# quantity, and the two are now allowed to differ because they always should
+# have.
+#
+# The import is safe in this direction: the cycle the old comment warned
+# about was ff_guillotine <- ff_props <- ff_boost, and `ff_correlation`
+# imports neither at module level.
+#
+# ("QB","RB") is the entry that changed sign: -0.10 (market: passing yards
+# against rushing yards, where the negative is game script) becomes +0.057
+# (fantasy points, where touchdowns are upside both players share). Measured
+# effect of the whole swap on a real 10-team board at 200,000 sims:
+# **best P(elim) 4.5515% -> 4.6140%, +0.0625pp, same recommended lineup** —
+# which matches what B68 measured independently and is why this side moves
+# without sign-off.
+from ff_correlation import RECORDED_FANTASY as _RF
+
+SAME_TEAM_CORR = {k: v[0] for k, v in _RF.items()
+                  if k in (("QB", "WR"), ("QB", "TE"), ("QB", "RB"))}
+OPPOSING_CORR = {("RB", "RB"): _RF[("RB", "RB")][0]}
 
 
 def team_byes(weekly: pd.DataFrame,

@@ -11,6 +11,7 @@ import atexit, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 import ff_boost
+import ff_correlation
 import ff_tokens
 from ff_boost import (BoostLeg, classify, independent_odds, make_candidate,
                       enumerate_candidates, price_candidate, FLOOR, CEILING)
@@ -3775,11 +3776,41 @@ section("40. the duplicate correlation table cannot diverge unnoticed (B68)")
 # TWO CHECKS ARE SUPPOSED TO FAIL. Replace them then with a check that each
 # table matches its own documented filter — do not simply delete them.
 # ---------------------------------------------------------------------------
-chk("the two SAME_TEAM_CORR copies are still identical",
-    ff_guillotine.SAME_TEAM_CORR == ff_boost.SAME_TEAM_CORR,
-    f"guillotine {ff_guillotine.SAME_TEAM_CORR} vs boost {ff_boost.SAME_TEAM_CORR}")
-chk("the two OPPOSING_CORR copies are still identical",
-    ff_guillotine.OPPOSING_CORR == ff_boost.OPPOSING_CORR,
+# E3, 2026-11-10. These two used to be asserted IDENTICAL, and that was the
+# right assertion while they were a duplicated literal: it made a one-sided
+# edit fail loudly, which is how B67 came to be fixed in one file only.
+# They are now two different quantities from one documented filter, so the
+# assertion inverts — and what replaces it is stronger, because it pins each
+# copy to its SOURCE rather than to the other copy.
+chk("the guillotine's table is the FANTASY one, not boost's market one",
+    ff_guillotine.SAME_TEAM_CORR != ff_boost.SAME_TEAM_CORR,
+    f"guillotine {ff_guillotine.SAME_TEAM_CORR} vs boost "
+    f"{ff_boost.SAME_TEAM_CORR}")
+chk("and it comes from ff_correlation's recorded fantasy table",
+    all(abs(ff_guillotine.SAME_TEAM_CORR[k]
+            - ff_correlation.RECORDED_FANTASY[k][0]) < 1e-12
+        for k in ff_guillotine.SAME_TEAM_CORR),
+    str(ff_guillotine.SAME_TEAM_CORR))
+# The sign flip B68 predicted and E3 measured. QB passing yards against RB
+# rushing yards is negative (game script); QB points against RB points is
+# positive, because touchdowns are upside both share.
+chk("QB x RB is NEGATIVE on markets and POSITIVE on fantasy points",
+    ff_boost.SAME_TEAM_CORR[("QB", "RB")] < 0
+    < ff_guillotine.SAME_TEAM_CORR[("QB", "RB")],
+    f"market {ff_boost.SAME_TEAM_CORR[('QB','RB')]:+.3f} vs fantasy "
+    f"{ff_guillotine.SAME_TEAM_CORR[('QB','RB')]:+.4f}")
+chk("every recorded entry carries a pair count and an interval, not a bare r",
+    all(len(v) == 3 and isinstance(v[1], int) and len(v[2]) == 2
+        for v in ff_correlation.RECORDED_FANTASY.values())
+    and all(len(v) == 3 and isinstance(v[1], int) and len(v[2]) == 2
+            for v in ff_correlation.RECORDED_MARKET.values()),
+    "E3 was filed because four bare numbers had no n and no interval")
+chk("and the recorded r sits inside its own interval",
+    all(v[2][0] <= v[0] <= v[2][1]
+        for v in list(ff_correlation.RECORDED_MARKET.values())
+        + list(ff_correlation.RECORDED_FANTASY.values())))
+chk("the two OPPOSING_CORR copies now DIFFER, for the same reason",
+    ff_guillotine.OPPOSING_CORR != ff_boost.OPPOSING_CORR,
     f"guillotine {ff_guillotine.OPPOSING_CORR} vs boost {ff_boost.OPPOSING_CORR}")
 # B67's fix went into ff_boost only. If the guillotine ever grows a
 # receiving-RB branch of its own it needs the same provisional marker, so
@@ -5141,14 +5172,20 @@ _gm = {"Brian Thomas Jr.": ("JAX", "WR"),
        "Nan Team": (float("nan"), "WR"),
        "Other QB": ("KC", "QB")}
 # The join must behave like every other join in the module.
+# Read from the table, not a literal. These asserted == 0.31 and so failed
+# the moment the table moved — a check on the JOIN that was also silently a
+# check on the value, which is two jobs and one of them was not wanted.
+_qbwr = ff_guillotine.SAME_TEAM_CORR[("QB", "WR")]
 chk("a suffix spelling difference resolves instead of dropping the pair",
     ff_guillotine.correlation_matrix(
-        ["Trevor Lawrence", "Brian Thomas"], _gm)[0, 1] == 0.31,
+        ["Trevor Lawrence", "Brian Thomas"], _gm)[0, 1] == _qbwr,
     str(ff_guillotine.correlation_matrix(
         ["Trevor Lawrence", "Brian Thomas"], _gm)[0, 1]))
 chk("an exact name still resolves",
     ff_guillotine.correlation_matrix(
-        ["Trevor Lawrence", "Brian Thomas Jr."], _gm)[0, 1] == 0.31)
+        ["Trevor Lawrence", "Brian Thomas Jr."], _gm)[0, 1] == _qbwr)
+chk("and the pair really is correlated, so the check above can fail",
+    _qbwr > 0.05, f"{_qbwr:+.4f}")
 # NaN is not None and is not falsy in the way an `is None` guard expects —
 # B73 in ff_boost, same shape, module next door.
 for _who in ("Nan Pos", "Blank Pos", "Nan Team"):
@@ -6441,6 +6478,143 @@ chk("and it stays quiet when every verdict has a model_p",
     "carry NO model_p" not in _out(ff_betlog.rec_summary))
 _sh66.rmtree(_tmp66b, ignore_errors=True)
 ff_betlog.LOG_DIR, ff_betlog.SESSION, ff_betlog.PULL_MARKER = _old66
+
+
+# ---------------------------------------------------------------------------
+section("67. the correlation tables are recomputed, not remembered (E3)")
+# E3: the 43,228-pair map lived only as four constants, duplicated as four
+# more next door, and the script that made them was gone — so it could not be
+# refreshed, extended or checked. A 2026-11-05 sweep then found the values
+# UNREPRODUCIBLE: each sits inside the range a filter sweep gives, but no
+# filter lands on them. The real finding was the sensitivity — QB x TE runs
+# +0.21 to +0.50 across reasonable choices, a 2.4x swing on an undocumented
+# decision, and the instructions tell a session to compare a book's factor
+# against this table.
+_C = ff_correlation
+
+chk("the filter is an object that gets printed, not a buried choice",
+    "min 6 games" in _C.DEFAULT_FILTER.describe()
+    and "2023-2026" in _C.DEFAULT_FILTER.describe(),
+    _C.DEFAULT_FILTER.describe()[:90])
+# The choice that moves the numbers most, and why it is None.
+chk("the default has NO volume gate, and says what that means",
+    _C.DEFAULT_FILTER.min_volume is None
+    and "conditions on ACTIVITY" in _C.DEFAULT_FILTER.describe())
+chk("and a volume gate is labelled as conditioning on the outcome",
+    "conditions on the outcome"
+    in _C.CorrFilter(min_volume=5.0).describe(),
+    _C.CorrFilter(min_volume=5.0).describe()[-70:])
+
+# --- the interval, which four bare numbers did not have -------------------
+_lo, _hi = _C.fisher_ci(0.26, 7891)
+chk("a correlation comes back with an interval around it",
+    _lo < 0.26 < _hi and _hi - _lo < 0.1, f"[{_lo:.4f}, {_hi:.4f}]")
+chk("and a thin sample gets a WIDER one",
+    (_C.fisher_ci(0.26, 200)[1] - _C.fisher_ci(0.26, 200)[0])
+    > (_hi - _lo) * 3,
+    f"n=200 width {_C.fisher_ci(0.26,200)[1]-_C.fisher_ci(0.26,200)[0]:.4f} "
+    f"vs n=7891 width {_hi-_lo:.4f}")
+def _ci_nan(r, n):
+    """True when fisher_ci refuses with NaNs. False if it raises.
+
+    Removing the n<4 guard makes `sqrt(n-3)` a ZeroDivisionError, so calling
+    it bare turned this check into a crash instead of a failure — lesson 14,
+    in a check written to prove a guard exists.
+    """
+    try:
+        return all(_m != _m for _m in _C.fisher_ci(r, n))
+    except BaseException:                                    # noqa: BLE001
+        return False
+
+
+chk("an interval is refused rather than invented below n=4",
+    _ci_nan(0.26, 3))
+chk("and refused for an impossible correlation too",
+    _ci_nan(1.5, 500) and _ci_nan(-1.0, 500))
+
+# --- the control gate: a table that cannot recover a known pair is void ---
+_good = _C.CorrTable("market", _C.DEFAULT_FILTER,
+                     entries={("QB", "WR"): _C.CorrEntry(("QB", "WR"), 0.26,
+                                                         7891, 0.24, 0.28)},
+                     control_ok=True)
+chk("a table with a passing control is usable", _good.usable)
+_bad = _C.CorrTable("market", _C.DEFAULT_FILTER,
+                    entries={("QB", "WR"): _C.CorrEntry(("QB", "WR"), 0.02,
+                                                        7891, 0.0, 0.04)},
+                    control_ok=False,
+                    control_why="control came out +0.02, outside the band")
+chk("a table whose control FAILED is not usable", not _bad.usable)
+chk("and its report says so loudly rather than printing numbers quietly",
+    "NOT usable" in _bad.report(), _line(_bad.report(), "!!"))
+chk("an empty table is not usable either",
+    not _C.CorrTable("market", _C.DEFAULT_FILTER, control_ok=True).usable)
+
+# --- the recorded tables ---------------------------------------------------
+chk("the market and fantasy tables are DIFFERENT quantities",
+    _C.recorded(_C.RECORDED_MARKET) != _C.recorded(_C.RECORDED_FANTASY))
+chk("QB x RB flips sign between them — B68's prediction, measured",
+    _C.RECORDED_MARKET[("QB", "RB")][0] < 0
+    < _C.RECORDED_FANTASY[("QB", "RB")][0],
+    f"market {_C.RECORDED_MARKET[('QB','RB')][0]:+.4f} vs fantasy "
+    f"{_C.RECORDED_FANTASY[('QB','RB')][0]:+.4f}")
+chk("`recorded()` drops n and the interval, and is an explicit step",
+    set(_C.recorded(_C.RECORDED_MARKET)) == set(_C.RECORDED_MARKET)
+    and all(isinstance(v, float)
+            for v in _C.recorded(_C.RECORDED_MARKET).values()))
+
+# --- what would change, reported rather than applied ----------------------
+_cmp = _C.compare_to_shipped(
+    _C.CorrTable("market", _C.DEFAULT_FILTER, entries={
+        k: _C.CorrEntry(k, v[0], v[1], v[2][0], v[2][1])
+        for k, v in _C.RECORDED_MARKET.items()}, control_ok=True),
+    _C.SHIPPED_MARKET)
+chk("the comparison names every shipped pair",
+    all(str(k) in _cmp for k in _C.SHIPPED_MARKET))
+chk("it says whether the shipped value sits inside the measured interval",
+    "shipped in CI?" in _cmp and "NO" in _cmp, _cmp.splitlines()[1])
+chk("and it states that nothing has been applied",
+    "Nothing above has been applied" in _cmp)
+# Four of the five shipped values sit outside the measured interval, all
+# overstated. That is E3's finding and the reason the market side needs
+# sign-off rather than a quiet swap.
+_outside = sum(1 for k, v in _C.RECORDED_MARKET.items()
+               if not v[2][0] <= _C.SHIPPED_MARKET[k] <= v[2][1])
+chk("four of five shipped market values fall outside their interval",
+    _outside == 4, f"{_outside} of {len(_C.RECORDED_MARKET)}")
+chk("and every one of those overstates the correlation's magnitude",
+    all(abs(_C.SHIPPED_MARKET[k]) > abs(v[0])
+        for k, v in _C.RECORDED_MARKET.items()
+        if not v[2][0] <= _C.SHIPPED_MARKET[k] <= v[2][1]))
+
+# --- ff_boost is NOT changed from here -------------------------------------
+chk("ff_boost still ships its own market table, unswapped",
+    ff_boost.SAME_TEAM_CORR[("QB", "WR")] == 0.31,
+    "swapping it gates whether a slip gets an EV and needs sign-off")
+# ...and the reason that swap is low-risk: the VALUE does not reach the EV.
+# A correlated pair makes a slip unpriceable whatever r is.
+_e1 = ff_boost.BoostLeg(event_id="E1", book="dk", market="player_pass_yds",
+                        player="QB1", side="OVER", odds=-110, fair_prob=0.52,
+                        fair_source="pinnacle", devig_method="shin",
+                        line=250.5, player_id="q1", verdict="CLEAR",
+                        verdict_side="OVER", team="BUF", pos="QB")
+_e2 = ff_boost.BoostLeg(event_id="E1", book="dk",
+                        market="player_reception_yds", player="WR1",
+                        side="OVER", odds=-110, fair_prob=0.52,
+                        fair_source="pinnacle", devig_method="shin",
+                        line=70.5, player_id="w1", verdict="CLEAR",
+                        verdict_side="OVER", team="BUF", pos="WR")
+_before = ff_boost.classify([_e1, _e2])
+_old_stc = dict(ff_boost.SAME_TEAM_CORR)
+ff_boost.SAME_TEAM_CORR[("QB", "WR")] = _C.RECORDED_MARKET[("QB", "WR")][0]
+_after = ff_boost.classify([_e1, _e2])
+ff_boost.SAME_TEAM_CORR.clear()
+ff_boost.SAME_TEAM_CORR.update(_old_stc)
+chk("a correlated slip is unpriceable under BOTH tables",
+    _before.priceable is False and _after.priceable is False)
+chk("so the market swap changes the reported r and not the EV",
+    _before.pairs[0][2] != _after.pairs[0][2]
+    and _before.kind == _after.kind,
+    f"{_before.pairs[0][2]:+.4f} -> {_after.pairs[0][2]:+.4f}")
 
 
 _summary()

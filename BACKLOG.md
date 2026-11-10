@@ -1198,6 +1198,75 @@ placed.
 
 ## E3. The correlation table is not reproducible — AND IT IS FILTER-SENSITIVE
 
+**DONE 2026-11-10 for the fantasy side; the MARKET side is built and
+measured and WAITING ON SIGN-OFF.** `ff_correlation.py` is the single home:
+one documented `CorrFilter`, both tables, a pair count and a 95% Fisher
+interval per entry, a control gate that VOIDS a run that cannot recover a
+known pair, and `compare_to_shipped()` which reports what would change
+without applying it. Section 67, 8 reverts all caught. Re-derive with
+`python3 ff_correlation.py`.
+
+**The filter, stated.** nflverse 2023-2026 REG, z-scored per player-season,
+min 6 games, **no volume gate**, min 200 pairs. The volume gate is the choice
+that moved QB x TE from +0.26 to +0.50 in the sweep, and it is omitted
+because it conditions on the OUTCOME: a receiver who was active and saw one
+target is a real observation, and for an Over bet a real losing one. Dropping
+those games keeps the outcomes where both produced and discards the ones
+where they did not. `min_games` is a baseline gate on the PLAYER, not the
+game, so it does not have that problem. Control: same-team QB x WR must land
+in +0.18..+0.40, and it recovered **+0.2614**.
+
+**MARKET table (ff_boost's quantity) — four of five shipped values sit
+OUTSIDE the measured interval, every one overstating the magnitude:**
+
+| pair | shipped | measured | 95% CI | n | shipped in CI? |
+|---|---|---|---|---|---|
+| QB x WR | +0.31 | **+0.2614** | +0.241..+0.282 | 7,891 | NO |
+| QB x TE | +0.27 | **+0.2149** | +0.185..+0.245 | 3,935 | NO |
+| QB x RB | -0.10 | **-0.0755** | -0.104..-0.047 | 4,737 | yes |
+| QB x RB_RECV | +0.20 | **+0.1705** | +0.142..+0.198 | 4,649 | NO |
+| RB x RB opp | -0.14 | **-0.0793** | -0.105..-0.054 | 5,795 | NO |
+
+**The sign-off is smaller than this entry anticipated, and that was measured
+rather than assumed.** A correlated pair makes a slip UNPRICEABLE whatever
+`r` is, so the value never reaches an EV: classifying the same QB-stack slip
+under both tables gives `priceable=False` and identical `independent_odds`
+both ways. What the value does reach is the reported `r` and `factor_note`,
+which is the comparison this entry worried about — "a factor that looks fair
+against +0.27 looks like a steal against +0.50". `factor_note` reads the
+table correctly (checked: a first test suggested it hardcoded +0.31 and that
+test was wrong — the constants had been restored before the comparison ran).
+
+**FANTASY table (ff_guillotine's quantity) — SWAPPED, no sign-off needed per
+B68:**
+
+| pair | was (market) | now (fantasy) | 95% CI | n |
+|---|---|---|---|---|
+| QB x WR | +0.31 | **+0.2167** | +0.196..+0.238 | 7,971 |
+| QB x TE | +0.27 | **+0.1895** | +0.159..+0.219 | 3,955 |
+| QB x RB | -0.10 | **+0.0565** | +0.028..+0.085 | 4,793 |
+| RB x RB opp | -0.14 | **-0.0316** | -0.057..-0.006 | 5,888 |
+| WR x WR same | — | **+0.0187** | +0.002..+0.036 | 13,065 |
+| QB x QB opp | — | **+0.1350** | +0.073..+0.196 | 980 |
+
+QB x RB is B68's predicted sign flip, confirmed on the documented filter.
+Measured effect of the whole swap on a real 10-team board at 200,000 sims:
+**best P(elim) 4.5515% -> 4.6140%, +0.0625pp, SAME recommended lineup** —
+matching what B68 measured independently.
+
+`ff_guillotine` now imports from `ff_correlation` rather than carrying
+literals. The old suite assertion that the two copies are IDENTICAL has been
+inverted: it now asserts they DIFFER and pins each to its source, which is
+the stronger check — the identical assertion existed to catch a one-sided
+edit of a duplicate, and there is no longer a duplicate.
+
+**What E3 does NOT unblock on its own:** F13 still needs MORE MARKETS in
+`MARKET_SIDE` (receptions, anytime TD, pass TDs), not just a reproducible
+table for the three it has. The machinery to measure them now exists, which
+is what E3 was blocking.
+
+
+
 **Value: HIGH, raised 2026-11-05. Effort: ~45 min. Blocks F13.** The
 43,228-pair correlation map lives only as constants in
 `ff_guillotine.SAME_TEAM_CORR` and in the instructions. The script that
