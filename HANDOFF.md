@@ -886,3 +886,33 @@ reality.
     genuinely ambiguous. A short-circuit on the stronger key silently
     answers a different question: "is there any row with this id", not "which
     rows are this player".
+
+84. **A predicate needs its false cases pinned as hard as its true ones.**
+    `same_bet` had four checks and all of them passed when the key
+    comparison was deleted entirely, because every pair they tested either
+    IS the same bet or conflicts on an id. Nothing asserted that two
+    different thresholds, two different players or two different markets
+    are NOT one bet. The same shape appeared twice more the same evening: a
+    `_raises(..., ValueError)` on a percentage `model_p` passed a revert
+    that removed the percentage branch, because the range check below it
+    raises too — so the check survived while the diagnosis it existed for
+    was lost. Assert on the message when the message is the point.
+
+85. **A check that reads a figure out of a sentence can read the wrong
+    clause.** `"$0.28" in flag` was meant to prove the thin-anchor warning
+    names the SHALLOW side. It passed a revert that swapped min for max,
+    because the swapped sentence still contains $0.28 — in the other clause,
+    describing the deep side. Asserting `startswith` on the exact prefix
+    caught it. B124 was the same lesson about a whole report; this is it
+    inside one line.
+
+86. **Reproduce a finding before filing it, including a correct-sounding
+    one.** A session reported `threshold_prob` as non-monotone and called it
+    a shape failure in the estimator. Its own three figures were strictly
+    decreasing: it had seen an uneven RATE of decline and misnamed it.
+    Measured directly, 0 of 88 adjacent pairs violate monotonicity across
+    eight players, and the reproduction matched the session's numbers to
+    three decimals — same data, different conclusion. Filing it unchecked
+    would have put a defect in the backlog that does not exist and sent the
+    next session hunting it. Filed as NOT A DEFECT rather than dropped, so
+    the next reader of that kink does not raise it again.

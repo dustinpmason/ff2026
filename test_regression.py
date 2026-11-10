@@ -6039,5 +6039,183 @@ chk("so a pin off extreme prices still returns a shift, not a refusal",
     is not None)
 
 
+# ---------------------------------------------------------------------------
+section("64. scoring a slip somebody else built (F15)")
+# Week 9. The engine's slip was Swift / Odunze / Tez Johnson. The slip placed
+# swapped Tez for Luther Burden on intuition; Tez went 76 against a 15.5 line
+# with the engine on the OVER, and the slip lost. Nothing could have said
+# anything: `enumerate_candidates` only ever sees legs it chose itself, so a
+# leg nobody proposed is invisible to it.
+
+_E64 = "87238"
+
+
+def _l64(player, side, line, odds, fair, *, verdict="CLEAR", model_p=None,
+         pid=None, reasons=(), event=None, team=None, pos=None):
+    return ff_boost.BoostLeg(
+        event_id=event or _E64, book="draftkings",
+        market="player_reception_yds", player=player, side=side, odds=odds,
+        fair_prob=fair, fair_source="pinnacle", devig_method="shin",
+        line=line, player_id=pid, verdict=verdict,
+        verdict_side=side if verdict != "UNSCREENED" else "",
+        verdict_reasons=reasons, model_p=model_p, team=team, pos=pos)
+
+
+_eng64 = [_l64("Tez Johnson", "OVER", 15.5, -120, 0.56, model_p=0.63,
+               pid="espn:3", event="87238", team="TB", pos="WR")]
+_slip64 = [_l64("Tez Johnson", "UNDER", 15.5, -110, 0.44, model_p=0.37,
+                pid="espn:3", event="87238", team="TB", pos="WR")]
+_s64 = ff_boost.score_slip(_slip64, boost_pct=0.0, book_odds=-110,
+                           recommended=_eng64)
+
+# --- the side conflict: the thing CLEAR cannot tell you --------------------
+chk("a leg the model wants the other side of is a STOP",
+    any(f.level == "STOP" and "prefers the OVER" in f.text
+        for f in _s64.findings),
+    "; ".join(f.describe() for f in _s64.stops)[:140] or "no STOP")
+chk("and the finding says plainly that a CLEAR verdict does not cover it",
+    any("nothing was found against this side" in f.text
+        for f in _s64.findings))
+chk("the slip verdict is DO NOT PLACE",
+    _s64.verdict == "DO NOT PLACE", _s64.verdict)
+# The gate exists so a fair line and a model estimate differing by a point
+# does not flag half a slip.
+_near = [_l64("P", "OVER", 50.5, -110, 0.50, model_p=0.49, pid="x")]
+chk("a gap inside the gate is NOT called a side conflict",
+    ff_boost.score_slip(_near, boost_pct=0.0).candidate is not None
+    and not any("prefers the" in f.text
+                for f in ff_boost.score_slip(_near, boost_pct=0.0).findings),
+    f"gap {_near[0].model_gap:+.3f} under {ff_boost.MODEL_SIDE_GATE}")
+chk("and the gate is the named constant",
+    ff_boost.MODEL_SIDE_GATE == 0.03)
+chk("model_against is None when no model_p was supplied, never False",
+    _l64("P", "OVER", 50.5, -110, 0.50).model_against is None)
+chk("an absent model_p is reported as a CHECK, not passed over",
+    any(f.level == "CHECK" and "no model_p supplied" in f.text
+        for f in ff_boost.score_slip(
+            [_l64("P", "OVER", 50.5, -110, 0.50)], boost_pct=0.0).findings))
+# A percentage here would make the model prefer every side of every leg.
+# Asserted on the MESSAGE, not just on the raise. Removing the percentage
+# branch still raises — the range check below it catches 72.0 too — so a
+# bare _raises() passed a revert that deleted the branch and left the reader
+# with "must be strictly between 0 and 1" for an input that is plainly a
+# percentage. The diagnosis is the point.
+chk("model_p as a percentage is refused, and named as a percentage",
+    "looks like a percentage" in _err(
+        lambda: _l64("P", "OVER", 50.5, -110, 0.50, model_p=72.0)),
+    _err(lambda: _l64("P", "OVER", 50.5, -110, 0.50, model_p=72.0))[:90])
+chk("and a certainty is refused too",
+    _raises(lambda: _l64("P", "OVER", 50.5, -110, 0.50, model_p=1.0),
+            ValueError))
+
+# --- the substitution: only detectable against a recommended set -----------
+chk("a player moved to the other side reads as the same man, different bet",
+    any("same man, different bet" in f.text for f in _s64.findings),
+    "; ".join(f.text for f in _s64.findings if "same man" in f.text)[:120])
+# ...and must NOT also be reported as dropped. He is on the slip.
+chk("a moved leg is not ALSO reported as missing from the slip",
+    "Tez Johnson" not in _s64.dropped, f"dropped={_s64.dropped}")
+# Two spellings of one man across the engine's set and the slip. The whole
+# project forbids joining on a raw name (B44/B101/B127) and this join is no
+# different: FanDuel's milestone board writes "Luther Burden III" where a
+# main line writes "Luther Burden", and a raw-name key would call the same
+# leg a substitution.
+_sp_eng = [_l64("Luther Burden", "OVER", 50.0, -115, 0.53, model_p=0.55,
+                pid="espn:9")]
+_sp_slip = [_l64("Luther Burden III", "OVER", 50.0, -115, 0.53, model_p=0.55,
+                 pid="espn:9")]
+_sp = ff_boost.score_slip(_sp_slip, boost_pct=0.0, recommended=_sp_eng)
+chk("two spellings of one leg are NOT reported as a substitution",
+    _sp.substituted == [] and _sp.dropped == [],
+    f"substituted={_sp.substituted} dropped={_sp.dropped}")
+chk("and the normaliser agrees the two spellings are one man",
+    ff_boost.norm_player("Luther Burden III")
+    == ff_boost.norm_player("Luther Burden"),
+    f"{ff_boost.norm_player('Luther Burden III')!r}")
+
+_burden = [_l64("Luther Burden III", "OVER", 50.0, -115, 0.53, model_p=0.55,
+                pid="espn:9")]
+_sub = ff_boost.score_slip(_burden, boost_pct=0.0, recommended=_eng64)
+chk("a leg the engine never proposed is flagged as unproposed",
+    any("did not propose this leg at all" in f.text for f in _sub.findings))
+chk("and it is NOT a STOP on its own — unproposed is not wrong",
+    not any(f.level == "STOP" and "did not propose" in f.text
+            for f in _sub.findings))
+chk("an engine leg genuinely absent IS reported",
+    "Tez Johnson" in _sub.dropped, f"dropped={_sub.dropped}")
+# Without a recommended set the check cannot run, and the report says so
+# rather than reading as a clean bill.
+_nocmp = ff_boost.score_slip(_burden, boost_pct=0.0)
+chk("with no recommended set, substitution cannot be checked",
+    _nocmp.compared is False and _nocmp.substituted == [])
+chk("and the report SAYS that, rather than reading as clean",
+    "no recommended set given" in _nocmp.report(),
+    _line(_nocmp.report(), "!") or "not stated")
+
+# --- what else stops a slip -------------------------------------------------
+_uns = [_l64("P", "OVER", 50.5, -110, 0.50, verdict="UNSCREENED",
+             model_p=0.55, pid="u1")]
+chk("an UNSCREENED leg is a STOP, not a silent pass",
+    any(f.level == "STOP" and "never screened" in f.text
+        for f in ff_boost.score_slip(_uns, boost_pct=0.0).findings))
+_veto = [_l64("P", "OVER", 50.5, -110, 0.50, verdict="VETO", model_p=0.55,
+              pid="v1", reasons=("role collapsed",))]
+chk("a VETO leg is a STOP and its reason is carried through",
+    any(f.level == "STOP" and "role collapsed" in f.text
+        for f in ff_boost.score_slip(_veto, boost_pct=0.0).findings))
+_caut = [_l64("P", "OVER", 50.5, -110, 0.50, verdict="CAUTION", model_p=0.55,
+              pid="c1", reasons=("usage drifting",))]
+_sc = ff_boost.score_slip(_caut, boost_pct=0.0)
+chk("a CAUTION leg is a CHECK, not a STOP",
+    _sc.verdict == "CHECK FIRST" and not _sc.stops, _sc.verdict)
+chk("an empty slip is refused rather than scored",
+    ff_boost.score_slip([], boost_pct=0.0).verdict == "DO NOT PLACE")
+
+# --- the report ------------------------------------------------------------
+_rep64 = _s64.report()
+chk("the report leads with the verdict",
+    _rep64.splitlines()[0] == "SLIP VERDICT: DO NOT PLACE",
+    _rep64.splitlines()[0])
+# `independent_odds` returns AMERICAN. Converting it again turned a -110
+# single into "+1" — a second conversion producing a plausible price rather
+# than an error.
+chk("independent odds are printed once-converted, not twice",
+    "independent -110" in _line(_rep64, "1 legs"), _line(_rep64, "1 legs"))
+chk("an unpriced slip says the book price is missing",
+    "book price NOT supplied" in ff_boost.score_slip(
+        _burden, boost_pct=0.0).report())
+# A genuinely clean leg needs a fair line that is NOT exactly 0.5000 and an
+# anchor that has taken money: written first with fair 0.50 and no liquidity,
+# it tripped `anchor_opening` — the existing B54/B59 guard, firing correctly
+# on a fixture that only looked clean.
+def _clean64():
+    return _l64("P", "OVER", 50.5, -110, 0.52, model_p=0.55, pid="z1",
+                team="TB", pos="WR")
+
+
+_cl = _clean64()
+_cl.anchor_liquidity = 5000.0
+_cr = _clean64()
+_cr.anchor_liquidity = 5000.0
+_clean_score = ff_boost.score_slip([_cl], boost_pct=0.0, book_odds=-110,
+                                   recommended=[_cr])
+chk("a slip with no findings is reachable at all",
+    not _clean_score.findings,
+    "; ".join(f.describe() for f in _clean_score.findings)[:160])
+chk("and it does not claim to be good",
+    "nothing was found, not" in _clean_score.report(),
+    _clean_score.report().splitlines()[-1])
+chk("its verdict is the non-committal one",
+    _clean_score.verdict == "NOTHING FOUND AGAINST IT", _clean_score.verdict)
+chk("findings are ordered STOP, then CHECK, then NOTE",
+    [f.level for f in _s64.findings] ==
+    sorted([f.level for f in _s64.findings],
+           key=lambda x: {"STOP": 0, "CHECK": 1, "NOTE": 2}[x])
+    or [l.split("]")[0][3:] for l in _rep64.splitlines() if l.strip().startswith("[")]
+    == sorted([l.split("]")[0][3:] for l in _rep64.splitlines()
+               if l.strip().startswith("[")],
+              key=lambda x: {"STOP": 0, "CHECK": 1, "NOTE": 2}[x]))
+
+
 _summary()
 raise SystemExit(1 if fails else 0)

@@ -1833,6 +1833,57 @@ prints a verdict, and the three cases mean different things:
 - **Hold ABOVE the band.** A worse price than expected, which understates
   rather than flatters. Self-correcting.
 
+## Scoring a slip Dustin already built — `score_slip()` (F15)
+
+When Dustin shows you a slip he has built or is about to place, **run
+`ff_boost.score_slip()` on it.** Do not eyeball it, and do not re-run
+`enumerate_candidates` and compare by hand — that only ever sees legs it
+chose itself, so a leg nobody proposed is invisible to it.
+
+```python
+score = ff_boost.score_slip(
+    placed_legs,                 # the legs ON THE SLIP, in the sides taken
+    meta,
+    boost_pct=0.50,
+    book_odds=600,
+    recommended=engine_legs)     # the engine's own legs, when there are any
+print(score.report())
+```
+
+The output is a verdict — `DO NOT PLACE` / `CHECK FIRST` / `NOTHING FOUND
+AGAINST IT` — and a list of findings at three levels. There is no score. A
+slip with one VETO and four CLEARs does not average out to fine.
+
+**Why this exists.** Week 9: the engine's slip was Swift / Odunze / Tez
+Johnson. The slip placed swapped Tez for Luther Burden on intuition. Tez went
+76 yards against a 15.5 line with the engine on the OVER, and the slip lost.
+Nothing in the pipeline could have said a word.
+
+**The two things it catches that nothing else does:**
+
+1. **A side conflict** — the model prefers the OTHER side of a leg you are
+   betting. This needs `model_p` on the leg, and it is NOT what `verdict`
+   measures. `boost_verdict` answers "does anything argue against this
+   side", so `CLEAR` means nothing was found against it, not that the model
+   wants it. On the Tez leg every verdict read CLEAR and was right to.
+   Threshold is `MODEL_SIDE_GATE` (3pp), because a fair line and a model
+   estimate differ by a point or two on nearly every leg.
+2. **A substitution** — a leg the engine never proposed, or the same player
+   moved to a different side or line. This needs `recommended=`. Without it
+   the check cannot run, and **the report says so** rather than reading as a
+   clean bill. Pass the engine's legs whenever they exist.
+
+**Always pass `model_p` on every leg** — the model's probability FOR THE SIDE
+ON THAT LEG. Without it the report returns a CHECK saying nothing can tell
+you which side the engine wants, which is accurate and useless. `model_p` is
+`est.blended` from the `prop_edge` call you already made for that side.
+
+`None` means NOT SUPPLIED and is reported as unknown; it never reads as
+agreement. A percentage is refused at construction — pass 0.72, not 72.
+
+**Read `NOTHING FOUND AGAINST IT` literally.** It is deliberately not
+"good". It means every check that could run, ran, and none fired.
+
 ## Stake-back tokens are NOT boosts — do not run them through `ff_boost`
 
 A "bet reset", "safety net" or "second chance" token refunds the stake as

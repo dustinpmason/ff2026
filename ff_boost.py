@@ -403,6 +403,19 @@ def book_liquidity_tiers(odds_response: dict,
 # that exist today and errs toward flagging.
 THIN_ANCHOR_LIQUIDITY = 25
 
+# F15. How far the model must sit BELOW the fair line before it counts as
+# preferring the other side of a leg. A fair line and a model estimate differ
+# by a point or two on almost every leg, so a bare sign test would flag half
+# a slip and mean nothing.
+#
+# 3pp is deliberately well inside what matters: the Week 9 Tez Johnson case,
+# the one this exists to catch, ran far wider than that — the engine liked
+# the OVER and the slip took the UNDER. The gate is there to silence noise,
+# not to be a close call. B128 is the reason it is not set tighter: the
+# model's own level error against a sharp anchor measured sd 11.5pp, so
+# anything under a few points is not a disagreement worth reporting.
+MODEL_SIDE_GATE = 0.03
+
 # Measured over 43,228 same-game pairs, 2025-26. Everything absent is ~0.00,
 # INCLUDING WR x WR on the same team (+0.00 over 2,970 pairs) — target
 # competition cancels out team volume. Do not limit slips to stack shapes.
@@ -602,6 +615,18 @@ class BoostLeg:
     # as a CAUTION. Rebuilding per-side cut both ways — it also UN-vetoed
     # Loveland's OVER, which the same error had wrongly excluded.
     verdict_side: str = ""
+    # F15. The MODEL's probability FOR THE SIDE ON THIS LEG, so a slip can
+    # be told that the engine wants the other side of a leg you are betting.
+    # `verdict` does not carry this: boost_verdict answers "does anything
+    # argue against this side", and CLEAR means nothing was found against it,
+    # not that the model prefers it. On the Week 9 slate the engine preferred
+    # the OVER on Tez Johnson while the slip took the UNDER; every leg read
+    # CLEAR, because CLEAR was the right answer to the question being asked
+    # and nobody was asking this one.
+    #
+    # None means NOT SUPPLIED, which is a different state from "the model is
+    # indifferent" and is reported as such rather than passing silently.
+    model_p: float | None = None
     team: str | None = None
     pos: str | None = None
     # Liquidity on the ANCHOR's line, not on the book you are betting. It
@@ -652,6 +677,19 @@ class BoostLeg:
                     f"the UNDER. Re-evaluate with "
                     f"ff_props.prop_edge(est, ..., side={str(self.side).upper()!r}) "
                     f"and pass that Edge to boost_verdict().")
+        if self.model_p is not None:
+            mp = float(self.model_p)
+            if mp > 1.0:
+                raise ValueError(
+                    f"{self.player}: model_p={self.model_p!r} looks like a "
+                    f"percentage. Pass a probability in (0, 1) — 0.72, not "
+                    f"72. A percentage here makes the model prefer every "
+                    f"side of every leg.")
+            if not 0.0 < mp < 1.0:
+                raise ValueError(
+                    f"{self.player}: model_p must be strictly between 0 and "
+                    f"1, got {self.model_p!r}. Use None for 'not supplied' — "
+                    f"a 0 or a 1 is a certainty nobody has.")
         if not (0.0 < float(self.fair_prob) < 1.0):
             raise ValueError(
                 f"fair_prob must be strictly between 0 and 1, got "
@@ -671,6 +709,34 @@ class BoostLeg:
         if self.verdict not in ("CLEAR", "CAUTION", "VETO", "UNSCREENED"):
             raise ValueError(f"unknown leg verdict {self.verdict!r}")
         self.verdict_reasons = tuple(self.verdict_reasons)
+
+    @property
+    def model_gap(self) -> float | None:
+        """model_p − fair_prob for the side on this leg, or None.
+
+        Positive means the model likes the side being bet; negative means it
+        is AGAINST it. Negative is not the same as the leg being bad — a
+        −0.01 gap is inside anybody's noise — so `model_against` applies a
+        threshold rather than testing the sign.
+        """
+        if self.model_p is None:
+            return None
+        return float(self.model_p) - float(self.fair_prob)
+
+    @property
+    def model_against(self) -> bool | None:
+        """True when the model prefers the OTHER side of this leg.
+
+        None means no `model_p` was supplied, reported as unknown rather than
+        as agreement — D16/B39's rule that an unchecked state must not look
+        like a checked one. `verdict == "CLEAR"` is exactly that trap here:
+        it means nothing was found AGAINST this side, not that the model
+        wants it.
+        """
+        g = self.model_gap
+        if g is None:
+            return None
+        return g < -MODEL_SIDE_GATE
 
     @property
     def anchor_opening(self) -> bool:
@@ -2090,3 +2156,260 @@ def report(cands, boost_label: str = "") -> str:
                    "against it.")
         out.append("")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# F15 — score a slip somebody else built
+# ---------------------------------------------------------------------------
+#
+# `enumerate_candidates` BUILDS slips from a leg pool. This one takes a slip
+# that already exists — the one on the bet slip, with whatever substitutions
+# were made on the way — and says what is wrong with it.
+#
+# WHY IT EXISTS. Week 9: the engine's slip was Swift / Odunze / Tez Johnson.
+# The slip actually placed swapped Tez for Luther Burden on intuition. Tez
+# went 76 yards against a 15.5 line and the engine had preferred the OVER; the
+# slip lost. Nothing in the pipeline could have said anything, because
+# `enumerate_candidates` only ever sees legs it chose itself, and a leg nobody
+# proposed is invisible to it.
+#
+# Two failure modes, and they are different:
+#
+#   SUBSTITUTION  — a leg the engine never recommended. Needs `recommended=`
+#                   to detect, because "the engine did not pick this" is only
+#                   meaningful against a set the engine actually picked.
+#   SIDE CONFLICT — a leg where the model prefers the other side. Needs
+#                   `model_p` on the leg. `verdict == "CLEAR"` does NOT cover
+#                   this: boost_verdict answers "does anything argue against
+#                   this side", and CLEAR means nothing was found against it.
+#                   On the Tez leg every verdict read CLEAR and was right to.
+#
+# Both are reported as findings against the slip, never as a score. The
+# project's standing rule is that the output is a confidence tier and a list
+# of refusals, not a number that looks precise.
+
+
+@dataclass
+class SlipFinding:
+    """One thing wrong with a slip, at one of three levels.
+
+    STOP  — do not place this as it stands.
+    CHECK — place only if you can answer the question it raises.
+    NOTE  — worth knowing, not worth stopping for.
+    """
+    level: str
+    leg: str                      # the player, or "" for a slip-level finding
+    text: str
+
+    def describe(self) -> str:
+        where = f"{self.leg}: " if self.leg else ""
+        return f"[{self.level}] {where}{self.text}"
+
+
+@dataclass
+class SlipScore:
+    # None only for an empty slip, which is refused before anything prices it.
+    candidate: Candidate | None
+    findings: list[SlipFinding] = field(default_factory=list)
+    substituted: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    compared: bool = False        # was a recommended set supplied at all
+
+    @property
+    def stops(self) -> list[SlipFinding]:
+        return [f for f in self.findings if f.level == "STOP"]
+
+    @property
+    def checks(self) -> list[SlipFinding]:
+        return [f for f in self.findings if f.level == "CHECK"]
+
+    @property
+    def verdict(self) -> str:
+        if self.stops:
+            return "DO NOT PLACE"
+        if self.checks:
+            return "CHECK FIRST"
+        return "NOTHING FOUND AGAINST IT"
+
+    def report(self) -> str:
+        c = self.candidate
+        if c is None:
+            return (f"SLIP VERDICT: {self.verdict}\n  "
+                    + "\n  ".join(f.describe() for f in self.findings))
+        out = [f"SLIP VERDICT: {self.verdict}",
+               # `independent_odds` returns AMERICAN already. Wrapping it in
+               # american() again turned a -110 single into "+1" — a second
+               # conversion of an already-converted number, which produces a
+               # plausible-looking price rather than an error.
+               f"  {len(c.legs)} legs, {c.structure.kind}, "
+               f"independent {c.independent_odds:+.0f}"]
+        if c.priced:
+            out.append(f"  book {c.book_odds:+.0f}")
+        else:
+            # Not "probably fine". An unpriced slip is one nobody quoted.
+            out.append("  book price NOT supplied, so nothing here checks the "
+                       "price you are actually being offered")
+        if not self.compared:
+            out.append("  ! no recommended set given, so NOTHING here can "
+                       "tell you a leg was substituted — pass recommended= "
+                       "with the engine's own legs to get that")
+        for level in ("STOP", "CHECK", "NOTE"):
+            group = [f for f in self.findings if f.level == level]
+            for f in group:
+                out.append("  " + f.describe())
+        if not self.findings:
+            out.append("  no findings — which means nothing was found, not "
+                       "that the slip is good")
+        return "\n".join(out)
+
+
+def _slip_key(leg) -> tuple:
+    """Identity of a leg for comparing one slip against another.
+
+    Normalised name, never the raw one (B44/B101/B127), plus market, side and
+    line. The line is part of it on purpose: the same player at a different
+    number is a different bet, which is exactly what a substitution often is.
+    """
+    return (norm_player(str(getattr(leg, "player", "") or "")),
+            str(getattr(leg, "market", "") or ""),
+            str(getattr(leg, "side", "") or "").upper(),
+            None if getattr(leg, "line", None) is None
+            else float(leg.line))
+
+
+def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
+               book_odds: float | None = None, stake: float = 10.0,
+               recommended=None) -> SlipScore:
+    """Score a slip that already exists, and say what is wrong with it.
+
+    `legs` are the legs ON THE SLIP, in the sides actually taken.
+    `recommended` is the engine's own legs, when there are any — without it
+    the substitution check cannot run and the report says so rather than
+    reporting a clean bill.
+
+    Every finding names the leg it is about. Nothing is scored; the output is
+    a verdict and a list, because a slip with one VETO and four CLEARs does
+    not average out to fine.
+    """
+    legs = list(legs)
+    # Checked BEFORE the candidate is built, not after. `independent_odds([])`
+    # is a decimal 1.0, and `american(1.0)` divides by zero — so the empty
+    # case has to be refused before anything prices it, not flagged once
+    # pricing has already raised.
+    if not legs:
+        return SlipScore(
+            candidate=None, compared=recommended is not None,
+            findings=[SlipFinding("STOP", "", "the slip has no legs in it")])
+
+    cand = make_candidate(legs, meta, boost_pct=boost_pct, stake=stake)
+    if book_odds is not None:
+        cand = price_candidate(cand, book_odds=float(book_odds))
+    out = SlipScore(candidate=cand, compared=recommended is not None)
+
+    # --- structure ---------------------------------------------------------
+    if not cand.structure.priceable:
+        out.findings.append(SlipFinding(
+            "STOP", "", f"not priceable as a parlay: "
+                        f"{cand.structure.reason}"))
+    for note in cand.structure.zeros or ():
+        out.findings.append(SlipFinding("NOTE", "", note))
+    for name in getattr(cand.structure, "correlation_unresolved", ()) or ():
+        out.findings.append(SlipFinding(
+            "CHECK", str(name),
+            "correlation against the other legs could NOT be resolved, so "
+            "this slip is priced as if it were independent when it may not "
+            "be"))
+
+    # --- per leg -----------------------------------------------------------
+    for l in legs:
+        who = str(l.player)
+        if l.verdict == "VETO":
+            out.findings.append(SlipFinding(
+                "STOP", who, f"VETO on the {l.side}: "
+                             f"{'; '.join(l.verdict_reasons) or 'unspecified'}"))
+        elif l.verdict == "UNSCREENED":
+            # The default, and deliberately loud. A live run once built 32
+            # legs that all read CLEAR without boost_verdict ever being
+            # called; UNSCREENED exists so that cannot happen quietly.
+            out.findings.append(SlipFinding(
+                "STOP", who,
+                "never screened — boost_verdict() was not run for this leg, "
+                "so nothing has looked at whether anything argues against "
+                f"the {l.side}"))
+        elif l.verdict == "CAUTION":
+            out.findings.append(SlipFinding(
+                "CHECK", who, f"CAUTION on the {l.side}: "
+                              f"{'; '.join(l.verdict_reasons) or 'unspecified'}"))
+
+        against = l.model_against
+        if against is None:
+            out.findings.append(SlipFinding(
+                "CHECK", who,
+                "no model_p supplied, so nothing here can tell you whether "
+                f"the engine wants the {l.side} or the other side of it. A "
+                f"CLEAR verdict does not answer that question."))
+        elif against:
+            # The Tez Johnson shape. Loud, because it is the one that reads
+            # as a screened leg.
+            other = "UNDER" if str(l.side).upper() == "OVER" else "OVER"
+            out.findings.append(SlipFinding(
+                "STOP", who,
+                f"the model prefers the {other}. You are on the {l.side} at "
+                f"a fair {l.fair_prob:.1%}, and the model puts that side at "
+                f"{l.model_p:.1%} — {abs(l.model_gap):.1%} the wrong way, "
+                f"past the {MODEL_SIDE_GATE:.0%} gate. This is NOT what a "
+                f"verdict measures: {l.verdict} means nothing was found "
+                f"against this side, not that the model wants it."))
+
+        if l.anchor_thin:
+            out.findings.append(SlipFinding(
+                "CHECK", who, f"the fair line rests on a thin anchor "
+                              f"({l.fair_source}), so {l.fair_prob:.1%} is "
+                              f"softer than it looks"))
+        elif l.anchor_opening:
+            out.findings.append(SlipFinding(
+                "CHECK", who, f"the anchor has set a point but taken no "
+                              f"money against it — re-pull closer to kickoff"))
+
+    # --- what the engine would have picked ---------------------------------
+    if recommended is not None:
+        rec = list(recommended)
+        rec_keys = {_slip_key(r): r for r in rec}
+        mine = {_slip_key(l): l for l in legs}
+        # A leg on the slip that the engine never proposed.
+        for k, l in mine.items():
+            if k in rec_keys:
+                continue
+            same_player = [r for r in rec
+                           if _slip_key(r)[0] == k[0]]
+            out.substituted.append(str(l.player))
+            if same_player:
+                r = same_player[0]
+                out.findings.append(SlipFinding(
+                    "CHECK", str(l.player),
+                    f"the engine had this player at {r.side} "
+                    f"{r.line if r.line is not None else ''}".rstrip()
+                    + f", the slip has {l.side} "
+                      f"{l.line if l.line is not None else ''}".rstrip()
+                    + " — same man, different bet"))
+            else:
+                out.findings.append(SlipFinding(
+                    "CHECK", str(l.player),
+                    "the engine did not propose this leg at all. That is not "
+                    "a reason it is wrong, but nothing in this pipeline has "
+                    "an opinion on it beyond what is printed above"))
+        # An engine leg that did not make the slip. A leg whose PLAYER is on
+        # the slip under a different key is not dropped — he was moved, and
+        # the "same man, different bet" finding above already says so.
+        # Reporting both made Tez Johnson read as absent from a slip he was
+        # on, which is worse than silence.
+        on_slip = {k[0] for k in mine}
+        for k, r in rec_keys.items():
+            if k not in mine and k[0] not in on_slip:
+                out.dropped.append(str(r.player))
+                out.findings.append(SlipFinding(
+                    "NOTE", str(r.player),
+                    f"the engine proposed this leg ({r.side} "
+                    f"{r.line if r.line is not None else ''}".rstrip()
+                    + ") and it is not on the slip"))
+    return out
