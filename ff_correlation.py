@@ -163,6 +163,65 @@ SHIPPED_MARKET = {
 }
 
 
+#: F13. Every (relation, side, side) cell, sides SORTED — the key shape
+#: `ff_boost.MEASURED_PAIR_LIFT` uses, so the two compare without a
+#: translation step. Recorded 2026-11-10, DEFAULT_FILTER, control
+#: ('same','PASS','RECV') = +0.2456 PASS.
+#:
+#: RECEPTIONS, PASS_TD and TD are the sides F13 adds. `player_receptions`
+#: is deliberately NOT mapped onto RECV: same-team PASS x RECEPTIONS is
+#: +0.1774 against PASS x RECV at +0.2456, so treating them as one side
+#: would overstate a receptions leg by about 28%.
+#:
+#: ("same","TD","TD") = -0.0274 contradicts the standing comment in
+#: ff_boost that two same-team receivers both scoring "correlates through
+#: team TD volume in a way nobody here has measured". Measured, it is
+#: slightly NEGATIVE: they compete for the same end-zone looks more than
+#: they share team volume.
+RECORDED_MARKET_SIDE = {
+    ('opp', 'PASS', 'PASS')           : (+0.0698, 974, (+0.0070, +0.1320)),
+    ('opp', 'PASS', 'PASS_TD')        : (+0.1142, 1920, (+0.0698, +0.1581)),
+    ('opp', 'PASS', 'RECEPTIONS')     : (+0.0027, 16476, (-0.0126, +0.0180)),
+    ('opp', 'PASS', 'RECV')           : (+0.0175, 11812, (-0.0005, +0.0356)),
+    ('opp', 'PASS', 'RUSH')           : (-0.0238, 4746, (-0.0523, +0.0046)),
+    ('opp', 'PASS', 'TD')             : (+0.0348, 14519, (+0.0186, +0.0511)),
+    ('opp', 'PASS_TD', 'PASS_TD')     : (+0.0917, 946, (+0.0281, +0.1545)),
+    ('opp', 'PASS_TD', 'RECEPTIONS')  : (+0.0421, 16261, (+0.0268, +0.0574)),
+    ('opp', 'PASS_TD', 'RECV')        : (+0.0483, 11657, (+0.0302, +0.0664)),
+    ('opp', 'PASS_TD', 'RUSH')        : (+0.0008, 4687, (-0.0278, +0.0294)),
+    ('opp', 'PASS_TD', 'TD')          : (+0.0295, 14329, (+0.0132, +0.0459)),
+    ('opp', 'RECEPTIONS', 'RECEPTIONS'): (-0.0046, 70003, (-0.0120, +0.0029)),
+    ('opp', 'RECEPTIONS', 'RECV')     : (+0.0033, 100395, (-0.0029, +0.0095)),
+    ('opp', 'RECEPTIONS', 'RUSH')     : (-0.0031, 40370, (-0.0128, +0.0067)),
+    ('opp', 'RECEPTIONS', 'TD')       : (+0.0131, 123261, (+0.0075, +0.0187)),
+    ('opp', 'RECV', 'RECV')           : (+0.0100, 35986, (-0.0004, +0.0203)),
+    ('opp', 'RECV', 'RUSH')           : (-0.0046, 28964, (-0.0161, +0.0070)),
+    ('opp', 'RECV', 'TD')             : (+0.0143, 88357, (+0.0077, +0.0209)),
+    ('opp', 'RUSH', 'RUSH')           : (-0.0789, 5815, (-0.1044, -0.0533)),
+    ('opp', 'RUSH', 'TD')             : (-0.0117, 35587, (-0.0221, -0.0013)),
+    ('opp', 'TD', 'TD')               : (+0.0077, 54214, (-0.0007, +0.0161)),
+    ('same', 'PASS', 'PASS_TD')       : (-0.0770, 262, (-0.1963, +0.0447)),
+    ('same', 'PASS', 'RECEPTIONS')    : (+0.1774, 16510, (+0.1626, +0.1922)),
+    ('same', 'PASS', 'RECV')          : (+0.2456, 11843, (+0.2286, +0.2625)),
+    ('same', 'PASS', 'RUSH')          : (-0.0746, 4745, (-0.1029, -0.0463)),
+    ('same', 'PASS', 'TD')            : (+0.0914, 13306, (+0.0745, +0.1082)),
+    ('same', 'PASS_TD', 'RECEPTIONS') : (+0.0757, 16278, (+0.0604, +0.0910)),
+    ('same', 'PASS_TD', 'RECV')       : (+0.1203, 11680, (+0.1024, +0.1381)),
+    ('same', 'PASS_TD', 'RUSH')       : (+0.0354, 4676, (+0.0068, +0.0640)),
+    ('same', 'PASS_TD', 'TD')         : (+0.2173, 13100, (+0.2009, +0.2335)),
+    ('same', 'RECEPTIONS', 'RECEPTIONS'): (+0.0308, 63678, (+0.0230, +0.0385)),
+    ('same', 'RECEPTIONS', 'RECV')    : (+0.0182, 91517, (+0.0117, +0.0247)),
+    ('same', 'RECEPTIONS', 'RUSH')    : (-0.0255, 36526, (-0.0358, -0.0153)),
+    ('same', 'RECEPTIONS', 'TD')      : (-0.0006, 112679, (-0.0065, +0.0052)),
+    ('same', 'RECV', 'RECV')          : (+0.0111, 31534, (+0.0000, +0.0221)),
+    ('same', 'RECV', 'RUSH')          : (-0.0219, 28970, (-0.0334, -0.0104)),
+    ('same', 'RECV', 'TD')            : (+0.0105, 81014, (+0.0036, +0.0174)),
+    ('same', 'RUSH', 'RUSH')          : (+0.0907, 3866, (+0.0594, +0.1219)),
+    ('same', 'RUSH', 'TD')            : (+0.0196, 32334, (+0.0087, +0.0305)),
+    ('same', 'TD', 'TD')              : (-0.0274, 49520, (-0.0362, -0.0186)),
+}
+
+
 def recorded(table: dict) -> dict:
     """{key: r} from a recorded table, dropping n and the interval.
 
@@ -249,8 +308,16 @@ class CorrTable:
         L = [f"{self.kind.upper()} CORRELATION TABLE",
              f"  filter: {self.filt.describe()}"]
         if self.control is not None:
-            L.append(f"  control {CONTROL_KEY}: r={self.control.r:+.4f} "
-                     f"(band {CONTROL_BAND[0]:+.2f}..{CONTROL_BAND[1]:+.2f}) "
+            # The control key is the TABLE's own, not a module-level literal.
+            # This printed `CONTROL_KEY` — the position-keyed table's ('QB',
+            # 'WR') — above a market-SIDE table whose control is
+            # ('same','PASS','RECV'), so the report named a cell it had not
+            # tested. A report that misnames its own gate is worse than one
+            # that omits it.
+            band = (MARKET_SIDE_CONTROL_BAND if self.kind == "market-side"
+                    else CONTROL_BAND)
+            L.append(f"  control {self.control.key}: r={self.control.r:+.4f} "
+                     f"(band {band[0]:+.2f}..{band[1]:+.2f}) "
                      f"-> {'PASS' if self.control_ok else 'FAIL'}")
         if not self.control_ok:
             L.append(f"  !! {self.control_why}")
@@ -362,6 +429,104 @@ def market_table(weekly: pd.DataFrame,
             f"{CONTROL_BAND[0]:+.2f}..{CONTROL_BAND[1]:+.2f} — this method "
             f"does not reproduce a pair the shipped table claims to know, so "
             f"nothing else it produces is admissible")
+    else:
+        t.control_ok, t.control_why = True, "control recovered"
+    return t
+
+
+# ---------------------------------------------------------------------------
+# F13 — the market SIDES, which is what `_pair_r` actually resolves on
+# ---------------------------------------------------------------------------
+#
+# `ff_boost.MARKET_SIDE` maps exactly three markets to three sides, and every
+# other market in a same-event slip returns (None, why) and makes the slip
+# UNPRICEABLE. That is the correct answer — independence there would be an
+# assumption — but it refuses slip shapes Dustin actually bets, receptions
+# legs above all.
+#
+# Adding a market means either mapping it to a side already measured, or
+# adding a side and measuring every pair it forms. Mapping `player_receptions`
+# onto RECV would be the former and is NOT done: receptions and receiving
+# yards are a different stat, and their correlation with a quarterback's
+# passing yards is a different number. Assuming they match is the kind of
+# unmeasured equivalence this whole module exists to stop.
+#
+# TD is BINARY, which the backlog flagged as not transferring. It transfers:
+# Pearson on a per-player-season z-scored 0/1 is a base-rate-adjusted phi,
+# which is the right statistic and the same arithmetic. What does NOT
+# transfer is the joint-crossing LIFT, which needs a threshold.
+SIDE_SPEC = {
+    "PASS":       (("QB",),             "passing_yards",    False),
+    "RUSH":       (("RB",),             "rushing_yards",    False),
+    "RECV":       (("WR", "TE"),        "receiving_yards",  False),
+    "RECEPTIONS": (("WR", "TE", "RB"),  "receptions",       False),
+    "PASS_TD":    (("QB",),             "passing_tds",      False),
+    "TD":         (("QB", "RB", "WR", "TE"), "_anytime_td",  True),
+}
+
+#: Sides `ff_boost.MARKET_SIDE` already maps. The rest are what F13 adds.
+SIDES_SHIPPED = ("PASS", "RUSH", "RECV")
+
+MARKET_SIDE_CONTROL = ("same", "PASS", "RECV")
+MARKET_SIDE_CONTROL_BAND = (0.18, 0.40)
+
+
+def _with_derived(wk: pd.DataFrame) -> pd.DataFrame:
+    """Add the columns no single nflverse field provides."""
+    out = wk.copy()
+    rec = pd.to_numeric(out.get("receiving_tds"), errors="coerce").fillna(0)
+    rush = pd.to_numeric(out.get("rushing_tds"), errors="coerce").fillna(0)
+    # Anytime TD as the market settles it: receiving OR rushing, not special
+    # teams and not a defensive score, neither of which the prop pays.
+    out["_anytime_td"] = ((rec + rush) > 0).astype(float)
+    return out
+
+
+def market_side_table(weekly: pd.DataFrame,
+                      filt: CorrFilter = DEFAULT_FILTER,
+                      sides=None) -> CorrTable:
+    """Every (relation, side, side) cell, including the sides F13 needs.
+
+    Keyed `(relation, side_a, side_b)` with the sides SORTED, matching
+    `ff_boost.MEASURED_PAIR_LIFT`'s key shape so the two can be compared
+    without a translation step.
+    """
+    wk = _with_derived(_prepared(weekly, filt))
+    use = tuple(sides) if sides else tuple(SIDE_SPEC)
+    t = CorrTable("market-side", filt)
+    frames = {}
+    for sd in use:
+        pos, col, _binary = SIDE_SPEC[sd]
+        if col not in wk.columns:
+            t.skipped.append(((sd,), f"no {col!r} column in this frame"))
+            continue
+        frames[sd] = _z(wk, pos, col, filt)
+    names = [sd for sd in use if sd in frames]
+    for i, sa in enumerate(names):
+        for sb in names[i:]:
+            for rel in ("same", "opp"):
+                key = (rel, *sorted((sa, sb)))
+                if key in t.entries or any(k == key for k, _ in t.skipped):
+                    continue
+                m = _pair_frames(frames[sa], frames[sb],
+                                 same_team=(rel == "same"),
+                                 same_pool=(sa == sb))
+                e, why = _entry(key, m, filt)
+                if e is None:
+                    t.skipped.append((key, why))
+                else:
+                    t.entries[key] = e
+    c = t.entries.get(MARKET_SIDE_CONTROL)
+    t.control = c
+    lo, hi = MARKET_SIDE_CONTROL_BAND
+    if c is None:
+        t.control_ok, t.control_why = False, (
+            f"the control cell {MARKET_SIDE_CONTROL} did not measure")
+    elif not lo <= c.r <= hi:
+        t.control_ok, t.control_why = False, (
+            f"control {MARKET_SIDE_CONTROL} came out {c.r:+.4f}, outside "
+            f"{lo:+.2f}..{hi:+.2f} — this method does not reproduce a pair "
+            f"the shipped table claims to know")
     else:
         t.control_ok, t.control_why = True, "control recovered"
     return t

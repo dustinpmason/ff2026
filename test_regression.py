@@ -6586,6 +6586,58 @@ chk("and every one of those overstates the correlation's magnitude",
         for k, v in _C.RECORDED_MARKET.items()
         if not v[2][0] <= _C.SHIPPED_MARKET[k] <= v[2][1]))
 
+# --- F13's market-SIDE cells, measured but NOT wired in --------------------
+# `ff_boost.MARKET_SIDE` maps three markets; every other market in a
+# same-event slip makes the slip UNPRICEABLE. Correct, and it refuses shapes
+# Dustin bets. E3's machinery is what let these be measured.
+chk("every (relation, side, side) cell is recorded with n and an interval",
+    len(_C.RECORDED_MARKET_SIDE) >= 40
+    and all(len(v) == 3 and isinstance(v[1], int)
+            for v in _C.RECORDED_MARKET_SIDE.values()),
+    f"{len(_C.RECORDED_MARKET_SIDE)} cells")
+chk("the keys sort their sides, matching MEASURED_PAIR_LIFT's shape",
+    all(list(k[1:]) == sorted(k[1:])
+        for k in _C.RECORDED_MARKET_SIDE))
+chk("and the control cell is one of them, inside its band",
+    _C.MARKET_SIDE_CONTROL in _C.RECORDED_MARKET_SIDE
+    and _C.MARKET_SIDE_CONTROL_BAND[0]
+    <= _C.RECORDED_MARKET_SIDE[_C.MARKET_SIDE_CONTROL][0]
+    <= _C.MARKET_SIDE_CONTROL_BAND[1])
+# receptions is NOT receiving yards, and mapping it onto RECV would have
+# overstated a receptions leg by about 28%.
+_pr = _C.RECORDED_MARKET_SIDE[("same", "PASS", "RECEPTIONS")][0]
+_py = _C.RECORDED_MARKET_SIDE[("same", "PASS", "RECV")][0]
+chk("PASS x RECEPTIONS is materially below PASS x RECV",
+    _pr < _py - 0.05, f"{_pr:+.4f} vs {_py:+.4f}")
+chk("so player_receptions must not be mapped onto the RECV side",
+    "player_receptions" not in ff_boost.MARKET_SIDE,
+    "wiring it is a permissive change and needs sign-off")
+# The standing comment in ff_boost says this pair is unmeasured. It is not,
+# any more, and it went the other way.
+chk("two same-team anytime TDs are slightly NEGATIVE, not positive",
+    _C.RECORDED_MARKET_SIDE[("same", "TD", "TD")][0] < 0,
+    f"{_C.RECORDED_MARKET_SIDE[('same','TD','TD')][0]:+.4f} "
+    f"(n={_C.RECORDED_MARKET_SIDE[('same','TD','TD')][1]:,})")
+chk("and that is measured tightly enough to rule out zero",
+    _C.RECORDED_MARKET_SIDE[("same", "TD", "TD")][2][1] < 0,
+    str(_C.RECORDED_MARKET_SIDE[("same", "TD", "TD")][2]))
+# Nothing is wired. A same-event receptions leg still makes a slip
+# unpriceable, which is the behaviour until a gate is signed off.
+_rleg = ff_boost.BoostLeg(
+    event_id="E1", book="dk", market="player_receptions", player="WR9",
+    side="OVER", odds=-110, fair_prob=0.52, fair_source="pinnacle",
+    devig_method="shin", line=4.5, player_id="r9", verdict="CLEAR",
+    verdict_side="OVER", team="BUF", pos="WR")
+_qleg = ff_boost.BoostLeg(
+    event_id="E1", book="dk", market="player_pass_yds", player="QB9",
+    side="OVER", odds=-110, fair_prob=0.52, fair_source="pinnacle",
+    devig_method="shin", line=250.5, player_id="q9", verdict="CLEAR",
+    verdict_side="OVER", team="BUF", pos="QB")
+_rs = ff_boost.classify([_qleg, _rleg])
+chk("a same-event receptions leg is still UNPRICEABLE, as before",
+    not _rs.priceable and _rs.unmeasured,
+    _rs.reason[:110])
+
 # --- ff_boost is NOT changed from here -------------------------------------
 chk("ff_boost still ships its own market table, unswapped",
     ff_boost.SAME_TEAM_CORR[("QB", "WR")] == 0.31,
