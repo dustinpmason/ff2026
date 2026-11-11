@@ -689,9 +689,12 @@ appears only in the rare case the ceiling is still positive.
 **Same-game products are aimed ABOVE the floor, on purpose.** The floor is a
 condition on the book's real quote, and B55 measured same-game quotes at
 0.77–0.99 of the product. So `enumerate_candidates` aims the product at
-floor / (lower quartile of every measured sportsbook factor) — about
-+371 for a +300 floor, and roughly one quote in four is still expected to
-come in under — and
+floor / (lower quartile of the measured quote/product factor **for the
+book the legs are priced at**) — for a +300 floor that is about +328 at
+DraftKings, +338 at FanDuel and +381 at BetMGM; any other book gets the
+pooled figure, about +345. Roughly one quote in four is still expected to
+come in under. **Build the pool from the book Dustin's boost is at**, since
+the same players are aimed differently at each book — and
 `build_notes` states the target, the factor and the worst case. It is a
 prediction. **Always run `price_sgp` before telling Dustin a slip clears a
 minimum**, and if `build_notes` says a group is "BELOW the price target",

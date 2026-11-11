@@ -8236,7 +8236,8 @@ chk("the shortlist reports that it chose on price",
 # The target is for the QUOTE, not the product (found in the 2026-11-11
 # review). B55 measured same-game quotes at 0.77-0.99 of the product, so a
 # product aimed AT the floor prices under it and voids a token.
-_tgt = ff_boost.american(ff_boost.to_decimal(300) / ff_boost._target_factor())
+_tgt = ff_boost.american(ff_boost.to_decimal(300)
+                         / ff_boost._target_factor("draftkings"))
 chk("the target factor is derived from the measurements, not typed",
     0.77 < ff_boost._target_factor() < 0.99, str(ff_boost._target_factor()))
 chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
@@ -8246,8 +8247,8 @@ chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
     f"{sorted(round(c.independent_odds) for c in _psl.candidates)[:4]}")
 chk("so at the target factor the predicted QUOTE clears the floor",
     all(ff_boost.american(ff_boost.to_decimal(c.independent_odds)
-                          * ff_boost._target_factor()) >= 300 - 1e-6
-        for c in _psl.candidates))
+                          * ff_boost._target_factor("draftkings"))
+        >= 300 - 1e-6 for c in _psl.candidates))
 chk("the note gives the target, the factor and the worst case",
     any("aimed at" in n and "worst" in n and "price_sgp decides" in n
         for n in _psl.build_notes), str(_psl.build_notes)[:260])
@@ -8730,22 +8731,75 @@ chk("a multi-line group that cannot reach the target says BELOW it",
 chk("the 2026-11-11 quotes are kept with their book",
     len(ff_boost.SGP_FACTORS_LIVE_20261111) == 14
     and all(len(r) == 3 for r in ff_boost.SGP_FACTORS_LIVE_20261111))
-# B161, decided 2026-11-11: the LOWER QUARTILE of every sportsbook quote.
-_sf = sorted(ff_boost.sportsbook_factors())
-chk("the target uses both sittings, sportsbooks only",
-    len(_sf) == 23 and not any(
-        b in ff_boost.SGP_EXCHANGE_BOOKS and e in _sf and e > 1.03
-        for b, e, _ in ff_boost.SGP_FACTORS_LIVE_20261111), str(len(_sf)))
-chk("and is their lower quartile, about 0.849",
-    abs(ff_boost._target_factor() - (_sf[5] + (_sf[6] - _sf[5]) * 0.5)) < 1e-12
-    and abs(ff_boost._target_factor() - 0.849) < 2e-3,
-    str(ff_boost._target_factor()))
-chk("roughly a quarter of measured quotes fall below it, not half",
-    5 <= sum(1 for x in _sf if x < ff_boost._target_factor()) <= 6,
-    str(sum(1 for x in _sf if x < ff_boost._target_factor())))
-chk("which puts a +300 floor's product target near +371",
-    abs(ff_boost.american(4.0 / ff_boost._target_factor()) - 371) < 2,
-    str(ff_boost.american(4.0 / ff_boost._target_factor())))
+# B161 (lower quartile, not median) and B167 (per book), both 2026-11-11.
+_fb = ff_boost.factors_by_book()
+chk("factors are kept per sportsbook, exchanges excluded",
+    {k: len(v) for k, v in _fb.items()}
+    == {"betmgm": 14, "fanduel": 8, "draftkings": 18, "betrivers": 3},
+    str({k: len(v) for k, v in _fb.items()}))
+for _bk, _want, _prod in (("draftkings", 0.934, 328), ("fanduel", 0.913, 338),
+                          ("betmgm", 0.831, 381)):
+    _f, _why, _n = ff_boost.target_factor_detail(_bk)
+    chk(f"{_bk} is aimed with its OWN lower quartile, about {_want}",
+        abs(_f - _want) < 2e-3 and "own quotes" in _why
+        and abs(_f - ff_boost._lower_quartile(_fb[_bk])) < 1e-12,
+        f"{_f:.4f} {_why}")
+    chk(f"  which puts a +300 floor's product target near +{_prod}",
+        abs(ff_boost.american(4.0 / _f) - _prod) < 2,
+        str(ff_boost.american(4.0 / _f)))
+    chk(f"  with about a quarter of {_bk}'s own quotes below it, not half",
+        0.15 <= sum(1 for x in _fb[_bk] if x < _f) / len(_fb[_bk]) <= 0.30)
+chk("the three books' targets really differ, which is why pooling was wrong",
+    ff_boost._target_factor("betmgm") < ff_boost._target_factor("fanduel")
+    < ff_boost._target_factor("draftkings"))
+_pf, _pwhy, _pn = ff_boost.target_factor_detail(None)
+chk("no book named falls back to the pooled lower quartile",
+    _pn == 43 and "pooled" in _pwhy and abs(_pf - 0.899) < 2e-3, f"{_pf} {_pwhy}")
+chk("a book with too few quotes is pooled, and the reason says how many",
+    ff_boost.target_factor_detail("betrivers")[0] == _pf
+    and "only 3 quote" in ff_boost.target_factor_detail("betrivers")[1])
+chk("an unknown book is pooled and says it has none",
+    ff_boost.target_factor_detail("caesars")[0] == _pf
+    and "no quotes on file" in ff_boost.target_factor_detail("caesars")[1])
+chk("book names are matched loosely: dk, DraftKings, ' fanduel '",
+    ff_boost._target_factor("dk") == ff_boost._target_factor("DraftKings")
+    == ff_boost._target_factor("draftkings")
+    and ff_boost._target_factor(" FanDuel ") == ff_boost._target_factor("fanduel"))
+chk("the pooled BetMGM miss this rule exists to prevent",
+    sum(1 for x in _fb["betmgm"] if x < _pf) == 8,
+    "aimed with the pooled factor, 8 of BetMGM's 14 measured quotes miss "
+    "(first reported as 11 of 14, which was a miscount)")
+# The same pool at three books is aimed at three different products.
+def _rebook(legs, book):
+    out = []
+    for l in legs:
+        d = dict(l.__dict__)
+        d["book"] = book
+        d["shape_source"] = book if l.shape_source else ""
+        out.append(ff_boost.BoostLeg(**d))
+    return out
+_minp = {}
+for _bk in ("draftkings", "fanduel", "betmgm"):
+    _bsl2, _be2 = _ec(_rebook(_pl, _bk), _pm, mode="single-game",
+                      event_id="E1", boost_pct=0.50, legs_per_slip=3,
+                      floor=300, ceiling=900)
+    _minp[_bk] = (min(c.independent_odds for c in _bsl2.candidates)
+                  if _bsl2 and _bsl2.candidates else None)
+    chk(f"a {_bk} pool's note names {_bk} and its own quotes",
+        _bsl2 is not None and any(f"slip at {_bk}" in n and "own quotes" in n
+                                  for n in _bsl2.build_notes),
+        str(_bsl2.build_notes if _bsl2 else _be2)[:240])
+chk("and BetMGM slips are aimed longer than DraftKings ones",
+    None not in _minp.values()
+    and _minp["betmgm"] > _minp["fanduel"] >= _minp["draftkings"],
+    str(_minp))
+_mix, _mixe = _ec(_rebook(_pl[:48], "draftkings") + _rebook(_pl[48:], "betmgm"),
+                  _pm, mode="single-game", event_id="E1", boost_pct=0.50,
+                  legs_per_slip=3, floor=300, ceiling=900)
+chk("a pool mixing books is aimed with the harshest of them",
+    _mix is not None and _mix.candidates
+    and min(c.independent_odds for c in _mix.candidates) >= _minp["betmgm"] - 1,
+    _mixe or str(min(c.independent_odds for c in _mix.candidates)))
 chk("the build note says lower quartile and the expected miss rate",
     any("lower quartile" in n and "one quote in four" in n
         for n in _psl.build_notes), str(_psl.build_notes)[:260])
@@ -9052,9 +9106,8 @@ chk("run 3A's 32 quotes are recorded with their book",
     len(ff_boost.SGP_FACTORS_LIVE_20261111_3A) == 32
     and sum(1 for b, _, _ in ff_boost.SGP_FACTORS_LIVE_20261111_3A
             if b not in ff_boost.SGP_EXCHANGE_BOOKS) == 20)
-chk("and are not in the target's list until B167 is decided",
-    len(ff_boost.sportsbook_factors()) == 23
-    and abs(ff_boost._target_factor() - 0.849) < 2e-3)
+chk("and now feed the target, per book (B167)",
+    len(ff_boost.sportsbook_factors()) == 43)
 
 _summary()
 raise SystemExit(1 if fails else 0)
