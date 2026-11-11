@@ -248,6 +248,31 @@ SGP_FACTORS_OBSERVED = (
 # the LOWER QUARTILE of those (B161), because a median would have put 11 of
 # the 23 sportsbook quotes on record under the floor. Novig is an exchange,
 # is the source of most of the >1.0 values, and is excluded.
+# Live run 3A, same event, 2026-11-11 ~18:41Z: 13 slips, 32 quotes, same
+# three columns. RECORDED, NOT YET FEEDING THE TARGET (B167). With these in
+# hand the factor is plainly a property of the BOOK: lower quartile 0.83 at
+# BetMGM (n=14), 0.93 at DraftKings (n=18), 0.91 at FanDuel (n=8). Pooling
+# them, as the current rule does, would aim a BetMGM slip too low and a
+# DraftKings slip too high, so how these enter the target is a decision.
+SGP_FACTORS_LIVE_20261111_3A = (
+    ("draftkings", .9341, .9341), ("novig", 1.0381, 1.0013),
+    ("fanduel", .9732, .9599), ("draftkings", .9658, .9658),
+    ("novig", 1.1209, .9773), ("draftkings", .9449, .9449),
+    ("betrivers", .9449, .9957), ("novig", 1.0171, 1.0553),
+    ("draftkings", .9260, .9260), ("betrivers", .9681, 1.0004),
+    ("novig", 1.0925, 1.1054), ("draftkings", .9268, .9268),
+    ("novig", .9848, 1.0193), ("draftkings", .9502, .9502),
+    ("fanduel", .9650, .9711), ("draftkings", .9513, .9513),
+    ("novig", 1.1550, 1.1227), ("fanduel", .9658, .9385),
+    ("draftkings", .9514, .9514), ("novig", 1.0796, 1.0362),
+    ("draftkings", .9708, .9708), ("novig", 1.1146, 1.1368),
+    ("fanduel", 1.0461, .9294), ("draftkings", .9347, .9347),
+    ("novig", 1.1278, 1.0169), ("draftkings", .9352, .9352),
+    ("novig", 1.0674, .9887), ("draftkings", .9385, .9385),
+    ("novig", 1.0829, 1.0396), ("fanduel", .8955, 1.0123),
+    ("draftkings", .9508, .9508), ("novig", 1.1217, 1.2292),
+)
+
 SGP_FACTORS_LIVE_20261111 = (
     ("fanduel", 0.8630, 0.9243), ("draftkings", 0.8994, 0.9211),
     ("fanduel", 0.9251, 0.9730), ("draftkings", 0.9529, 0.9549),
@@ -2642,8 +2667,22 @@ class Shortlist:
 
     @property
     def immature_anchors(self) -> list[str]:
+        """Distinct PLAYER NAMES with an immature anchor — NOT slips.
+
+        Its length matched the candidate count on one live shortlist (8 and
+        8) and not the next (7 against 8, because eight slips drew on seven
+        players), which is how the difference surfaced. For "how many slips
+        are clean" use `immature_slips`.
+        """
         return sorted({l.player for c in self.candidates for l in c.legs
                        if l.anchor_immature})
+
+    @property
+    def immature_slips(self) -> tuple[int, int]:
+        """(slips with at least one immature-anchor leg, slips total)."""
+        return (sum(1 for c in self.candidates
+                    if any(l.anchor_immature for l in c.legs)),
+                len(self.candidates))
 
     @property
     def tier_fallbacks(self) -> tuple[int, int]:

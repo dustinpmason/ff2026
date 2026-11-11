@@ -730,6 +730,22 @@ opening-limit money, and the slips built from them showed +3.6% to +15.9%
 EV with no warning. If the report prints `** OPENING ANCHOR **` or lists
 immature anchors on a rung slip, say so before quoting its EV.
 
+**A board pull has a 15-minute working life.** `screen_quotes` drops any
+quote older than 15 minutes, and a leg whose quotes were all dropped comes
+back `VETO`. The veto now says when the only cause is a stale pull
+("only because the pull is STALE ... Re-pull get_odds"); when you see that,
+re-pull and re-screen rather than reporting a veto. On a long run, re-pull
+before each step that builds verdicts.
+
+**`sl.immature_anchors` is a list of PLAYER names, not slips.** For "how
+many shortlisted slips rest on an immature anchor" use
+`sl.immature_slips`, which returns `(slips affected, slips total)`.
+
+**Units: `Candidate.ev_pct`, `ev_floor_pct` and `ev_at_product` are
+FRACTIONS** (0.058 means +5.8%); PropLine's `get_event_ev` field of the
+same name is a percentage. Print engine values with `:+.1%`, or copy the
+number from `report()`, which formats it correctly.
+
 **Rung legs also carry their own uncertainty (`fair_sd`)**, from
 `ladder_fair`. The correlation gate and the ranking check use it in place
 of the board-level figure, and `product_noise` says how many legs did.

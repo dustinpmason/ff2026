@@ -8988,5 +8988,73 @@ chk("a main-line slip's noise is unchanged",
     abs(ff_boost.product_noise([_jleg(c, .5) for c in "ABC"])[0]
         - (3 ** .5) * _u80 / .5) < 1e-12)
 
+# ===========================================================================
+# 81. Findings from live run 3A (2026-11-11)
+# ===========================================================================
+
+section("81. findings from live run 3A")
+
+# --- a stale pull must not read as a dead market -------------------------
+class _Scr:
+    scratch_risk = False
+    suspended_books = ()
+    one_sided = ()
+
+    def __init__(self, dropped):
+        self.usable = []
+        self.dropped = dropped
+
+
+# Built here, not borrowed: section 14's `_e2` is rebound later in the file.
+_e81 = threshold_prob(player_series(wk[wk.season_type == "REG"],
+                                    "Jaxon Smith-Njigba", "receiving_yards"),
+                      79.5)
+_ed81 = prop_edge(_e81, -115, -105)
+
+
+def _vr(dropped):
+    try:
+        return boost_verdict(_e81, _ed81, _Scr(dropped))
+    except Exception as e:
+        return "RAISED", [f"{type(e).__name__}: {e}"]
+
+
+_sv, _sr = _vr([("draftkings", "stale: 18.8 min old (limit 15.0 min)")] * 6)
+chk("an all-stale screen still VETOes, but says it is the clock",
+    _sv == "VETO" and any("STALE" in r and "Re-pull get_odds" in r
+                          and "nothing about the market" in r for r in _sr),
+    str(_sr)[:220])
+_mv, _mr = _vr([("draftkings", "stale: 18.8 min old (limit 15.0 min)"),
+                ("fanduel", "suspended")])
+chk("a mix of causes lists them and does not blame the clock alone",
+    _mv == "VETO" and not any("only because" in r for r in _mr)
+    and any("suspended" in r for r in _mr), str(_mr)[:220])
+_nv, _nr = _vr([])
+chk("no quotes at all keeps the plain sentence",
+    _nv == "VETO" and "no usable price at any book" in _nr, str(_nr)[:120])
+
+# --- immature_anchors is players; immature_slips is slips ---------------
+_ia = [_bn["Op"], _bn["Un"], _bn["Deep"]]
+_c1 = ff_boost.make_candidate([_bn["Op"], _bn["Deep"]], boost_pct=0.50)
+_c2 = ff_boost.make_candidate([_bn["Op"], _bn["Un"]], boost_pct=0.50)
+_c3 = ff_boost.make_candidate(
+    [_jleg("Clean1", .52, market="player_rush_yds", ev="E1"),
+     _jleg("Clean2", .52, market="player_rush_yds", ev="E2")], boost_pct=0.50)
+_ish = ff_boost.Shortlist(candidates=[_c1, _c2, _c3], mode="single-game",
+                          boost_pct=0.50)
+chk("immature_anchors lists distinct PLAYERS",
+    _ish.immature_anchors == ["Op", "Un"], str(_ish.immature_anchors))
+chk("immature_slips counts SLIPS, which is a different number",
+    _ish.immature_slips == (2, 3), str(_ish.immature_slips))
+
+# --- run 3A's quotes are on file and do not yet move the target ---------
+chk("run 3A's 32 quotes are recorded with their book",
+    len(ff_boost.SGP_FACTORS_LIVE_20261111_3A) == 32
+    and sum(1 for b, _, _ in ff_boost.SGP_FACTORS_LIVE_20261111_3A
+            if b not in ff_boost.SGP_EXCHANGE_BOOKS) == 20)
+chk("and are not in the target's list until B167 is decided",
+    len(ff_boost.sportsbook_factors()) == 23
+    and abs(ff_boost._target_factor() - 0.849) < 2e-3)
+
 _summary()
 raise SystemExit(1 if fails else 0)

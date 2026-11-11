@@ -1553,7 +1553,23 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
                  f"({', '.join(screen.suspended_books)}). The books know "
                  f"something the wire has not printed.")
         if not screen.usable:
-            veto("no usable price at any book")
+            # Say WHY there is none. This used to be the bare sentence for
+            # every cause, and live run 3A hit the common one: a pull 18.8
+            # minutes old against the 15-minute limit dropped every quote
+            # as stale, and a leg with a live -109 at DraftKings came back
+            # "no usable price at any book" — a clock problem worded as a
+            # market problem.
+            _dr = [str(w) for _b, w in getattr(screen, "dropped", [])]
+            if _dr and all(w.startswith("stale") for w in _dr):
+                veto(f"no usable price at any book — but only because the "
+                     f"pull is STALE: all {len(_dr)} quote(s) were dropped "
+                     f"for age ({_dr[0]}). This says nothing about the "
+                     f"market. Re-pull get_odds and screen again.")
+            elif _dr:
+                veto("no usable price at any book — "
+                     + "; ".join(sorted(set(_dr)))[:240])
+            else:
+                veto("no usable price at any book")
         if screen.one_sided:
             caution(f"one-sided market at {', '.join(screen.one_sided)} — "
                     f"cannot be de-vigged, needs an external fair line")
