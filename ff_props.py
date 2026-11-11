@@ -357,7 +357,8 @@ def player_series(weekly: pd.DataFrame,
                   player: str,
                   stat: str,
                   seasons: list[int] | None = None,
-                  played_only: bool = True) -> pd.DataFrame:
+                  played_only: bool = True,
+                  aliases: dict | None = None) -> pd.DataFrame:
     """Game log for one player and one stat, oldest first.
 
     Carries the opportunity column alongside the stat so usage_trend() can run.
@@ -367,8 +368,26 @@ def player_series(weekly: pd.DataFrame,
     biases every threshold estimate downward.
     """
     df = weekly[weekly.player_display_name == player]
+    if df.empty and aliases:
+        # B163. The same map `ff_boost.classify` and `rung_legs` take: any
+        # spelling -> the nflverse display name, matched on the normalised
+        # name on the alias side. This was the one join in the single-leg
+        # and boost flows the map did not reach, so "Cameron Skattebo" got
+        # a team from `classify` and a LookupError from here.
+        want = norm_player(str(player))
+        for k, v in aliases.items():
+            if norm_player(str(k)) == want:
+                df = weekly[weekly.player_display_name == v]
+                if not df.empty:
+                    player = v
+                    break
     if df.empty:
-        raise LookupError(f"no rows for player {player!r}")
+        raise LookupError(
+            f"no rows for player {player!r}"
+            + ("" if aliases else
+               " — if this is a book spelling, pass aliases={book name: "
+               "nflverse name} (propline_search_players' known_names lists "
+               "both)"))
     if "season_type" in df.columns:
         df = df[df.season_type == "REG"]
     if seasons:
@@ -2030,7 +2049,8 @@ class AnchorCoverage:
         for b in (self.silent_dropouts if not self.blank else []):
             L.append(
                 f"  *** {b} ANCHORED NOTHING while carrying "
-                f"{self.live[b]} two-sided line(s) in the SAME pull — "
+                f"{self.live[b]} two-sided line(s) in the control pull "
+                f"you passed (ALL markets in it, not only this one) — "
                 f"B60. This is not an empty response and nothing in the "
                 f"EV payload says it happened. Every line that would "
                 f"have anchored on {b} fell through to a softer source. "

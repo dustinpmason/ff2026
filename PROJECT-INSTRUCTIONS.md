@@ -677,7 +677,9 @@ appears only in the rare case the ceiling is still positive.
 **Same-game products are aimed ABOVE the floor, on purpose.** The floor is a
 condition on the book's real quote, and B55 measured same-game quotes at
 0.77–0.99 of the product. So `enumerate_candidates` aims the product at
-floor / (median measured factor) — about +366 for a +300 floor — and
+floor / (lower quartile of every measured sportsbook factor) — about
++371 for a +300 floor, and roughly one quote in four is still expected to
+come in under — and
 `build_notes` states the target, the factor and the worst case. It is a
 prediction. **Always run `price_sgp` before telling Dustin a slip clears a
 minimum**, and if `build_notes` says a group is "BELOW the price target",
@@ -703,10 +705,10 @@ independent, so a refusal here is reliable and the fix is to supply the
 alias. `ladder_fair` is immune (it joins on `player_id`); `get_event_ev`
 carries no `player_id`, so that join is name-keyed and is where this bites.
 
-**`ff_props.player_series` does NOT take `aliases` and raises `LookupError`
-on a book spelling.** Translate the name yourself before calling it
-(`aliases.get(name, name)`), and wrap the call when looping over a board so
-one name does not end the loop.
+**`ff_props.player_series` takes the same `aliases=` map** (since
+2026-11-11). Without it a book spelling raises `LookupError`, and the
+message tells you to pass the map. Still wrap the call when looping over a
+board, so one unknown name does not end the loop.
 
 **Pass `tiers=ff_boost.book_liquidity_tiers(odds)` to `rung_legs()`.** Rung
 legs now carry their anchor's depth, so the report can say when a rung's

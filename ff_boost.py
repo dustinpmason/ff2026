@@ -242,13 +242,12 @@ SGP_FACTORS_OBSERVED = (
 
 # Second live run, event 53178, 2026-11-11 ~14:48Z: (book, quote / ENGINE
 # product, quote / that book's own independent price). Five slips, every
-# quote returned. NOT merged into SGP_FACTORS_OBSERVED, on purpose: that
-# list feeds the same-game price target through its median, these run
-# higher (median 0.94 against 0.86), and folding them in would silently
-# lower the target from +366 to about +342 — at which 11 of the 23
-# sportsbook quotes on record would have come in under the floor. Which
-# list and which quantile the target uses is a decision, filed as B161.
-# Novig is an exchange and is the source of most of the >1.0 values.
+# quote returned. Kept as its own tuple because it carries the BOOK and two
+# ratios per quote, which the older list does not. The sportsbook rows feed
+# the same-game price target through `sportsbook_factors()`; the target is
+# the LOWER QUARTILE of those (B161), because a median would have put 11 of
+# the 23 sportsbook quotes on record under the floor. Novig is an exchange,
+# is the source of most of the >1.0 values, and is excluded.
 SGP_FACTORS_LIVE_20261111 = (
     ("fanduel", 0.8630, 0.9243), ("draftkings", 0.8994, 0.9211),
     ("fanduel", 0.9251, 0.9730), ("draftkings", 0.9529, 0.9549),
@@ -2867,11 +2866,42 @@ def _prob(p) -> str:
     return f"{p * 100:.3g}% (1 in {1.0 / p:,.0f})"
 
 
-def _median_factor() -> float:
-    """Median of every measured same-game quote/product factor (B55)."""
-    xs = sorted(SGP_FACTORS_OBSERVED)
-    n = len(xs)
-    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+# Books whose same-game quotes are NOT used to set the price target. An
+# exchange prices a parlay off resting orders rather than a correlated SGP
+# model, and it is where most of the >1.0 factors come from; a boost token
+# lives at a sportsbook.
+SGP_EXCHANGE_BOOKS = ("novig", "prophetx", "sxbet", "matchbook", "smarkets",
+                      "kalshi", "polymarket", "polymarket_us")
+
+
+def sportsbook_factors() -> list[float]:
+    """Every measured sportsbook quote/product factor, both sittings.
+
+    The original BetMGM list plus the 2026-11-11 live quotes measured
+    against the ENGINE product, which is the number the target is set on.
+    """
+    return (list(SGP_FACTORS_OBSERVED)
+            + [eng for book, eng, _own in SGP_FACTORS_LIVE_20261111
+               if book not in SGP_EXCHANGE_BOOKS])
+
+
+def _target_factor() -> float:
+    """LOWER QUARTILE of every measured sportsbook factor (B55, B161).
+
+    Dustin's decision, 2026-11-11. Not the median: aiming a product at
+    floor / median means about half of slips quote under the floor by
+    construction, and a miss voids a token while an overshoot only makes
+    the slip a little longer. At the lower quartile roughly one quote in
+    four is expected to miss, and `price_sgp` settles each slip anyway.
+
+    Linear interpolation between order statistics, so adding a measurement
+    moves this smoothly rather than jumping between list entries.
+    """
+    xs = sorted(sportsbook_factors())
+    i = 0.25 * (len(xs) - 1)
+    lo = int(i)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
 
 
 def _leg_key(l) -> tuple:
@@ -3154,12 +3184,12 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     # just over the line on the wrong number.
     #
     # So in a same-game build the product is aimed at floor / factor, with
-    # the factor taken as the MEDIAN of the measured list rather than a
-    # constant typed here. It is still a prediction: the quote snaps to a
+    # the factor taken as the LOWER QUARTILE of every measured sportsbook
+    # quote (`_target_factor`, B161) rather than a constant typed here. It is still a prediction: the quote snaps to a
     # coarse grid (B61) and the observed range is wide, so the note below
     # gives the worst case too, and only `price_sgp` settles it. Cross-game
     # parlays are not haircut this way and keep the plain floor.
-    sgp_factor = (_median_factor() if mode != "cross-game" else 1.0)
+    sgp_factor = (_target_factor() if mode != "cross-game" else 1.0)
     target_dec = fl_dec / sgp_factor
     n_below_target = 0
     chosen: list[tuple] = []
@@ -3391,16 +3421,18 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             f"which is the only thing that catches it")
         build_notes.extend(f"  {r}" for r in dupe_reasons[:5])
     if sgp_factor < 1.0 and chosen:
-        worst = min(SGP_FACTORS_OBSERVED)
+        _fx = sportsbook_factors()
+        worst = min(_fx)
         build_notes.append(
             f"same-game products are aimed at {american(target_dec):+.0f}, "
             f"not {floor:+.0f}: the floor applies to the book's QUOTE, and "
-            f"the measured quote/product factor has a median of "
-            f"{sgp_factor:.2f} (n={len(SGP_FACTORS_OBSERVED)}, range "
-            f"{worst:.2f}-{max(SGP_FACTORS_OBSERVED):.2f}). At the worst "
-            f"observed factor a {american(target_dec):+.0f} product quotes "
-            f"{american(target_dec * worst):+.0f}, so this is a prediction "
-            f"— price_sgp decides.")
+            f"the measured sportsbook quote/product factor has a lower "
+            f"quartile of {sgp_factor:.2f} (n={len(_fx)}, range "
+            f"{worst:.2f}-{max(_fx):.2f}). Expect roughly one quote in four "
+            f"to come in under the floor anyway; at the worst observed "
+            f"factor a {american(target_dec):+.0f} product quotes "
+            f"{american(target_dec * worst):+.0f}. A prediction — "
+            f"price_sgp decides.")
         if n_below_target:
             build_notes.append(
                 f"{n_below_target} group(s) clear {floor:+.0f} on the "

@@ -8236,19 +8236,17 @@ chk("the shortlist reports that it chose on price",
 # The target is for the QUOTE, not the product (found in the 2026-11-11
 # review). B55 measured same-game quotes at 0.77-0.99 of the product, so a
 # product aimed AT the floor prices under it and voids a token.
-_tgt = ff_boost.american(ff_boost.to_decimal(300) / ff_boost._median_factor())
-chk("the median measured factor is derived from the list, not typed",
-    0.77 < ff_boost._median_factor() < 0.99
-    and ff_boost._median_factor() in ff_boost.SGP_FACTORS_OBSERVED,
-    str(ff_boost._median_factor()))
+_tgt = ff_boost.american(ff_boost.to_decimal(300) / ff_boost._target_factor())
+chk("the target factor is derived from the measurements, not typed",
+    0.77 < ff_boost._target_factor() < 0.99, str(ff_boost._target_factor()))
 chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
     _psl.candidates and all(c.independent_odds >= _tgt - 1e-6
                             for c in _psl.candidates),
     f"target {_tgt:+.0f}; got "
     f"{sorted(round(c.independent_odds) for c in _psl.candidates)[:4]}")
-chk("so at the median factor the predicted QUOTE clears the floor",
+chk("so at the target factor the predicted QUOTE clears the floor",
     all(ff_boost.american(ff_boost.to_decimal(c.independent_odds)
-                          * ff_boost._median_factor()) >= 300 - 1e-6
+                          * ff_boost._target_factor()) >= 300 - 1e-6
         for c in _psl.candidates))
 chk("the note gives the target, the factor and the worst case",
     any("aimed at" in n and "worst" in n and "price_sgp decides" in n
@@ -8732,9 +8730,51 @@ chk("a multi-line group that cannot reach the target says BELOW it",
 chk("the 2026-11-11 quotes are kept with their book",
     len(ff_boost.SGP_FACTORS_LIVE_20261111) == 14
     and all(len(r) == 3 for r in ff_boost.SGP_FACTORS_LIVE_20261111))
-chk("and the price target still rests on the original list alone",
-    abs(ff_boost._median_factor() - 0.8583) < 1e-9,
-    "which list and which quantile feed the target is Dustin's call (B161)")
+# B161, decided 2026-11-11: the LOWER QUARTILE of every sportsbook quote.
+_sf = sorted(ff_boost.sportsbook_factors())
+chk("the target uses both sittings, sportsbooks only",
+    len(_sf) == 23 and not any(
+        b in ff_boost.SGP_EXCHANGE_BOOKS and e in _sf and e > 1.03
+        for b, e, _ in ff_boost.SGP_FACTORS_LIVE_20261111), str(len(_sf)))
+chk("and is their lower quartile, about 0.849",
+    abs(ff_boost._target_factor() - (_sf[5] + (_sf[6] - _sf[5]) * 0.5)) < 1e-12
+    and abs(ff_boost._target_factor() - 0.849) < 2e-3,
+    str(ff_boost._target_factor()))
+chk("roughly a quarter of measured quotes fall below it, not half",
+    5 <= sum(1 for x in _sf if x < ff_boost._target_factor()) <= 6,
+    str(sum(1 for x in _sf if x < ff_boost._target_factor())))
+chk("which puts a +300 floor's product target near +371",
+    abs(ff_boost.american(4.0 / ff_boost._target_factor()) - 371) < 2,
+    str(ff_boost.american(4.0 / ff_boost._target_factor())))
+chk("the build note says lower quartile and the expected miss rate",
+    any("lower quartile" in n and "one quote in four" in n
+        for n in _psl.build_notes), str(_psl.build_notes)[:260])
+
+# --- B163: player_series takes the alias map ------------------------------
+import pandas as _pd
+_wk = _pd.DataFrame({"player_display_name": ["Cam Skattebo"] * 3,
+                     "season": [2026] * 3, "week": [1, 2, 3],
+                     "season_type": ["REG"] * 3,
+                     "rushing_yards": [40, 55, 61], "carries": [10, 12, 14]})
+def _ps(name, **kw):
+    try:
+        return len(ff_props.player_series(_wk, name, "rushing_yards", **kw)), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+chk("a book spelling with no alias still raises, and now says what to do",
+    _ps("Cameron Skattebo")[0] is None
+    and "aliases=" in _ps("Cameron Skattebo")[1], _ps("Cameron Skattebo")[1])
+chk("with the alias it finds the nflverse rows",
+    _ps("Cameron Skattebo", aliases={"cameron skattebo": "Cam Skattebo"})[0] == 3,
+    str(_ps("Cameron Skattebo", aliases={"cameron skattebo": "Cam Skattebo"})))
+chk("an alias pointing at nobody still raises rather than guessing",
+    _ps("Cameron Skattebo", aliases={"Cameron Skattebo": "Nobody"})[0] is None)
+chk("the exact name is unaffected", _ps("Cam Skattebo")[0] == 3)
+# A revert that matched the alias on SURNAME ONLY went uncaught: nothing
+# offered a wrong first name with the right surname.
+chk("an alias for a different Skattebo does not match on the surname",
+    _ps("Cameron Skattebo", aliases={"Kyle Skattebo": "Cam Skattebo"})[0] is None,
+    "B44/B101/B127: a near-match join is how a player loses his board")
 
 _summary()
 raise SystemExit(1 if fails else 0)
