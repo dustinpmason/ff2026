@@ -1427,6 +1427,41 @@ def classify(legs, meta=None, aliases=None) -> Structure:
         else:
             zeros.append((a.player, b.player, why))
 
+    # B156. The per-pair gate clears a pair whose measured lift is within
+    # 3% of 1, and F13's own finding was that a per-pair gate cannot bound
+    # a SLIP: the deviations add. A back beside three same-team receivers
+    # is six cleared pairs summing to about -4.2%, against 3.2% of noise —
+    # every pair "independent", the slip not. So the cleared pairs' measured
+    # lifts are summed, and when the total says the product OVERSTATES the
+    # joint by more than the noise it already carries, those pairs stop
+    # being zeros and are scored like any other measured pair. Positive or
+    # small totals change nothing: the conservative direction needs no
+    # gate, and inside the noise there is nothing to act on.
+    if zeros and not unmeasured:
+        drift, promote = _zero_drift(legs, zeros)
+        if drift < 0 and promote:
+            try:
+                noise = product_noise(legs)[0]
+            except Exception:
+                noise = 0.0
+            if noise > 0 and abs(drift) > noise:
+                keep = []
+                names = {(a, b) for a, b, _r in promote}
+                for a_name, b_name, why in zeros:
+                    if (a_name, b_name) in names:
+                        r = next(r for a, b, r in promote
+                                 if (a, b) == (a_name, b_name))
+                        pairs.append((
+                            a_name, b_name, r,
+                            why + f" — but this slip's cleared pairs sum to "
+                                  f"{drift:+.2%}, past the {noise:.2%} of "
+                                  f"noise the product carries, so they are "
+                                  f"scored rather than waved through "
+                                  f"(B156)"))
+                    else:
+                        keep.append((a_name, b_name, why))
+                zeros = keep
+
     events = {l.event_id for l in legs}
     if len(events) == len(legs):
         kind = "cross-game"
@@ -1726,6 +1761,37 @@ def _lift_term(la, lb, sign, pa, pb, za, zb):
     if m is None:
         return None
     return sign * (float(m[0]) - 1.0) * (_phi(za) * _phi(zb) / (pa * pb)) / _W50
+
+
+def _zero_drift(legs, zeros):
+    """(sum of the cleared pairs' measured lift terms, [(a, b, r), ...]).
+
+    Only pairs with a measured LIFT contribute; a cross-game pair or one
+    cleared some other way has no number to add and is left alone. The r
+    returned is the lift table's own, so a promoted pair is scored by
+    `joint_error` exactly as a pair that failed the gate would be.
+    """
+    by = {l.player: l for l in legs}
+    tot, out = 0.0, []
+    for a_name, b_name, _why in zeros:
+        la, lb = by.get(a_name), by.get(b_name)
+        if la is None or lb is None:
+            continue
+        try:
+            sign = _side_sign(la.side) * _side_sign(lb.side)
+            pa, pb = float(la.fair_prob), float(lb.fair_prob)
+            za, zb = _norm_inv(1.0 - pa), _norm_inv(1.0 - pb)
+        except ValueError:
+            continue
+        t = _lift_term(la, lb, sign, pa, pb, za, zb)
+        if t is None:
+            continue
+        sa, sb = MARKET_SIDE.get(la.market), MARKET_SIDE.get(lb.market)
+        m = pair_lift("same" if _clean(la.team) == _clean(lb.team) else "opp",
+                      sa, sb)
+        tot += t
+        out.append((a_name, b_name, float(m[1])))
+    return tot, out
 
 
 def joint_error(legs, pairs, cis=None) -> JointError:

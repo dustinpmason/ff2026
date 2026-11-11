@@ -8776,5 +8776,75 @@ chk("an alias for a different Skattebo does not match on the surname",
     _ps("Cameron Skattebo", aliases={"Kyle Skattebo": "Cam Skattebo"})[0] is None,
     "B44/B101/B127: a near-match join is how a player loses his board")
 
+# ===========================================================================
+# 78. B156 — pairs cleared one at a time still add up across a slip
+# ===========================================================================
+
+section("78. cleared pairs accumulate (B156)")
+
+
+def _zl(name, market, pos, side="OVER", p=.5, team="NYG"):
+    return ff_boost.BoostLeg(
+        event_id="E1", book="dk", market=market, player=name, side=side,
+        odds=-110, fair_prob=p, fair_source="pinnacle", devig_method="shin",
+        line=50.5, player_id=name, verdict="CLEAR", verdict_side=side,
+        team=team, pos=pos)
+
+
+def _zslip(n_recv, rb_side="OVER"):
+    return ([_zl("RB", "player_rush_yds", "RB", side=rb_side)]
+            + [_zl(f"W{i}", "player_reception_yds", "WR")
+               for i in range(n_recv)])
+
+
+_z3 = ff_boost.classify(_zslip(2))
+chk("a back and two receivers stays priceable: the sum is inside the noise",
+    _z3.priceable and len(_z3.zeros) == 3 and not _z3.pairs,
+    f"{_z3.kind} pairs={len(_z3.pairs)}")
+_z4 = ff_boost.classify(_zslip(3))
+chk("a back and THREE receivers does not: six cleared pairs add up",
+    not _z4.priceable and len(_z4.pairs) == 6,
+    f"{_z4.kind} pairs={len(_z4.pairs)} zeros={len(_z4.zeros)}")
+chk("every pair in it passed the per-pair gate on its own",
+    all(abs(ff_boost.pair_lift("same", *sorted((a, b)))[0] - 1.0)
+        <= ff_boost.CORR_GATE_LIFT_DEV
+        for a, b in (("RECV", "RUSH"), ("RECV", "RECV"))),
+    "which is exactly why a per-pair gate cannot bound a slip")
+chk("the reason says the pairs were scored because of their SUM",
+    "cleared pairs sum to" in _z4.reason and "B156" in _z4.reason,
+    _z4.reason[-200:])
+_z4c = ff_boost.make_candidate(_zslip(3), boost_pct=0.50)
+chk("and the slip is refused through the ordinary joint gate",
+    _z4c.verdict == "UNPRICEABLE" and _z4c.joint.rel < 0
+    and _z4c.p_cash is None, f"{_z4c.verdict} {_z4c.joint.rel:+.2%}")
+_z4u = ff_boost.classify(_zslip(3, rb_side="UNDER"))
+chk("flip the back to UNDER and the sum turns positive, so nothing changes",
+    _z4u.priceable and len(_z4u.zeros) == 6,
+    f"{_z4u.kind} — the conservative direction needs no gate")
+# That fixture's positive sum (+3.15%) is itself inside the noise, so a
+# revert that promoted on ANY large sum went uncaught. This one is clearly
+# positive: an opposing QB beside three receivers, +4.7% against 3.2%.
+_zp = ([_zl("QB", "player_pass_yds", "QB", team="WAS")]
+       + [_zl(f"W{i}", "player_reception_yds", "WR") for i in range(3)])
+_dzp, _ = ff_boost._zero_drift(
+    _zp, [(a.player, b.player, "t")
+          for a, b in itertools.combinations(_zp, 2)])
+_zpc = ff_boost.classify(_zp)
+chk("a positive sum well past the noise still changes nothing",
+    _dzp > 0.04 and _zpc.priceable and not _zpc.pairs,
+    f"drift {_dzp:+.2%}, {_zpc.kind} — the product understating the joint "
+    f"is the safe direction")
+_dz, _pz = ff_boost._zero_drift(_zslip(3), _z3.zeros[:0])
+chk("no cleared pairs, no drift", _dz == 0.0 and _pz == [])
+_dz4, _pz4 = ff_boost._zero_drift(
+    _zslip(3), [(a.player, b.player, "t") for a, b in
+                itertools.combinations(_zslip(3), 2)])
+chk("the drift is the sum of the measured lift deviations",
+    abs(_dz4 - (3 * (0.9878 - 1) + 3 * (0.9983 - 1))) < 1e-9, f"{_dz4:+.4%}")
+_xz = [_zl("A", "player_rush_yds", "RB"), _zl("B", "player_rush_yds", "RB")]
+_xz[1].event_id = "E2"
+chk("a cross-game pair has no lift to add and is left alone",
+    ff_boost._zero_drift(_xz, [("A", "B", "t")]) == (0.0, []))
+
 _summary()
 raise SystemExit(1 if fails else 0)

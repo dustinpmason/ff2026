@@ -2671,6 +2671,14 @@ you. Three outcomes:
 estimate are the same kind of number on the page and opposite kinds of
 mistake. `floor[1]` is the sentence to quote.
 
+**Pairs that each pass the 3% gate can still add up (B156).** A back beside
+three same-team receivers is six "independent" pairs summing to about -4%,
+more than the noise the product carries. `classify` now sums the cleared
+pairs' measured lifts, and when the total says the product overstates the
+joint by more than that noise, the slip is scored and refused like any
+other correlated slip; the reason says "cleared pairs sum to". Three-leg
+slips of this kind stay priceable.
+
 **A pair the table never measured still refuses outright.** F13 replaced
 "nobody measured this" with a measurement for receptions and anytime TD; it
 did not make independence an assumption anywhere.
