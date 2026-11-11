@@ -8846,5 +8846,111 @@ _xz[1].event_id = "E2"
 chk("a cross-game pair has no lift to add and is left alone",
     ff_boost._zero_drift(_xz, [("A", "B", "t")]) == (0.0, []))
 
+# ===========================================================================
+# 79. B157 / B165 — prefer a priceable combination; label a carried slip
+# ===========================================================================
+
+section("79. priceable preference and price balance")
+
+
+def _pl(name, market, pos, dec, line=50.5):
+    return ff_boost.BoostLeg(
+        event_id="E1", book="dk", market=market, player=name, side="OVER",
+        odds=ff_boost.american(dec), fair_prob=min(0.95, 0.95 / dec),
+        fair_source="pinnacle", devig_method="shin", line=line,
+        player_id=name, verdict="CLEAR", verdict_side="OVER", team="NYG",
+        pos=pos)
+
+
+def _ppool(rush_dec):
+    # The QB has a passing rung (correlated with his receivers) and a
+    # rushing rung (measured independent of them). Passing is cheaper.
+    return [_pl("QBp", "player_pass_yds", "QB", 1.31, 210.5),
+            _pl("QBp", "player_rush_yds", "QB", rush_dec, 20.5),
+            _pl("WRa", "player_reception_yds", "WR", 1.90),
+            _pl("WRb", "player_reception_yds", "WR", 1.90)]
+
+
+_near, _nerr = _ec(_ppool(1.35), None, mode="single-game", event_id="E1",
+                   boost_pct=0.50, legs_per_slip=3, floor=300, ceiling=900)
+_nlegs = ({l.market for l in _near.candidates[0].legs}
+          if _near and _near.candidates else set())
+chk("within one quote step, the PRICEABLE combination is taken",
+    "player_rush_yds" in _nlegs and "player_pass_yds" not in _nlegs
+    and _near.candidates[0].structure.priceable,
+    _nerr or f"{_nlegs} {_near.candidates[0].verdict if _near.candidates else ''}")
+chk("and the build notes say a swap happened and why",
+    _near is not None and any("B157" in n for n in _near.build_notes)
+    and any("took the PRICEABLE" in n for n in _near.build_notes),
+    str(_near.build_notes if _near else _nerr)[:260])
+_far, _ferr = _ec(_ppool(1.45), None, mode="single-game", event_id="E1",
+                  boost_pct=0.50, legs_per_slip=3, floor=300, ceiling=900)
+_flegs = ({l.market for l in _far.candidates[0].legs}
+          if _far and _far.candidates else set())
+chk("more than one quote step away, the cheapest stays — no reaching",
+    "player_pass_yds" in _flegs
+    and not any("B157" in n for n in _far.build_notes),
+    _ferr or f"{_flegs}")
+chk("the step is the measured quote-grid spacing",
+    ff_boost.SGP_QUOTE_STEP_DEC == 0.25)
+_onlyp, _ = _ec([l for l in _ppool(1.35) if l.market != "player_rush_yds"],
+                None, mode="single-game", event_id="E1", boost_pct=0.50,
+                legs_per_slip=3, floor=300, ceiling=900)
+chk("with no priceable alternative the cheapest is kept as it was",
+    _onlyp is not None and len(_onlyp.candidates) == 1
+    and not _onlyp.candidates[0].structure.priceable)
+chk("a cheapest pick that is already priceable is left alone",
+    not any("B157" in n for n in _psl.build_notes))
+# The structure cache is a first pass: B156's accumulation test reads the
+# legs' own probabilities, so the exact legs are re-checked before a swap.
+# Seed the cache with a WRONG "priceable" for a correlated alternative and
+# the re-check must refuse it. (A revert dropping the re-check went
+# uncaught until this existed.)
+_alt_q = [_pl("QBp", "player_pass_yds", "QB", 1.31, 210.5),
+          _pl("QBp", "player_pass_tds", "QB", 1.33, 1.5)]
+_wa, _wb = [_pl("WRa", "player_reception_yds", "WR", 1.90)], \
+           [_pl("WRb", "player_reception_yds", "WR", 1.90)]
+_lists79 = [sorted(_alt_q, key=lambda l: ff_boost.to_decimal(l.odds)), _wa, _wb]
+_tdec = 4.0 / ff_boost._target_factor()
+_best79 = ff_boost._cheapest_at_least(_lists79, _tdec)
+_lie = {tuple(sorted(ff_boost._struct_key(l)
+                     for l in (_alt_q[1], _wa[0], _wb[0]))): True}
+chk("the fixture's alternative really is NOT priceable",
+    not ff_boost._is_priceable([_alt_q[1], _wa[0], _wb[0]], None))
+chk("a cached 'priceable' that the exact legs contradict is not trusted",
+    ff_boost._prefer_priceable(_lists79, _best79, _tdec,
+                               ff_boost.to_decimal(900), None, _lie) is None,
+    "the cache answers for a structure; the legs get the final word")
+chk("_is_priceable never raises, even on one man twice",
+    ff_boost._is_priceable([_pl("QBp", "player_pass_yds", "QB", 1.3),
+                            _pl("QBp", "player_rush_yds", "QB", 1.3)],
+                           None) is False)
+
+# --- price balance --------------------------------------------------------
+_lop = [_pl("Lock1", "player_reception_yds", "WR", ff_boost.to_decimal(-660)),
+        _pl("Lock2", "player_rush_yds", "RB", ff_boost.to_decimal(-660)),
+        _pl("Long", "player_reception_yds", "TE", ff_boost.to_decimal(+252))]
+_top, _share = ff_boost.price_share(_lop)
+chk("the long leg of -660 / -660 / +252 supplies about 82% of the price",
+    _top.player == "Long" and abs(_share - 0.817) < 0.01, f"{_share:.3f}")
+chk("and the line says it behaves like a single bet on that leg",
+    "supplies 82%" in ff_boost.price_balance(_lop)
+    and "single bet" in ff_boost.price_balance(_lop),
+    ff_boost.price_balance(_lop))
+_even = [_pl(n, m, "WR", 1.9) for n, m in
+         (("E1", "player_reception_yds"), ("E2", "player_rush_yds"),
+          ("E3", "player_pass_yds"))]
+chk("three equal legs are a third each and carry no warning",
+    abs(ff_boost.price_share(_even)[1] - 1 / 3) < 1e-9
+    and "no single leg" in ff_boost.price_balance(_even))
+chk("the line is 'more than the other legs combined', i.e. over one half",
+    "more than the other legs combined" in ff_boost.price_balance(_lop))
+chk("a one-leg slip and an empty one do not raise",
+    ff_boost.price_balance(_lop[:1]) == "price balance : single leg"
+    and ff_boost.price_balance([]) == "price balance : single leg")
+chk("the report carries the line",
+    "price balance" in ff_boost.report([ff_boost.make_candidate(
+        _even, boost_pct=0.50)]))
+
 _summary()
 raise SystemExit(1 if fails else 0)

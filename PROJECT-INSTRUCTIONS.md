@@ -651,6 +651,18 @@ came back small.** Read `sl.build_notes` first. It reports how many
 combinations the targeting chose between, how many groups had an in-band
 option, and which rung it took for each group.
 
+**Targeting prefers a PRICEABLE combination when it is within one quote
+step (B157).** If the cheapest combination for a group of players is
+correlated (`FLOOR ONLY` or `UNPRICEABLE`) and a fully priceable one for
+the same players sits within 0.25 decimal of it, the priceable one is taken
+and `build_notes` says so. It never reaches further than that.
+
+**Every candidate prints a `price balance` line (B165).** When one leg
+supplies more than half of the slip's price, the line says the slip
+"behaves like a single bet on that leg with passengers". Read that out to
+Dustin; do not hide it and do not treat it as a defect. Lopsided slips are
+deliberately left in.
+
 **Read `sl.build_notes` generally.** It is the only place that says what
 the enumeration refused and what it chose.
 

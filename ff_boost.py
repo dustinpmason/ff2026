@@ -2970,6 +2970,71 @@ def _target_factor() -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
 
 
+# B157, decided 2026-11-11. The spacing of the same-game quote grid: the
+# quotes observed at BetMGM sat at +400, +425, +450, +475 (and +210, +230),
+# roughly 0.25 apart in decimal — see the note under SGP_FACTORS_OBSERVED.
+# Two products closer than this are likely quoted at the same grid point,
+# so preferring the priceable one inside it costs nothing at the book.
+SGP_QUOTE_STEP_DEC = 0.25
+
+
+def _struct_key(l) -> tuple:
+    """What decides a leg's part in the slip's STRUCTURE — not its line."""
+    return (norm_player(l.player), l.market, str(l.side).upper(),
+            l.event_id, _clean(l.team))
+
+
+def _is_priceable(legs, meta, cache=None) -> bool:
+    """Is this combination's product its joint? Never raises.
+
+    Cached on the structure key when a cache is given. B156's accumulation
+    test reads the legs' probabilities, so a cached answer is a first pass;
+    `_prefer_priceable` re-checks the exact legs it is about to return.
+    """
+    key = tuple(sorted(_struct_key(l) for l in legs))
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        ok = bool(classify(list(legs), meta).priceable)
+    except ValueError:
+        ok = False
+    if cache is not None:
+        cache[key] = ok
+    return ok
+
+
+def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache):
+    """A priceable combination within one quote step of `best`, or None.
+
+    Only looks when the cheapest pick is NOT priceable — the common case
+    costs one cached lookup. A slip's structure depends on each leg's
+    market and side, not its line, so each player's rungs are split by
+    market and the cheapest-that-clears search is rerun per market
+    combination; the best priceable result wins if it is close enough.
+    """
+    if _is_priceable(best[1], meta, cache):
+        return None
+    per_player = []
+    for ls in lists:
+        by_mkt: dict = {}
+        for l in ls:                       # `ls` is price-sorted; order kept
+            by_mkt.setdefault((l.market, str(l.side).upper()), []).append(l)
+        per_player.append(list(by_mkt.values()))
+    found = None
+    for combo in product(*per_player):
+        if not _is_priceable([sub[0] for sub in combo], meta, cache):
+            continue
+        got = _cheapest_at_least(list(combo), target_dec)
+        if got is None or got[0] > cl_dec:
+            continue
+        if found is None or got[0] < found[0]:
+            found = got
+    if found is None or found[0] - best[0] > SGP_QUOTE_STEP_DEC:
+        return None
+    # The cache answered for the structure; confirm these exact legs.
+    return found if _is_priceable(found[1], meta, None) else None
+
+
 def _leg_key(l) -> tuple:
     """Deterministic ordering for two legs at the same price."""
     return (norm_player(l.player), l.market,
@@ -3258,6 +3323,8 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     sgp_factor = (_target_factor() if mode != "cross-game" else 1.0)
     target_dec = fl_dec / sgp_factor
     n_below_target = 0
+    n_swapped = 0
+    _struct_cache: dict = {}
     chosen: list[tuple] = []
     n_rung_alts = 0
     n_groups_in_band = 0
@@ -3330,17 +3397,30 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             for ls in lists:
                 lo_dec *= to_decimal(ls[0].odds)
                 hi_dec *= to_decimal(ls[-1].odds)
+            swapped = ""
+            if best is not None and best[0] <= cl_dec and not below_target:
+                alt = _prefer_priceable(lists, best, target_dec, cl_dec,
+                                        meta, _struct_cache)
+                if alt is not None:
+                    swapped = (f" — took the PRICEABLE {american(alt[0]):+.0f} "
+                               f"over the cheapest {american(best[0]):+.0f}, "
+                               f"which was not priceable; within one quote "
+                               f"step, so the book likely quotes both alike")
+                    best = alt
+                    n_swapped += 1
             if best is not None and best[0] <= cl_dec:
                 n_groups_in_band += 1
                 pick = best[1]
                 if n_combo > 1:
-                    target_notes.append(
+                    (target_notes.insert if swapped else target_notes.append)(
+                        *((0,) if swapped else ()),
                         f"{', '.join(who)}: chose {american(best[0]):+.0f} "
                         f"from {n_combo:,} combination(s) spanning "
                         f"{american(lo_dec):+.0f} to {american(hi_dec):+.0f} "
                         f"— cheapest that clears the "
                         + ("floor on the product only, BELOW the price target"
-                           if below_target else "price target"))
+                           if below_target else "price target")
+                        + swapped)
             elif hi_dec < fl_dec:
                 n_groups_short += 1
                 continue                # counted, never built
@@ -3506,6 +3586,13 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                 f"quote will probably come in UNDER the floor. They are "
                 f"listed because the factor is a prediction, not because "
                 f"they are expected to clear.")
+    if n_swapped:
+        build_notes.append(
+            f"{n_swapped} group(s) took a PRICEABLE combination in place of "
+            f"a cheaper one that was not, each within one quote step "
+            f"({SGP_QUOTE_STEP_DEC:.2f} decimal) of the cheapest — a real "
+            f"EV instead of a bound or a refusal, at effectively the same "
+            f"price (B157).")
     if n_rung_alts:
         build_notes.append(
             f"price targeting chose between {n_rung_alts + len(chosen)} "
@@ -3855,6 +3942,51 @@ def rank_is_meaningful(cands, quotes=None) -> tuple[bool, str]:
 # is reported as its own state with its own count.
 
 
+def price_share(legs):
+    """(leg supplying the most of the slip's price, its share of log-odds).
+
+    A parlay's price is the product of its legs' decimal odds, so each
+    leg's contribution is its LOG decimal odds. Three equal legs are a
+    third each; a -660, a -660 and a +252 are 10%, 10% and 80%.
+    """
+    logs = [(math.log(to_decimal(l.odds)), l) for l in legs]
+    tot = sum(x for x, _ in logs)
+    if not logs or tot <= 0:
+        return None, 0.0
+    top = max(logs, key=lambda t: t[0])
+    return top[1], top[0] / tot
+
+
+def price_balance(legs) -> str:
+    """One report line on whether a single leg carries the slip (B165).
+
+    Decided 2026-11-11: lopsided slips stay IN and are labelled. Price
+    targeting reaches a product cheaply by pairing near-certain rungs with
+    one longer leg, and on the one live board that priced any, such a slip
+    got the best quote of three. That is one slip, so this reports rather
+    than judges. The line of "more than the other legs combined" is a
+    share above one half — the definition of carrying it, not a tuned
+    cutoff.
+    """
+    legs = list(legs)
+    if len(legs) < 2:
+        return "price balance : single leg"
+    top, share = price_share(legs)
+    if top is None:
+        return "price balance : not computable"
+    short = min(legs, key=lambda l: to_decimal(l.odds))
+    if share > 0.5:
+        rest = ", ".join(f"{l.player} {l.odds:+.0f}" for l in legs
+                         if l is not top)
+        return (f"price balance : {top.player} ({top.odds:+.0f}) supplies "
+                f"{share:.0%} of this slip's price — more than the other "
+                f"legs combined ({rest}). It behaves like a single bet on "
+                f"that leg with passengers; judge it as one.")
+    return (f"price balance : no single leg supplies more than half the "
+            f"price (largest {share:.0%}, {top.player}); shortest leg "
+            f"{short.player} {short.odds:+.0f}")
+
+
 @dataclass
 class AnchorDepth:
     """Depth behind a candidate's legs, summarised without being ranked."""
@@ -4013,6 +4145,11 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                            f"curve between rungs is not. 'Which rung is "
                            f"cheapest' holds; 'this rung beats the market' "
                            f"does not.")
+        try:
+            out.append(f"  {price_balance(c.legs)}")
+        except Exception as e:                       # pragma: no cover
+            out.append(f"  price balance : COULD NOT BE RENDERED "
+                       f"({type(e).__name__}: {e})")
         try:
             out.append(f"  {anchor_depth(c.legs).describe()}")
         except Exception as e:                       # pragma: no cover
