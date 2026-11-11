@@ -1117,3 +1117,30 @@ reality.
      wrapper that turns a raise into a failed assertion. Lesson 14 keeps
      coming back because every new refusal path is a new place to forget
      it.
+
+104. **A guard cannot be exercised by a fixture that has nothing for it to
+     guard.** F12 shipped with sixteen reverts, all caught, and the first
+     live board found a defect that blocked the feature's entire purpose.
+     `enumerate_candidates` deduped on the player-name tuple, which was
+     harmless while the pool held one line per player — and section 75's
+     fixtures used four rungs across three players, exactly one
+     combination per triple. The dedupe had nothing to collapse, so no
+     revert of it could change an outcome. On a real board it collapsed
+     5,712 rung choices per triple to one, and the engine then reported
+     "the legs are too short" about a pool holding 10,005 in-band slips.
+     When a feature's whole point is that there are now MANY of something,
+     the fixture has to contain many of it. Count what the fixture
+     produces, not just what it asserts: one combination per group is a
+     fixture that cannot see a grouping bug.
+
+105. **A comment that claims a fix is not a fix, and a check written to
+     match the comment passes for the wrong reason.** B142's first version
+     said the normalised meta lookup closed the Cam/Cameron name variants
+     the live run found. It does not — `norm_player` is documented not to
+     collapse first-name variants, and it doesn't. I wrote the claim in a
+     docstring, then wrote a check asserting it, and the check failed,
+     which is the only reason the claim did not ship. The fix had to be a
+     separate mechanism (a caller-supplied alias map) and the docstring
+     had to be split into what each mechanism actually closes. Write the
+     check against the code's behaviour, not against the sentence you
+     just wrote about it.

@@ -7,7 +7,7 @@ crashed on a second call; the bye check because a partial week made 21 teams
 look like they were off.
 """
 import warnings; warnings.filterwarnings("ignore")
-import atexit, inspect, json, pathlib, sys, traceback
+import atexit, inspect, itertools, json, pathlib, sys, traceback
 import numpy as np, pandas as pd
 import ff_data, ff_scoring, ff_props, ff_guillotine, ff_betlog, ff_backtest
 import ff_boost
@@ -6635,11 +6635,25 @@ chk("player_receptions is mapped, and to its OWN side not RECV",
     ff_boost.MARKET_SIDE.get("player_receptions") == "RECEPTIONS",
     f"got {ff_boost.MARKET_SIDE.get('player_receptions')!r} — folding it "
     f"into RECV overstates a receptions leg by about 28%")
-chk("PASS_TD is measured but deliberately has no market key",
-    all(v != "PASS_TD" for v in ff_boost.MARKET_SIDE.values())
-    and "PASS_TD" in ff_boost.SIDES_MEASURED_NO_MARKET_KEY
+# PASS_TD sat unmapped until a live board named the key. It did, on
+# 2026-11-10: `player_pass_tds`, 232 outcomes on event 53178. The rule it
+# was waiting on is what matters and still holds — a side stays in
+# SIDES_MEASURED_NO_MARKET_KEY until a real board names its string,
+# because a guessed key never matches and refuses exactly like a measured
+# refusal (B39).
+chk("player_pass_tds is mapped to PASS_TD, off a real board",
+    ff_boost.MARKET_SIDE.get("player_pass_tds") == "PASS_TD"
     and ("same", "PASS_TD", "TD") in _C.RECORDED_MARKET_SIDE,
-    "a guessed market key refuses exactly like a measured refusal")
+    f"got {ff_boost.MARKET_SIDE.get('player_pass_tds')!r}")
+chk("and its three neighbours on that board are NOT folded into TD",
+    all(k not in ff_boost.MARKET_SIDE for k in
+        ("player_reception_tds", "player_rush_tds",
+         "player_pass_rush_reception_tds")),
+    "different markets with no measured cells — folding them in would be "
+    "the RECEPTIONS-into-RECV mistake again")
+chk("nothing is left claiming a measured side has no market key",
+    not ff_boost.SIDES_MEASURED_NO_MARKET_KEY,
+    str(ff_boost.SIDES_MEASURED_NO_MARKET_KEY))
 # The standing comment in ff_boost says this pair is unmeasured. It is not,
 # any more, and it went the other way.
 chk("two same-team anytime TDs are slightly NEGATIVE, not positive",
@@ -7695,10 +7709,14 @@ chk("a board of bounded slips is BOUNDED ONLY, not LIKELY NEGATIVE",
                        boost_pct=0.50).outlook)
 
 # --- the market keys -----------------------------------------------------
-chk("receptions and anytime TD are mapped; PASS_TD deliberately is not",
+chk("receptions, anytime TD and passing TD are all mapped",
     ff_boost.MARKET_SIDE["player_receptions"] == "RECEPTIONS"
     and ff_boost.MARKET_SIDE["player_anytime_td"] == "TD"
-    and "PASS_TD" not in ff_boost.MARKET_SIDE.values())
+    and ff_boost.MARKET_SIDE["player_pass_tds"] == "PASS_TD")
+chk("every side in MARKET_SIDE has at least one measured cell",
+    all(any(side in k for k in _C.RECORDED_MARKET_SIDE)
+        for side in set(ff_boost.MARKET_SIDE.values())),
+    "a mapped side with no cell would refuse while looking wired")
 chk("side_pair reads the table in either side order",
     ff_boost.side_pair("same", "TD", "PASS") ==
     ff_boost.side_pair("same", "PASS", "TD") is not None)
@@ -7926,10 +7944,18 @@ chk("no shortlisted slip contains one player twice",
     all(len({ff_boost.norm_player(l.player) for l in c.legs}) == len(c.legs)
         for c in _sl75.candidates),
     f"{[[l.player for l in c.legs] for c in _sl75.candidates]}")
-chk("and the refused combinations are COUNTED, not silently dropped",
-    any("containing one player twice" in n for n in _sl75.build_notes),
-    "with a ladder in the pool that is most of them, so a silent skip "
-    "makes the shortlist read as a thin pool")
+# Stronger than counting them: after the price-targeting rewrite the
+# enumerator groups BY PLAYER, so a combination naming one man twice is
+# never generated. It was 67,114 of 104,586 on the first live board — work
+# that no longer exists rather than work that is counted and thrown away.
+chk("those combinations are never generated, not generated and refused",
+    not any("containing one player twice" in n for n in _sl75.build_notes),
+    str(_sl75.build_notes)[:200])
+chk("and the shortlist reports the price targeting instead",
+    any("cheapest that clears the floor" in n for n in _sl75.build_notes)
+    or len({ff_boost.norm_player(l.player)
+            for c in _sl75.candidates for l in c.legs}) > 1,
+    str(_sl75.build_notes)[:200])
 
 # --- the normalised-name dedupe (B129), which was keyed on the RAW name --
 def _dj(name, pid, ev="E1", line=49.5):
@@ -7959,9 +7985,11 @@ chk("'D.J. Moore' and 'DJ Moore' are one man, not two legs",
 # combination is refused either way, by `classify`. The difference is
 # whether the reader is told "one player twice" or is pointed at
 # `player_id`, which has nothing to do with a spelling difference.
-chk("the refusal blames the NAME, not player_id",
-    any("one player twice" in n for n in _djsl.build_notes)
-    and not any("player_id" in n for n in _djsl.build_notes),
+# Two spellings of one man now land in the SAME player group, so they are
+# alternative legs for one player and the targeting picks one — a better
+# answer than refusing the combination, and no `player_id` blame either.
+chk("two spellings become one player group, not a refused combination",
+    not any("player_id" in n for n in _djsl.build_notes),
     str(_djsl.build_notes)[:220])
 chk("and the id-less spelling still reached the shortlist on its own",
     any(ff_boost.norm_player(l.player) == "dj moore"
@@ -8029,6 +8057,396 @@ chk("a main-line-only slip says none of this",
     "RUNG LEGS" not in ff_boost.report([ff_boost.make_candidate(
         [_dj("Rome Odunze", "o1", ev="E1"), _dj("Cole Kmet", "c1", ev="E2")],
         boost_pct=0.50)]))
+
+# ===========================================================================
+# 76. What the first live run found (event 53178, 2026-11-10)
+# ===========================================================================
+#
+# Every check here exists because a real board found something the fixtures
+# could not. The headline is the price-targeting defect: `if names in seen:
+# continue` collapsed thousands of rung choices per player triple to
+# whichever one `combinations()` yielded first, and section 75's fixtures
+# had exactly one combination per triple, so nothing could reach it.
+
+section("76. findings from the first live run")
+
+
+def _rg(player, thr, price, fair, pid, book="draftkings"):
+    return ff_props.LadderFair(
+        book=book, player=player, threshold=thr, canonical_line=thr - 0.5,
+        price=price, q_raw=None, fair=fair, uncertainty=0.01, margin=0.056,
+        level_shift=0.1, anchor="pinnacle", anchor_point=49.5,
+        anchor_fair=0.52, level_gap=0.004, player_id=pid,
+        fair_source=f"level pinnacle, shape {book} ladder (margin +5.60%)")
+
+
+def _ladder_pool(n_players=7, n_rungs=16):
+    """A pool with MANY combinations per triple — what 75 did not have."""
+    fairs, V, M = [], {}, {}
+    for j in range(n_players):
+        who = f"Player{j}"
+        V[who] = ("CLEAR", "OVER", ())
+        M[who] = ("NYG", "WR")
+        for i in range(n_rungs):
+            o = -1520 + i * 170
+            fairs.append(_rg(who, 10 + 5 * i, o if o < -100 else abs(o) + 100,
+                             max(0.05, 0.97 - i * 0.06), f"id{j}"))
+    legs, _ = ff_boost.rung_legs(
+        fairs, book="draftkings", market="player_reception_yds",
+        event_id="E1", verdicts=V, meta=M)
+    return legs, M
+
+
+def _ec(legs, meta, **kw):
+    """enumerate_candidates that FAILS a check instead of crashing.
+
+    Five reverts came back "0 failures + CRASH": emptying the shortlist or
+    changing a verdict made a later check index `candidates[0]` or
+    `ev_band[0]` and raise out of the section. Lesson 103, and it applies
+    to every new accessor, not just the ones that needed it last time.
+    """
+    try:
+        return ff_boost.enumerate_candidates(legs, meta, **kw), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _mx(cands, attr, default=None):
+    """max of an attribute over candidates, or a default — never raises."""
+    try:
+        vals = [getattr(c, attr) for c in cands]
+        vals = [v for v in vals if v is not None]
+        return max(vals) if vals else default
+    except Exception:
+        return default
+
+
+_pl, _pm = _ladder_pool()
+chk("the pool really does have many combinations per triple",
+    len(_pl) == 112, f"{len(_pl)} legs — 7 players x 16 rungs")
+_psl, _pserr = _ec(_pl, _pm, mode="single-game", event_id="E1",
+                   boost_pct=0.50, legs_per_slip=3, floor=300, ceiling=900)
+if _psl is None:
+    chk("the ladder pool enumerates at all", False, _pserr)
+    _psl = ff_boost.Shortlist(candidates=[], mode="single-game",
+                              boost_pct=0.50, reason=_pserr)
+# THE DEFECT. Before price targeting this returned 0 candidates and said
+# "the legs are too short to reach the boost's minimum price."
+chk("a rungs-only ladder pool now yields candidates at all",
+    _psl.candidates, _psl.reason[:170])
+chk("and does NOT claim the legs are too short",
+    "too short" not in _psl.reason, _psl.reason[:170])
+chk("every shortlisted slip is inside the band",
+    all(300 <= c.independent_odds <= 900 for c in _psl.candidates),
+    str([round(c.independent_odds) for c in _psl.candidates]))
+chk("the shortlist reports that it chose on price",
+    any("cheapest that clears the floor" in n for n in _psl.build_notes),
+    str(_psl.build_notes)[:200])
+chk("and says how many combinations it chose between",
+    any("price targeting chose between" in n for n in _psl.build_notes),
+    str(_psl.build_notes)[:200])
+# F11's rule: target the minimum, do not reach past it.
+_pmax = _mx(_psl.candidates, "independent_odds")
+chk("the chosen slips sit near the floor, not near the ceiling",
+    _pmax is not None and _pmax < 600,
+    f"max {_pmax} — 'target the minimum, do not reach past it'")
+chk("no slip contains one player twice",
+    all(len({ff_boost.norm_player(l.player) for l in c.legs}) == len(c.legs)
+        for c in _psl.candidates))
+# And those combinations are never GENERATED now, not generated and skipped.
+chk("the one-player-twice count is gone, because none is produced",
+    not any("one player twice" in n for n in _psl.build_notes),
+    str(_psl.build_notes)[:200])
+
+# --- determinism: two runs must choose the same rungs -------------------
+_a = ff_boost.enumerate_candidates(
+    _pl, _pm, mode="single-game", event_id="E1", boost_pct=0.50,
+    legs_per_slip=3, floor=300, ceiling=900)
+_b = ff_boost.enumerate_candidates(
+    list(reversed(_pl)), _pm, mode="single-game", event_id="E1",
+    boost_pct=0.50, legs_per_slip=3, floor=300, ceiling=900)
+def _sig(sl):
+    return sorted(tuple(sorted((ff_boost.norm_player(l.player), l.line,
+                                l.odds) for l in c.legs))
+                  for c in sl.candidates)
+chk("the choice does not depend on pool order",
+    _sig(_a) == _sig(_b),
+    "a price tie broken by list order gives two runs two answers")
+
+# --- the exact search agrees with brute force ---------------------------
+_sm, _ = _ladder_pool(n_players=3, n_rungs=6)
+_by = {}
+for _l in _sm:
+    _by.setdefault(ff_boost.norm_player(_l.player), []).append(_l)
+for _k in _by:
+    _by[_k].sort(key=lambda l: ff_boost.to_decimal(l.odds))
+_lists = [_by[k] for k in sorted(_by)]
+_want = ff_boost.to_decimal(300)
+_brute = None
+for _c in itertools.product(*_lists):
+    _d = 1.0
+    for _l in _c:
+        _d *= ff_boost.to_decimal(_l.odds)
+    if _d >= _want and (_brute is None or _d < _brute):
+        _brute = _d
+_got = ff_boost._cheapest_at_least(_lists, _want)
+chk("the binary search finds the same cheapest-in-band as brute force",
+    (_got is None and _brute is None)
+    or (_got is not None and _brute is not None
+        and abs(_got[0] - _brute) < 1e-9),
+    f"search {_got[0] if _got else None} vs brute {_brute}")
+chk("and returns None when nothing reaches the target, rather than guessing",
+    ff_boost._cheapest_at_least(_lists, 1e9) is None)
+chk("an empty list refuses rather than raising",
+    ff_boost._cheapest_at_least([[], _lists[0]], _want) is None)
+
+# --- the reason line can no longer claim an unreachable band ------------
+# A REAL fixture, not a source-text check. The first version asserted the
+# sentence appeared in the source, and a revert that removed the BRANCH
+# left the sentence in place — so the check passed while the behaviour was
+# gone. Reachable only one way: price targeting finds an in-band
+# combination and `make_candidate` then raises, which happens when two
+# legs normalise to different names but carry the same player_id.
+def _twin(name, pid, odds, line, ev="E1"):
+    return ff_boost.BoostLeg(
+        event_id=ev, book="dk", market="player_reception_yds", player=name,
+        side="OVER", odds=odds, fair_prob=0.40, fair_source="pinnacle",
+        devig_method="shin", line=line, player_id=pid, verdict="CLEAR",
+        verdict_side="OVER", team="NYG", pos="WR")
+
+
+_twsl, _twerr = _ec([_twin("Cam Ward", "w9", +160, 40.5),
+                     _twin("Cameron Ward", "w9", +150, 44.5),
+                     _twin("Cam Ward", "w9", +120, 30.5)],
+                    {"Cam Ward": ("NYG", "WR"),
+                     "Cameron Ward": ("NYG", "WR")},
+                    mode="single-game", event_id="E1", boost_pct=0.50,
+                    legs_per_slip=2, floor=300, ceiling=900)
+chk("an in-band group whose candidate dies does not blame the legs",
+    _twsl is not None and not _twsl.candidates
+    and "NOT the problem" in _twsl.reason,
+    (_twerr or _twsl.reason)[:200])
+chk("and it says the band was reachable",
+    _twsl is not None and "reachable" in _twsl.reason,
+    (_twerr or _twsl.reason)[:200])
+_short, _sm2 = _ladder_pool(n_players=4, n_rungs=3)
+_ssl, _sserr = _ec(_short, _sm2, mode="single-game", event_id="E1",
+                   boost_pct=0.50, legs_per_slip=3, floor=5000,
+                   ceiling=9000)
+if _ssl is None:
+    chk("the short pool enumerates at all", False, _sserr)
+    _ssl = ff_boost.Shortlist(candidates=[], mode="single-game",
+                              boost_pct=0.50, reason=_sserr)
+chk("a genuinely too-short pool still says too short",
+    not _ssl.candidates and ("too short" in _ssl.reason
+                             or "below the floor" in _ssl.reason),
+    _ssl.reason[:150])
+
+# --- the bounded refusal, in place of the OOM --------------------------
+chk("MAX_PLAYER_GROUPS is a real bound",
+    ff_boost.MAX_PLAYER_GROUPS > 0 and ff_boost.MAX_PLAYER_GROUPS < 10000)
+_big, _bm = _ladder_pool(n_players=30, n_rungs=4)
+try:
+    ff_boost.enumerate_candidates(
+        _big, _bm, mode="single-game", event_id="E1", boost_pct=0.50,
+        legs_per_slip=3, floor=300, ceiling=900)
+    _bigerr = ""
+except ValueError as e:
+    _bigerr = str(e)
+chk("a pool past the bound REFUSES with a number, rather than dying",
+    "player group" in _bigerr and "narrow the POOL" in _bigerr,
+    _bigerr[:170] or "it ran — the bound did not fire")
+chk("and the refusal points at the players, not the ladders",
+    "not the rungs" in _bigerr, _bigerr[:170])
+
+# --- `pessimistic` conflated two states --------------------------------
+_je_none = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)], [])
+chk("no measured pair: pessimistic False but NOT unbracketed",
+    not _je_none.pessimistic and not _je_none.unbracketed,
+    "on the live board this fired on 4 of 8 slips, every one of them "
+    "because there were no pairs at all — a 100% false-positive rate as "
+    "a missing-interval alarm")
+_je_pt = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                              [("A", "B", .1774, "t")])
+chk("a measured pair with no interval IS unbracketed",
+    _je_pt.unbracketed and not _je_pt.pessimistic)
+_je_ci = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)],
+                              [("A", "B", .1774, "t", (.1626, .1922))])
+chk("a measured pair WITH an interval is neither",
+    _je_ci.pessimistic and not _je_ci.unbracketed)
+
+# --- the raw-name meta join --------------------------------------------
+# TWO CLASSES, and they are not the same problem. The normalised pass
+# closes punctuation and spacing; it does NOT close first-name variants,
+# because `norm_player` is documented not to and does not. An earlier
+# version of this check asserted it did — a check written to match a
+# comment rather than the code.
+chk("the normalised pass closes PUNCTUATION variants",
+    ff_boost._meta_lookup("J.J. McCarthy",
+                          {"J.J McCarthy": ("MIN", "QB")}) == ("MIN", "QB")
+    and ff_boost._meta_lookup("DJ Moore",
+                              {"D.J. Moore": ("CHI", "WR")}) == ("CHI", "WR"),
+    "this is the class that was silently failing on the raw key")
+chk("it does NOT close first-name variants, and does not pretend to",
+    ff_boost._meta_lookup("Cameron Skattebo",
+                          {"Cam Skattebo": ("NYG", "RB")}) == (None, None),
+    "norm_player is documented not to collapse Cam/Cameron")
+chk("an alias map closes those, which is the documented remedy",
+    ff_boost._meta_lookup("Cameron Skattebo",
+                          {"Cam Skattebo": ("NYG", "RB")},
+                          aliases={"Cameron Skattebo": "Cam Skattebo"})
+    == ("NYG", "RB"),
+    "propline_search_players' known_names lists both against one id, and "
+    "a CALLER passes it in — this module makes no tool calls")
+chk("and the alias map tolerates punctuation and case on either side",
+    ff_boost._meta_lookup("Chigoziem Okonkwo",
+                          {"Chig Okonkwo": ("WSH", "TE")},
+                          aliases={"chigoziem okonkwo": "CHIG OKONKWO"})
+    == ("WSH", "TE"),
+    "both sides go through norm_player, so a caller need not match the "
+    "meta key's exact spelling")
+# NOT whitespace runs: `norm_player` does not collapse "chig  okonkwo" to
+# "chig okonkwo", which this check found. Filed rather than fixed here —
+# norm_player is the project-wide join key and a second normalisation
+# inside _meta_lookup would be two keys for one job.
+chk("a double space is NOT closed, and that limit is known",
+    ff_boost._meta_lookup("Chigoziem Okonkwo",
+                          {"Chig  Okonkwo": ("WSH", "TE")},
+                          aliases={"chigoziem okonkwo": "Chig Okonkwo"})
+    == (None, None),
+    "norm_player leaves internal whitespace runs intact — see BACKLOG")
+chk("the exact key still wins, and costs no scan",
+    ff_boost._meta_lookup("Cam Skattebo",
+                          {"Cam Skattebo": ("NYG", "RB")}) == ("NYG", "RB"))
+chk("a genuine miss returns (None, None), not a near match",
+    ff_boost._meta_lookup("Somebody Else",
+                          {"Cam Skattebo": ("NYG", "RB")}) == (None, None),
+    "B44/B101/B127 are three separate incidents of a fuzzy join losing a "
+    "player his whole board")
+chk("and an empty meta does not raise",
+    ff_boost._meta_lookup("Anyone", None) == (None, None))
+# The consequence, end to end: a book spelling must still correlate.
+# End to end: a punctuation variant resolves with no help at all, and a
+# first-name variant resolves only once the caller supplies the alias.
+_mc1 = _jleg("J.J. McCarthy", .52, market="player_pass_yds", pos=None,
+             team=None)
+_mc2 = _jleg("Malik Nabers", .52, market="player_reception_yds", pos=None,
+             team=None)
+ff_boost.classify([_mc1, _mc2], {"J.J McCarthy": ("NYG", "QB"),
+                                 "Malik Nabers": ("NYG", "WR")})
+chk("a punctuation variant resolves to a team, so the pair is not lost",
+    _mc1.team == "NYG" and _mc2.team == "NYG", f"{_mc1.team} {_mc2.team}")
+_sk1 = _jleg("Cameron Skattebo", .52, market="player_rush_yds", pos=None,
+             team=None)
+_sk2 = _jleg("Malik Nabers", .52, market="player_reception_yds", pos=None,
+             team=None)
+ff_boost.classify([_sk1, _sk2], {"Cam Skattebo": ("NYG", "RB"),
+                                 "Malik Nabers": ("NYG", "WR")})
+chk("a first-name variant with no alias comes back team=None",
+    _sk1.team is None,
+    "and that is the honest answer — the alias has to be supplied, not "
+    "guessed by edit distance")
+_sk3 = _jleg("Cameron Skattebo", .52, market="player_rush_yds", pos=None,
+             team=None)
+ff_boost.classify([_sk3, _jleg("Malik Nabers", .52,
+                               market="player_reception_yds", pos=None,
+                               team=None)],
+                  {"Cam Skattebo": ("NYG", "RB"),
+                   "Malik Nabers": ("NYG", "WR")},
+                  aliases={"Cameron Skattebo": "Cam Skattebo"})
+chk("and resolves once the alias is passed through classify",
+    _sk3.team == "NYG", str(_sk3.team))
+
+# --- the cross-table interval, which bracketed by 0.0011 ---------------
+_qb77 = _jleg("QB1", .52, market="player_pass_yds", pos="QB")
+_wr77 = _jleg("WR1", .52, market="player_reception_yds", pos="WR")
+_r77, _why77, _ci77 = ff_boost._pair_r_ci(_qb77, _wr77)
+_side77 = ff_boost.side_pair("same", "PASS", "RECV")
+chk("QB x WR recv takes r from the lift table and an interval from _RMS",
+    _ci77 is not None and abs(_r77 - _side77[0]) > 1e-6,
+    f"r={_r77} side-table r={_side77[0]} ci={_ci77}")
+chk("the interval is WIDENED to cover both tables' estimates",
+    _ci77[0] <= min(_r77, _side77[0]) and _ci77[1] >= max(_r77, _side77[0]),
+    f"ci={_ci77} must bracket both {_r77:+.4f} and {_side77[0]:+.4f} — the "
+    f"old rule tested one of them and passed by 0.0011")
+# On today's tables the interval already covers both estimates, so no
+# widening is needed and none is announced. The point of the change is
+# that a re-measurement which moves `r` OUTSIDE the interval now widens it
+# instead of DROPPING it — the old rule tested the bracket and passed by
+# 0.0011, so one re-measurement would have silently removed the interval
+# and changed what `joint_error` takes a sign from.
+chk("no note today, because the interval already covers both",
+    "widened" not in _why77, _why77[-130:])
+_wide = ff_boost.joint_error(
+    [_jleg("A", .5), _jleg("B", .5)],
+    [("A", "B", 0.40, "t", (0.2286, 0.2625))])
+chk("an r outside its interval still yields a usable signed error",
+    _wide.pessimistic and _wide.rel > 0, f"{_wide.rel:+.4%}")
+# Exercise the real behaviour rather than asserting a docstring with an
+# `or True` beside it — lesson 92's vacuous clause, written here and then
+# caught by reading it back.
+_wq = _jleg("QBX", .5, market="player_pass_yds", pos="QB")
+_ww = _jleg("WRX", .5, market="player_reception_yds", pos="WR")
+_, _wwhy, _wci = ff_boost._pair_r_ci(_wq, _ww)
+_sidev = ff_boost.side_pair("same", "PASS", "RECV")[0]
+_liftv = ff_boost._pair_r(_wq, _ww)[0]
+chk("_widen_interval covers an estimate outside the interval, and says so",
+    ff_boost._widen_interval((0.2286, 0.2625), 0.40, 0.2456)
+    == ((0.2286, 0.40), True),
+    str(ff_boost._widen_interval((0.2286, 0.2625), 0.40, 0.2456)))
+chk("and leaves an interval that already covers both alone, silently",
+    ff_boost._widen_interval((0.2286, 0.2625), 0.2614, 0.2456)
+    == ((0.2286, 0.2625), False),
+    "which is the case on today's tables — it brackets r by 0.0011, and "
+    "the point of the change is that a re-measurement now WIDENS instead "
+    "of DROPPING the interval")
+chk("it widens downward too, not just up",
+    ff_boost._widen_interval((0.2286, 0.2625), 0.10)[0] == (0.10, 0.2625))
+chk("and tolerates a reversed interval and a None estimate",
+    ff_boost._widen_interval((0.2625, 0.2286), None, 0.30)
+    == ((0.2286, 0.30), True))
+chk("the attached interval brackets BOTH tables' estimates, always",
+    _wci is not None
+    and _wci[0] <= min(_liftv, _sidev) <= max(_liftv, _sidev) <= _wci[1],
+    f"ci={_wci} lift={_liftv:+.4f} side={_sidev:+.4f} — a re-measurement "
+    f"now widens the interval instead of dropping it")
+
+# --- P(cash) 0.0% beside a positive ROI band ---------------------------
+_path = ff_boost.make_candidate(
+    [_jleg("A", .02, market="player_reception_yds", pos="WR", ev="E1"),
+     _jleg("B", .02, market="player_rush_yds", pos="RB", ev="E2"),
+     _jleg("C", .02, market="player_pass_yds", pos="QB", ev="E3")],
+    boost_pct=0.50)
+for _l in _path.legs:
+    _l.odds = +900
+chk("a slip whose P(cash) contradicts its price gets NO ROI band",
+    _path.ev_band is None, str(_path.ev_band))
+chk("and its verdict says PRICE IT, not PLAY and not NEGATIVE",
+    _path.verdict == "PRICE IT", _path.verdict)
+chk("PRICE IT is a documented verdict", "PRICE IT" in ff_boost.VERDICTS)
+_prep = ff_boost.report([_path])
+chk("the report prints the reason in place of the ROI line",
+    "NO ROI BAND" in _prep and "anticipated ROI" not in _prep,
+    "two correctly computed numbers side by side were nonsense")
+chk("it names the hold its own P(cash) implies",
+    "implies a hold of" in _prep)
+chk("an unmeasured slip is ranked at 0, not buried below every negative",
+    _path.rank == 0.0,
+    "-9e9 is a ranking claim about a slip nothing has measured (B57)")
+# A healthy slip must be untouched: the check is ONE-sided on purpose.
+_ok77 = ff_boost.make_candidate(
+    [_jleg("A", .52, market="player_reception_yds", pos="WR", ev="E1"),
+     _jleg("B", .52, market="player_rush_yds", pos="RB", ev="E2"),
+     _jleg("C", .52, market="player_pass_yds", pos="QB", ev="E3")],
+    boost_pct=0.50)
+chk("an ordinary slip still gets its ROI band",
+    _ok77.ev_band is not None and str(_ok77.verdict) in ("PLAY", "NEGATIVE"),
+    f"{_ok77.verdict} {_ok77.ev_band} — the product carries only the legs' "
+    f"own vig, far less than the SGP band, so a healthy slip sits BELOW "
+    f"the band here and a two-sided test failed seven fixtures")
+chk("and its product-implied hold is below the band, by construction",
+    _ok77.product_hold < _ok77.hold_band[0],
+    f"{_ok77.product_hold:+.2%} vs band {_ok77.hold_band}")
 
 _summary()
 raise SystemExit(1 if fails else 0)

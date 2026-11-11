@@ -634,12 +634,72 @@ the curve between rungs is the book's own, so:
 `Shortlist.shape_circular_legs` and the report both name this. Do not strip
 it when you summarise.
 
-**Read `sl.build_notes`.** With a ladder in the pool, most combinations are
-one player's own rungs against each other, and those are refused — a rung
-and that player's own main line are **the same bet**, and parlayed together
-they price as independent legs, so the P(cash) is fiction. The count is in
-`build_notes`; without it a correctly-small shortlist reads as a thin pool
-and you will go looking for the wrong problem.
+**`enumerate_candidates` now TARGETS A PRICE. Changed 2026-11-10 by the
+first live run.** For each group of players it takes the **cheapest**
+combination that clears the floor — F11's rule, target the minimum and do
+not reach past it. Before this it priced one combination per player group,
+always the shortest rung of each player, and on event 53178 that meant 35
+slips priced out of 10,005 that were in band, with the reason line saying
+"the legs are too short." If you ever see that sentence on a rung pool
+again, something has regressed.
+
+So: **do not widen the band or hunt longer rungs because a rung shortlist
+came back small.** Read `sl.build_notes` first. It reports how many
+combinations the targeting chose between, how many groups had an in-band
+option, and which rung it took for each group.
+
+**Read `sl.build_notes` generally.** It is the only place that says what
+the enumeration refused and what it chose.
+
+**Do NOT use `sl.rung_legs`, `sl.shape_circular_legs`, `sl.immature_anchors`
+or `sl.tier_fallbacks` as diagnostics for an EMPTY shortlist.** All four are
+derived from `sl.candidates`, so they are empty by construction when there
+are no candidates and say nothing about whether rungs were considered. The
+live run's pool was 100% rungs and `sl.rung_legs` was `[]`.
+
+**A pool too large to price refuses rather than running.** Past
+`MAX_PLAYER_GROUPS` (600) you get a `ValueError` naming the count. Narrow
+the POOL — fewer players — not the ladders: the cost is one
+`make_candidate` per player group, so it is in the players, not the rungs.
+
+**New verdict: `PRICE IT`.** The legs are priceable and clear the floor,
+but the slip's own P(cash) against its product implies a hold worse than the
+worst of the measured band — so the band says nothing about it and **no
+anticipated ROI is reported, on purpose**. The live run printed
+`P(cash): 0.0%` beside `anticipated ROI +9.3% to +21.9%` before this; both
+numbers were right and together they were nonsense. Get a real quote; that
+replaces the band with an observation.
+
+**Pass `aliases=` when a book's spelling differs from nflverse's.** Both
+`classify()` and `rung_legs()` take it. `_meta_lookup` closes punctuation
+and spacing differences by itself (`J.J McCarthy` vs `J.J. McCarthy`,
+`D.J. Moore` vs `DJ Moore`) — but **NOT first-name variants** like
+Cam/Cameron Skattebo or Chig/Chigoziem Okonkwo, because `norm_player` does
+not collapse those. Get both spellings from `propline_search_players`'
+`known_names` (one id, both names) and pass them in:
+
+```python
+aliases = {"Cameron Skattebo": "Cam Skattebo",
+           "Chigoziem Okonkwo": "Chig Okonkwo"}
+```
+
+Without it those legs come back `team=None`, and a `team=None` leg drops its
+pair to **INDEPENDENT with no flag** — a correlated slip priced as an
+uncorrelated one, which is the quietest way this engine can be wrong.
+`ladder_fair` is immune (it joins on `player_id`); `get_event_ev` carries no
+`player_id`, so that join is name-keyed and is where this bites.
+
+**`player_pass_tds` is mapped** as of 2026-11-10, off a real board. Five
+PASS_TD cells are now reachable, including same-team passing TD x teammate
+anytime TD at +0.2173 over 13,100 pairs. Its neighbours
+`player_reception_tds`, `player_rush_tds` and
+`player_pass_rush_reception_tds` are deliberately NOT mapped — different
+markets, no measured cells.
+
+**`joint.pessimistic is False` is NOT a missing-interval alarm.** Use
+`joint.unbracketed`. On the live board `pessimistic` was False on 4 of 8
+slips, every one of them because there were no measured non-zero pairs at
+all — a 100% false-positive rate used the other way.
 
 **What `rung_legs` refuses, each by name:** a rung `ladder_fair` could not
 price; a rung with no price for the OVER (a one-sided row is not a price);

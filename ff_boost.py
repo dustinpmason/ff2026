@@ -580,15 +580,29 @@ MARKET_SIDE = {
     # receptions leg to the receiving side overstates it by about 28%.
     "player_receptions": "RECEPTIONS",
     "player_anytime_td": "TD",
+    # Added 2026-11-10 from the first live board, which carries
+    # `player_pass_tds` with 232 outcomes. It was deliberately absent until
+    # a real board named it: a guessed key refuses exactly like a measured
+    # refusal (B39), so the string had to come off a board rather than out
+    # of a plausible guess. Five cells reach it, including same-team
+    # PASS_TD x TD at +0.2173 over 13,100 pairs.
+    #
+    # NOT the three neighbours on the same board. `player_reception_tds`,
+    # `player_rush_tds` and `player_pass_rush_reception_tds` are different
+    # markets with no measured cells of their own, and folding any of them
+    # into TD would be the RECEPTIONS-into-RECV mistake again.
+    "player_pass_tds": "PASS_TD",
 }
 
-# `PASS_TD` is MEASURED — five cells, including same-team PASS_TD x TD at
-# +0.2173 over 13,100 pairs — but no passing-TD market key has been
-# observed on a live board in this project, so there is nothing to map it
-# to. Guessing the key would be worse than leaving it out: a key that never
-# matches refuses exactly like a measured refusal, which is B39's shape.
-# The key has to come off a real board before it goes in here.
-SIDES_MEASURED_NO_MARKET_KEY = ("PASS_TD",)
+# Sides that `_RMS` has measured but no market string has been seen for.
+# A side belongs here, NOT in MARKET_SIDE, until a live board names its
+# key: a guessed key never matches and so refuses exactly like a measured
+# refusal, which is B39's shape. PASS_TD sat here until 2026-11-10, when
+# the first live run returned `player_pass_tds`.
+# Empty as of 2026-11-10: `player_pass_tds` came off a live board and
+# PASS_TD is mapped. Kept as the place the next such side goes, and as the
+# reason `MARKET_SIDE` is allowed to be narrower than `_RMS`.
+SIDES_MEASURED_NO_MARKET_KEY: tuple = ()
 
 # Markets NOT in MARKET_SIDE are outside what the correlation table
 # measured. player_anytime_td is the one that matters: it is a boost-parlay
@@ -604,6 +618,12 @@ VERDICTS = {
             "measured hold band.",
     "NEGATIVE": "Clears the floor but is -EV at the measured hold. The "
                 "boost does not cover the structure.",
+    "PRICE IT": "The legs are priceable and clear the floor, but this "
+                "slip's own P(cash) against its product implies a hold "
+                "nowhere near the measured band, so the band says nothing "
+                "about it. No anticipated ROI is reported, on purpose. Get "
+                "a real quote with price_sgp — that replaces the band with "
+                "an observation and the verdict resolves.",
     "FLOOR ONLY": "Correlated legs whose measured correlation BOUNDS the "
                   "joint instead of destroying it. P(cash) and EV are a "
                   "lower bound, not an estimate; the slip can only be "
@@ -1211,14 +1231,27 @@ def _pair_r_ci(a: BoostLeg, b: BoostLeg) -> tuple[float | None, str, tuple | Non
     if m is None:
         return r, why, None
     _r, _n, ci = m
-    # The canonical lift table and the side table are different
-    # measurements of the same pair where both have one, so an interval is
-    # attached only when it actually brackets the r being used. Stretching
-    # one table's interval around the other's point estimate would invent a
-    # bound neither measured.
-    if not (ci[0] <= r <= ci[1]):
-        return r, why, None
-    return r, why, ci
+    # The canonical lift table and the side table are DIFFERENT
+    # measurements of the same pair. The first live run found how fragile
+    # the old rule was: QB x WR receiving uses r=+0.2614 from the lift
+    # table and the interval (+0.2286, +0.2625) from `_RMS`, whose own
+    # point estimate is +0.2456 — so the interval bracketed the r it was
+    # being attached to BY 0.0011. One re-measurement of either table and
+    # that slip silently loses its interval, which changes what
+    # `joint_error` will take a sign from.
+    #
+    # So the interval is WIDENED to cover both measurements rather than
+    # tested against one of them. Two tables disagreeing about a pair IS
+    # uncertainty about that pair, and hiding it behind a bracket test that
+    # passes by a thousandth was pretending otherwise. Scored at the
+    # pessimistic end as always, this can only make the gate more
+    # conservative, never less.
+    both, widened = _widen_interval(ci, r, _r)
+    if widened:
+        why += (f" [interval widened to {both[0]:+.4f}..{both[1]:+.4f} to "
+                f"cover both tables' estimates: lift r={r:+.4f} vs "
+                f"market-side r={_r:+.4f}]")
+    return r, why, both
 
 
 def _from_measured(relation: str, sa: str, sb: str,
@@ -1282,7 +1315,7 @@ def _from_measured(relation: str, sa: str, sb: str,
                  f"{CORR_GATE_LIFT_DEV:.0%} gate{extra}")
 
 
-def classify(legs, meta=None) -> Structure:
+def classify(legs, meta=None, aliases=None) -> Structure:
     """Derive the structure FROM THE LEGS. Never takes a caller's word."""
     legs = list(legs)
     # B127. This compared RAW NAMES, the join this project forbids
@@ -1345,7 +1378,13 @@ def classify(legs, meta=None) -> Structure:
     if meta:
         for l in legs:
             if l.team is None or l.pos is None:
-                l.team, l.pos = meta.get(l.player, (None, None))
+    # Normalised, not raw, and `aliases` for the rest. A raw
+                # lookup misses, team comes back None, and the pair drops
+                # to INDEPENDENT with no flag: a correlated slip priced as
+                # an uncorrelated one, which is the quietest way this
+                # project can be wrong. `_meta_lookup` is explicit about
+                # which name differences it can and cannot close.
+                l.team, l.pos = _meta_lookup(l.player, meta, aliases)
 
     pairs, unmeasured, zeros, pair_cis = [], [], [], {}
     for a, b in combinations(legs, 2):
@@ -1536,6 +1575,19 @@ class JointError:
     @property
     def measurable(self) -> bool:
         return not self.unreadable
+
+    @property
+    def unbracketed(self) -> bool:
+        """True when a MEASURED pair arrived without a confidence interval.
+
+        `pessimistic` alone cannot say this, and the first live run proved
+        it: it came back False on 4 of 8 slips, every one of them because
+        there were no measured non-zero pairs at all — nothing to be
+        pessimistic about. Used as a missing-interval alarm it was a 100%
+        false-positive rate on that board. The two states are now separate,
+        because only this one is a problem.
+        """
+        return bool(self.terms) and not self.pessimistic
 
     @property
     def conservative(self) -> bool:
@@ -1997,8 +2049,79 @@ class Candidate:
         reason the product is not a price."""
         if not self.structure.priceable:
             return None
+        if self.product_hold is not None:
+            _, hi = self.hold_band
+            # ONE-SIDED, and the first version of this was two-sided and
+            # wrong. The measured band is the hold on the book's real SGP
+            # QUOTE; the product carries only the legs' own compounded vig,
+            # which is far smaller — about 14% on three legs against a
+            # 23.1-37.2% same-game band. So a healthy slip sits BELOW the
+            # band here by construction, and testing the lower side failed
+            # seven ordinary fixtures before this was caught.
+            #
+            # The upper side is the one that means something: if our own
+            # P(cash) implies a hold worse than the band's WORST measured
+            # case, then the slip is already worse than the band's
+            # pessimistic end before the boost is applied, and a ROI drawn
+            # from that band is a number about a different slip.
+            if self.product_hold > hi:
+                # The band assumes the book takes its usual cut out of a
+                # product whose legs are priced about right. When OUR OWN
+                # P(cash) against this product implies a hold nowhere near
+                # the measured band, that assumption is broken and the band
+                # does not describe this slip.
+                #
+                # The first live run printed `P(cash): 0.0%` beside
+                # `anticipated ROI +9.3% to +21.9%` on a slip built from
+                # three longest rungs. Both numbers were computed
+                # correctly; together they were nonsense, because the ROI
+                # band never looked at P(cash) and P(cash) said the slip
+                # cannot cash. A reader sees one number beside the other,
+                # not the two derivations.
+                #
+                # The 5-point tolerance is deliberate slack: the band is a
+                # population figure and a single slip legitimately sits a
+                # little outside it. This fires on disagreement, not on
+                # noise.
+                return None
         return roi_band(self.odds, self.boost_pct,
                         cross_game=self.structure.cross_game)
+
+    @property
+    def product_hold(self) -> float | None:
+        """The hold implied by our fair joint against the PRODUCT price.
+
+        `slip_hold` is the same quantity against the book's real quote and
+        needs the slip priced; this one needs nothing and is what makes
+        `ev_band` able to notice that it does not apply.
+        """
+        if not self.structure.priceable:
+            return None
+        p = self.p_cash
+        if p is None:
+            return None
+        return 1.0 - p * to_decimal(self.odds)
+
+    @property
+    def ev_band_reason(self) -> str:
+        """Why there is no ROI band, when there is none."""
+        if not self.structure.priceable:
+            return ("the joint is not the product, so there is no product "
+                    "price to put a band around")
+        ph = self.product_hold
+        if ph is None:
+            return "no P(cash), so the band cannot be checked against it"
+        lo, hi = self.hold_band
+        if ph > hi:
+            return (f"NO ROI BAND: this slip's own P(cash) of "
+                    f"{self.p_cash:.1%} against its {self.odds:+.0f} "
+                    f"product implies a hold of {ph:+.1%}, worse than the "
+                    f"WORST of the measured {lo:.1%}-{hi:.1%} band. The "
+                    f"band assumes legs priced about right and these are "
+                    f"not, so a ROI from it would be a number about a "
+                    f"different slip. Price it and the band is replaced by "
+                    f"an observation")
+        return ""
 
     @property
     def slip_hold(self) -> float | None:
@@ -2123,6 +2246,15 @@ class Candidate:
             return "PLAY" if self.ev_pct > 0 else "NEGATIVE"
         # Pessimistic end of the measured band. Assuming the cheaper product
         # when you do not know which you have is the error that loses money.
+        if self.ev_band is None:
+            # Priceable, but the measured hold band does not describe this
+            # slip — its own P(cash) against its product implies a hold
+            # nowhere near the band, so a ROI from the band would be a
+            # number about a different slip. Neither PLAY nor NEGATIVE is
+            # knowable here without a real quote, and inventing either is
+            # how a pathological slip read `P(cash) 0.0%` beside
+            # `anticipated ROI +9.3% to +21.9%`.
+            return "PRICE IT"
         return "PLAY" if self.ev_band[0] > 0 else "NEGATIVE"
 
     @property
@@ -2131,7 +2263,11 @@ class Candidate:
         pessimistic ROI before."""
         if self.ev_pct is not None:
             return self.ev_pct
-        return self.ev_band[0] if self.ev_band is not None else -9e9
+        # A slip with no band is UNKNOWN, not bad. -9e9 would bury it below
+        # every measured negative, which is a ranking claim about a slip
+        # nothing has measured — B57's whole objection. Zero puts it where
+        # it belongs: not evidence for, not evidence against.
+        return self.ev_band[0] if self.ev_band is not None else 0.0
 
     @property
     def key(self) -> tuple:
@@ -2323,7 +2459,7 @@ class Shortlist:
 
 
 def rung_legs(fairs, *, book: str, market: str, event_id: str,
-              verdicts=None, odds=None, meta=None,
+              verdicts=None, odds=None, meta=None, aliases=None,
               line_type: str = "milestone") -> tuple[list, list]:
     """BoostLegs from `ff_props.ladder_fair` records. (kept, refused).
 
@@ -2391,7 +2527,9 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
             continue
         team = pos = None
         if meta:
-            team, pos = meta.get(who, (None, None))
+# Normalised, not raw, and `aliases` for the rest — see
+            # `_meta_lookup` for which name differences each closes.
+            team, pos = _meta_lookup(who, meta, aliases)
         # BoostLeg validates at construction and RAISES — on a circular
         # fair, an out-of-range fair_prob, a verdict with no side. Right for
         # a hand-built leg and wrong for a loop over a whole ladder, where
@@ -2429,6 +2567,153 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
         except ValueError as e:
             refused.append((tag, f"refused at construction: {e}"))
     return kept, refused
+
+
+# How many player groups price targeting will evaluate. Each one costs a
+# `make_candidate`, so this bounds the real work. 600 covers every
+# plausible board — 7 players is 35 groups, 15 is 455 — and refuses the
+# pathological pool that exhausted memory in testing rather than dying on
+# it.
+MAX_PLAYER_GROUPS = 600
+
+
+def _widen_interval(ci, *estimates) -> tuple[tuple, bool]:
+    """(interval covering ci and every estimate, whether it had to widen).
+
+    Extracted so it can be tested directly. The behaviour it replaces was
+    a BRACKET TEST — attach the interval only if it already contained the
+    `r` being used — and on the live board it contained it by 0.0011, so
+    one re-measurement of either table would have silently dropped the
+    interval and changed what `joint_error` takes a sign from. Two tables
+    disagreeing about a pair IS uncertainty about that pair, so the
+    interval covers both rather than being discarded for not already
+    doing so.
+    """
+    lo, hi = min(ci[0], ci[1]), max(ci[0], ci[1])
+    vals = [float(e) for e in estimates if e is not None]
+    out = (min([lo] + vals), max([hi] + vals))
+    return out, out != (lo, hi)
+
+
+def _meta_lookup(name, meta, aliases=None):
+    """(team, pos) for a board spelling. Two mechanisms, two classes.
+
+    BE PRECISE ABOUT WHAT EACH ONE FIXES. The first live board carried
+    three name variants at once and they are NOT the same problem:
+
+      * PUNCTUATION AND SPACING — "J.J McCarthy" vs "J.J. McCarthy",
+        "D.J. Moore" vs "DJ Moore". `norm_player` collapses these, so the
+        normalised pass below resolves them. This is the class that was
+        silently failing, because the lookup used the RAW key.
+
+      * FIRST-NAME VARIANTS — "Cam"/"Cameron" Skattebo,
+        "Chig"/"Chigoziem" Okonkwo. `norm_player` is documented NOT to
+        collapse these and does not, so the normalised pass does NOTHING
+        for them. An earlier version of this docstring claimed it did,
+        which was a comment asserting a fix the code had not made.
+        The documented remedy is `propline_search_players`, whose
+        `known_names` lists both spellings against one id — a CALLER
+        supplies that as `aliases`, because this module makes no tool
+        calls. Without it, these still miss.
+
+    `aliases` maps any spelling -> the meta key, and is normalised on both
+    sides so a caller need not match punctuation either.
+
+    Returns (None, None) rather than guessing, and never a near match:
+    B44/B101/B127 are three separate incidents of a fuzzy name join losing
+    a player his whole board.
+    """
+    if not meta:
+        return (None, None)
+    got = meta.get(name)
+    if got is not None:
+        return got
+    want = norm_player(str(name))
+    if not want:
+        return (None, None)
+    if aliases:
+        for k, v in aliases.items():
+            if norm_player(str(k)) == want:
+                hit = meta.get(v)
+                if hit is None:
+                    for mk, mv in meta.items():
+                        if norm_player(str(mk)) == norm_player(str(v)):
+                            hit = mv
+                            break
+                if hit is not None:
+                    return hit
+    for k, v in meta.items():
+        if norm_player(str(k)) == want:
+            return v
+    return (None, None)
+
+
+def _leg_key(l) -> tuple:
+    """Deterministic ordering for two legs at the same price."""
+    return (norm_player(l.player), l.market,
+            float(l.line) if l.line is not None else 0.0, str(l.book))
+
+
+def _cheapest_at_least(lists, want_dec: float):
+    """(decimal product, legs) — the CHEAPEST product >= want_dec, or None.
+
+    `lists` are each sorted ascending by decimal price. Every choice of the
+    first n-1 legs is walked, and the last leg is found by binary search:
+    the smallest rung whose price clears the multiple still needed. Exact,
+    and O(k^(n-1) log k) rather than the O(k^n) of enumerating products —
+    which measured 63s on a 500-leg pool.
+
+    Returns None when no combination reaches `want_dec` at all, which is a
+    real answer and not an error: it means even the longest rung of every
+    player together falls short.
+    """
+    if not lists or any(not ls for ls in lists):
+        return None
+    head, tail = lists[:-1], lists[-1]
+    tail_dec = [to_decimal(l.odds) for l in tail]
+    best = None
+    for pick in product(*head):
+        d = 1.0
+        for l in pick:
+            d *= to_decimal(l.odds)
+        need = want_dec / d
+        # bisect on the sorted tail prices: first index with price >= need
+        lo, hi = 0, len(tail_dec)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if tail_dec[mid] < need:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo >= len(tail_dec):
+            continue
+        tot = d * tail_dec[lo]
+        legs = list(pick) + [tail[lo]]
+        # Deliberately NOT tie-broken on the combination's own contents.
+        # A revert that removed a `_combo_key` tie-break here came back NOT
+        # CAUGHT, and the reason is that it was unreachable: the per-player
+        # lists are sorted with `_leg_key` before this runs, so
+        # `product(*head)` iterates in a fixed order and the strict `<`
+        # below keeps the FIRST minimal product. Determinism comes from
+        # the list sort, not from a second key here (lesson 64 — a guard
+        # no input can reach reads as coverage). Section 76 pins the
+        # order-independence instead, by running a reversed pool.
+        if best is None or tot < best[0]:
+            best = (tot, legs)
+    return best
+
+
+def _combo_key(legs) -> tuple:
+    """A deterministic tie-break for two combinations at the same price.
+
+    Two rung choices can product to the same American number, and which
+    one a run picks must not depend on dict or set ordering. Keyed on the
+    legs' own lines and prices, which are the only things that distinguish
+    them.
+    """
+    return tuple(sorted((norm_player(l.player),
+                         float(l.line) if l.line is not None else 0.0,
+                         float(l.odds)) for l in legs))
 
 
 def _rung_leg(*args, **kw) -> BoostLeg:
@@ -2579,57 +2864,137 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
 
     kept, dropped = _intake(legs, mode, event_id)
 
-    combos = []
-    for n_legs in sizes:
-        if mode == "cross-game":
-            by_event: dict[str, list] = {}
-            for l in kept:
-                by_event.setdefault(l.event_id, []).append(l)
-            if len(by_event) >= n_legs:
-                for evs in combinations(sorted(by_event), n_legs):
-                    for pick in product(*(by_event[e] for e in evs)):
-                        combos.append(list(pick))
-        else:
-            combos += [list(c) for c in combinations(kept, n_legs)]
+    # The brute-force combination list that used to be built here is GONE.
+    # It materialised every leg combination before anything looked at it —
+    # C(900, 3) is 121 million lists, which is what actually exhausted
+    # memory on a 900-rung pool, not the targeting below. Grouping by
+    # player never generates a combination naming one man twice, so the
+    # 67,114 of 104,586 that the first live board threw away are no longer
+    # produced at all.
 
-    seen, cands = set(), []
-    n_short, n_long = 0, 0        # measured, not guessed — see the reason below
+    # ------------------------------------------------------------------
+    # F12's price targeting. THIS REPLACED `if names in seen: continue`.
+    #
+    # That dedupe was correct for as long as the pool held one line per
+    # player per market: a player triple then had exactly one combination,
+    # so keeping the first kept the only one. F12 put a player's whole
+    # LADDER in the pool — 16 to 21 legs each on the first live board — and
+    # the same line silently collapsed thousands of genuinely different
+    # bets per triple down to whichever one `combinations()` yielded first.
+    # Pool order is `ladder_fair` order, which is ascending threshold, so
+    # the survivor was always the shortest, heaviest-favourite rung of
+    # every player.
+    #
+    # Measured on event 53178: of 104,586 structurally valid combinations,
+    # 10,005 were INSIDE the +300..+900 band. The enumerator priced 35 —
+    # exactly C(7,3), one per triple — found them all below the floor, and
+    # reported "the legs are too short to reach the boost's minimum price."
+    # Confident, specific, and the opposite of true. That reason line was
+    # the worst part: a reader acting on it hunts longer rungs while the
+    # pool already holds hundreds of in-band slips.
+    #
+    # It survived every fixture in section 75, because those fixtures had
+    # one combination per triple. A dedupe cannot be exercised by a pool
+    # with nothing to dedupe.
+    #
+    # WHAT IT DOES NOW: per player group, find the CHEAPEST combination
+    # that clears the floor. "Target the minimum, do not reach past it" is
+    # Dustin's own scope decision on F11 and is what rungs are FOR. This is
+    # a SELECTION rule and B57 applies to it: it does not rank slips by
+    # predicted value, which B57 showed cannot be done — it picks the
+    # cheapest way to reach a required price, which is arithmetic on posted
+    # odds and not a model claim.
+    #
+    # NOT BY ENUMERATION. Brute force is O(k^n) per group and took 63s on a
+    # 500-leg pool, which a full board will exceed. Each player's rungs are
+    # sorted by decimal price once, then for every choice of the first n-1
+    # legs the last is found by binary search — the smallest rung that
+    # clears the remaining multiple. Exact, and O(k^(n-1) log k).
+    by_player: dict[str, list] = {}
+    for l in kept:
+        by_player.setdefault(norm_player(l.player), []).append(l)
+    for who in by_player:
+        by_player[who].sort(key=lambda l: (to_decimal(l.odds), _leg_key(l)))
+
+    fl_dec = to_decimal(floor)
+    cl_dec = to_decimal(ceiling)
+    chosen: list[tuple] = []
+    n_rung_alts = 0
+    n_groups_in_band = 0
+    n_groups_short = 0
+    n_groups_long = 0
+    target_notes: list[str] = []
+    cands = []
     n_dupe = 0                    # combinations refused as one man twice
-    n_same = 0                    # refused: one player's own lines together
     dupe_reasons: list[str] = []
-    for c in combos:
-        # B129/B50, and F12 is the merge point they were filed against.
-        # This used to key on the RAW player name: DraftKings spells
-        # "D.J. Moore" where Pinnacle spells "DJ Moore", so the same man
-        # arrived as two players and cleared this guard.
-        #
-        # BE HONEST ABOUT WHAT THIS CHANGE BUYS. It is NOT the thing that
-        # stops the slip: `classify` already refuses two legs that
-        # normalise to one player, and it normalises, so the combination
-        # was rejected either way. A revert of this line to the raw name
-        # came back NOT CAUGHT for exactly that reason, and the right
-        # response was to find out why rather than to invent a check.
-        #
-        # What it buys is the REASON. On the raw key the combination fell
-        # through to `classify`, raised, and was counted as an id
-        # collision — so a shortlist that quietly lost half its
-        # combinations blamed `player_id` for a spelling difference, and
-        # pointed a reader at the wrong field. Keyed on the normalised
-        # name it is counted as what it is: one player twice.
-        names = tuple(sorted(norm_player(l.player) for l in c))
-        if len(set(names)) != len(names):
-            # F12 makes this the COMMON case rather than a rarity. With a
-            # player's whole ladder in the pool, most combinations are that
-            # player's own rungs against each other — and those are the
-            # same bet twice, or near enough that parlaying them prices a
-            # fiction. Skipping them is right; skipping them silently is
-            # not, because the shortlist then comes back small and reads as
-            # a thin pool.
-            n_same += 1
+    # `n_same` is gone, and that is the point: grouping BY PLAYER makes a
+    # combination naming one man twice structurally impossible rather than
+    # something to count and skip. It was 67,114 of 104,586 on the first
+    # live board — work that is now never generated.
+
+    # A bounded refusal rather than an unbounded run. Price targeting is
+    # O(groups * k^(n-1) log k), and a 900-rung pool across 30 players —
+    # 4,060 groups, each priced — exhausted memory outright in testing.
+    # That is a pathological pool rather than a real board (the first live
+    # board was 155 rungs across 10 players), but dying is not a result.
+    # Refused with a number and an instruction, which is this project's
+    # rule for a limit it cannot meet.
+    n_groups_total = sum(
+        len(list(combinations(range(len(by_player)), n))) for n in sizes
+        if len(by_player) >= n)
+    if n_groups_total > MAX_PLAYER_GROUPS:
+        raise ValueError(
+            f"this pool makes {n_groups_total:,} player group(s) at "
+            f"size(s) {sizes}, past the {MAX_PLAYER_GROUPS:,} this can "
+            f"price. Every group is a separate `make_candidate`, so the "
+            f"cost is in the groups and not the rungs — narrow the POOL "
+            f"(fewer players), not the ladders. {len(by_player)} distinct "
+            f"players are in it. A shortlist of 8 does not need hundreds "
+            f"of players in the pool.")
+
+    for n_legs in sizes:
+        if len(by_player) < n_legs:
             continue
-        if names in seen:
-            continue
-        seen.add(names)
+        for who in combinations(sorted(by_player), n_legs):
+            lists = [by_player[w] for w in who]
+            if mode == "cross-game":
+                # One leg per EVENT. A player plays one game, so distinct
+                # players in distinct events is the same constraint — but
+                # it is checked rather than assumed.
+                evs = {ls[0].event_id for ls in lists}
+                if len(evs) != n_legs:
+                    continue
+            n_combo = 1
+            for ls in lists:
+                n_combo *= len(ls)
+            if n_combo > 1:
+                n_rung_alts += n_combo - 1
+            best = _cheapest_at_least(lists, fl_dec)
+            # Direction, exactly, from the sorted ends — no enumeration.
+            lo_dec = 1.0
+            hi_dec = 1.0
+            for ls in lists:
+                lo_dec *= to_decimal(ls[0].odds)
+                hi_dec *= to_decimal(ls[-1].odds)
+            if best is not None and best[0] <= cl_dec:
+                n_groups_in_band += 1
+                pick = best[1]
+                if n_combo > 1:
+                    target_notes.append(
+                        f"{', '.join(who)}: chose {american(best[0]):+.0f} "
+                        f"from {n_combo:,} combination(s) spanning "
+                        f"{american(lo_dec):+.0f} to {american(hi_dec):+.0f} "
+                        f"— cheapest that clears the floor")
+            elif hi_dec < fl_dec:
+                n_groups_short += 1
+                pick = [ls[-1] for ls in lists]     # the longest available
+            else:
+                n_groups_long += 1
+                pick = [ls[0] for ls in lists]      # the shortest available
+            chosen.append((who, list(pick), n_combo))
+
+    n_short, n_long = n_groups_short, n_groups_long
+    for who, c, n_combo in chosen:
         # F12. `classify` RAISES on two legs carrying the same player_id
         # under names that normalise differently — "Cam Ward" and "Cameron
         # Ward" are one man and two keys, and the ids are what catch it.
@@ -2648,11 +3013,11 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             # B55. So `token_minimum` can answer once the slip is priced,
             # rather than the caller having to remember to set it.
             cand.token_min_odds = float(token.min_odds)
-        if cand.independent_odds < floor:
-            n_short += 1
-            continue
-        if cand.independent_odds > ceiling:
-            n_long += 1
+        # The counters are GROUP counts set above, measured exactly from
+        # each group's sorted ends rather than from the one combination
+        # that happened to be priced. That is what lets the reason line
+        # below tell the truth about direction.
+        if cand.independent_odds < floor or cand.independent_odds > ceiling:
             continue
         cands.append(cand)
 
@@ -2660,12 +3025,26 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     cands = cands[:limit]
 
     reason = ""
-    if cands and any(c.verdict == "PLAY" for c in cands):
-        best = max(cands, key=lambda c: c.rank)
+    _banded = [c for c in cands if c.ev_band is not None]
+    if cands and any(c.verdict == "PLAY" for c in cands) and _banded:
+        best = max(_banded, key=lambda c: c.rank)
         reason = (f"best anticipated ROI {best.ev_band[0]:+.1%} to "
                   f"{best.ev_band[1]:+.1%} across the measured hold band — "
                   f"ADVISORY. Price the shortlist with price_sgp; the real "
                   f"quote decides.")
+    elif cands and any(c.verdict == "PRICE IT" for c in cands):
+        # Candidates exist and the measured band does not describe them, so
+        # there is no anticipated ROI to lead with and inventing one is the
+        # `P(cash) 0.0%` beside `+9.3% to +21.9%` failure at shortlist
+        # level. `best` is chosen only among candidates that HAVE a band
+        # above, because `max(...).ev_band[0]` on a band-less candidate
+        # raises — two reverts crashed here rather than failing.
+        _n = sum(1 for c in cands if c.verdict == "PRICE IT")
+        reason = (f"{_n} of {len(cands)} candidate(s) have a P(cash) that "
+                  f"contradicts their own product price, so the measured "
+                  f"hold band says nothing about them and no anticipated "
+                  f"ROI is reported. Price them with price_sgp — that "
+                  f"replaces the band with an observation.")
     elif cands:
         band = cands[0].hold_band
         best = max((c for c in cands if c.ev_band is not None),
@@ -2691,7 +3070,23 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             # the floor, so it sent the reader hunting the wrong way. A
             # plausible sentence instead of an error, which is this
             # project's recurring signature.
-            if not n_short and not n_long:
+            if n_groups_in_band:
+                # FIRST, before any count-based branch. An in-band group
+                # proves there were enough legs AND that the band was
+                # reached, so every sentence below it would be false. The
+                # fixture that exercises this came back "not enough legs
+                # survived intake — 3 leg(s) available" on a pool with
+                # three legs and a valid +450 group: the same
+                # confident-and-wrong shape as the defect this whole
+                # branch exists to prevent, one sentence over.
+                reason = (f"{n_groups_in_band} player group(s) DID have an "
+                          f"in-band combination and no candidate survived "
+                          f"pricing — so the band is reachable and the legs "
+                          f"are NOT the problem. Read build_notes and "
+                          f"dropped: something after the price filter "
+                          f"removed them. Do not go looking for longer or "
+                          f"shorter legs.")
+            elif not n_short and not n_long:
                 # F11 regression, found live within the hour: `legs_per_slip`
                 # is None unless the caller passed one, because the sizes to
                 # build now come from `sizes` — so this printed "a None-leg
@@ -2729,11 +3124,17 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             f"under names that normalise differently — caught on player_id, "
             f"which is the only thing that catches it")
         build_notes.extend(f"  {r}" for r in dupe_reasons[:5])
-    if n_same:
+    if n_rung_alts:
         build_notes.append(
-            f"{n_same} combination(s) refused as containing one player "
-            f"twice — with a ladder in the pool that is most of them, and "
-            f"two lines on one man are not two legs")
+            f"price targeting chose between {n_rung_alts + len(chosen)} "
+            f"combination(s) across {len(chosen)} player group(s), taking "
+            f"the CHEAPEST that clears the {floor:+.0f} floor in each — "
+            f"F11's rule, target the minimum and do not reach past it. "
+            f"{n_groups_in_band} group(s) had an in-band option.")
+        for t in target_notes[:6]:
+            build_notes.append(f"  {t}")
+        if len(target_notes) > 6:
+            build_notes.append(f"  ... and {len(target_notes) - 6} more")
     n_rung = sum(1 for l in kept if l.is_rung)
     if n_rung:
         build_notes.append(
@@ -3159,6 +3560,22 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                 # note that stays on the object is a note nobody reads.
                 if c.hold_band_note:
                     out.append(f"  {c.hold_band_note}")
+            elif c.ev_band is None:
+                # The ROI line is OMITTED and the reason takes its place.
+                # Printing a band here beside a P(cash) that contradicts it
+                # is what produced `P(cash) 0.0%` next to `anticipated ROI
+                # +9.3% to +21.9%` on the first live run — two correctly
+                # computed numbers that are nonsense side by side.
+                out.append(f"  {c.ev_band_reason}")
+                out.append(f"  reference band  : {c.hold_band[0]:.1%}-"
+                           f"{c.hold_band[1]:.1%} — {c.hold_band_reason}")
+            elif c.ev_band is None:
+                # Belt and braces: the branch above already catches this,
+                # and a revert of it crashed the report rather than
+                # failing a check. A report must not be able to raise over
+                # a missing number (lesson 14).
+                out.append("  anticipated ROI : NOT AVAILABLE — see the "
+                           "P(cash) line")
             else:
                 out.append(f"  anticipated ROI : {c.ev_band[0]:+.1%} to "
                            f"{c.ev_band[1]:+.1%} across the measured hold "
