@@ -8952,5 +8952,41 @@ chk("the report carries the line",
     "price balance" in ff_boost.report([ff_boost.make_candidate(
         _even, boost_pct=0.50)]))
 
+# ===========================================================================
+# 80. B158 — a rung leg carries its own uncertainty
+# ===========================================================================
+
+section("80. rung legs carry their own uncertainty (B158)")
+
+_u80 = ff_boost.FAIR_UNCERTAINTY_FALLBACK
+_r80 = _rg("Tail", 90, +900, 0.08, "t80")
+_r80.uncertainty = 0.03
+_k80, _ = _rl([_r80, _rg("Mid", 40, +100, 0.48, "m80")],
+              verdicts={"Tail": ("CLEAR", "OVER", ()),
+                        "Mid": ("CLEAR", "OVER", ())})
+_b80 = {l.player: l for l in _k80}
+chk("rung_legs carries ladder_fair's uncertainty onto the leg",
+    len(_k80) == 2 and _b80["Tail"].fair_sd == 0.03
+    and _b80["Mid"].fair_sd == 0.01, str([l.fair_sd for l in _k80]))
+chk("a main line carries none and uses the board figure",
+    _jleg("A", .5).fair_sd is None
+    and ff_boost.leg_sd(_jleg("A", .5), _u80) == _u80)
+chk("a rung uses its own, whether larger or smaller than the board's",
+    ff_boost.leg_sd(_b80["Tail"], _u80) == 0.03
+    and ff_boost.leg_sd(_b80["Tail"], 0.05) == 0.03)
+chk("a zero or missing figure falls back rather than claiming certainty",
+    ff_boost.leg_sd(type("L", (), {"fair_sd": 0.0})(), _u80) == _u80
+    and ff_boost.leg_sd(type("L", (), {})(), _u80) == _u80)
+_n_main, _ = ff_boost.product_noise([_jleg("A", .08), _jleg("B", .48)])
+_n_rung, _nw = ff_boost.product_noise([_b80["Tail"], _b80["Mid"]])
+chk("product_noise is wider for the tail rung than the fallback said",
+    abs(_n_rung - ((0.03 / 0.08) ** 2 + (0.01 / 0.48) ** 2) ** .5) < 1e-12
+    and _n_rung > 3 * _n_main, f"{_n_rung:.4f} vs {_n_main:.4f}")
+chk("and says how many legs used their own figure",
+    "2 of 2 leg(s) use their own" in _nw, _nw)
+chk("a main-line slip's noise is unchanged",
+    abs(ff_boost.product_noise([_jleg(c, .5) for c in "ABC"])[0]
+        - (3 ** .5) * _u80 / .5) < 1e-12)
+
 _summary()
 raise SystemExit(1 if fails else 0)

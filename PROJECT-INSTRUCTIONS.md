@@ -730,6 +730,11 @@ opening-limit money, and the slips built from them showed +3.6% to +15.9%
 EV with no warning. If the report prints `** OPENING ANCHOR **` or lists
 immature anchors on a rung slip, say so before quoting its EV.
 
+**Rung legs also carry their own uncertainty (`fair_sd`)**, from
+`ladder_fair`. The correlation gate and the ranking check use it in place
+of the board-level figure, and `product_noise` says how many legs did.
+Nothing to pass; it rides along with `rung_legs`.
+
 **A slip under 1% to cash prints `LONGSHOT` with a "1 in N" figure.** Read
 it out. A ROI band on a 1-in-70,000 slip is an average nobody will live to
 collect.

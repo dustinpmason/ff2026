@@ -750,6 +750,12 @@ class BoostLeg:
     # to the wrong number and could not come back yes. None for a main
     # line, where `fair_prob` IS the anchor's fair.
     anchor_level_fair: float | None = None
+    # B158. One standard deviation on THIS leg's fair, when the machinery
+    # that produced it measured one. A rung's comes from `ladder_fair`
+    # (margin scatter, interpolation, the cross-book check) and is wider
+    # than a main line's, most of all in the tail; None means "not carried",
+    # and the board-level figure from `fair_uncertainty` is used instead.
+    fair_sd: float | None = None
     anchor_liquidity: float | None = None
     # B59. The anchor book's OWN minimum tier in THIS pull, derived from its
     # board by `modal_liquidity()`. When set it replaces the module-level
@@ -1905,11 +1911,28 @@ def product_noise(legs, quotes=None) -> tuple[float, str]:
     reason when they do not.
     """
     u, why = fair_uncertainty(legs, quotes)
-    tot = 0.0
+    tot, own = 0.0, 0
     for l in legs:
         p = float(l.fair_prob)
-        tot += (u / p) ** 2
+        tot += (leg_sd(l, u) / p) ** 2
+        own += l.fair_sd is not None
+    if own:
+        why += (f"; {own} of {len(list(legs))} leg(s) use their own "
+                f"measured uncertainty (rungs) instead of that figure")
     return math.sqrt(tot), why
+
+
+def leg_sd(leg, board_u: float) -> float:
+    """The uncertainty to use for one leg's fair (B158).
+
+    The leg's own when it carries one, else the board-level figure. Not the
+    larger of the two and not the smaller: which direction is "safe"
+    differs by consumer — more noise makes the ranking gate stricter and
+    the correlation gate more lenient — so the honest input is simply the
+    best measurement of this leg.
+    """
+    sd = getattr(leg, "fair_sd", None)
+    return float(sd) if sd is not None and sd > 0 else float(board_u)
 
 
 def joint_verdict(legs, pairs, quotes=None, cis=None) -> tuple[bool, str]:
@@ -2812,6 +2835,7 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
             # the legs F12 added).
             anchor_liquidity=getattr(f, "anchor_liquidity", None),
             anchor_level_fair=getattr(f, "anchor_fair", None),
+            fair_sd=getattr(f, "uncertainty", None),
             # `tiers` is `book_liquidity_tiers(odds)`, keyed by ANCHOR book.
             # Not passed -> "" (never looked up), which B75 keeps distinct
             # from a book that quotes no tier.
@@ -3895,6 +3919,12 @@ def rank_is_meaningful(cands, quotes=None) -> tuple[bool, str]:
     # Propagate each leg's fair uncertainty through the product. A product of
     # k legs carries the relative error of each, added in quadrature.
     u, uwhy = fair_uncertainty(top, quotes)
+    # B158: rungs carry their own, wider, uncertainty. The RMS over the
+    # legs in play, so a main-line-only board gives exactly `u` as before.
+    _tl = [l for c in top for l in c.legs]
+    if any(l.fair_sd is not None for l in _tl):
+        u = math.sqrt(sum(leg_sd(l, u) ** 2 for l in _tl) / len(_tl))
+        uwhy += "; rung legs use their own measured uncertainty"
     k = max(len(c.legs) for c in top)
     base = sum(ps) / len(ps)
     noise = base * (u / 0.5) * (k ** 0.5)
