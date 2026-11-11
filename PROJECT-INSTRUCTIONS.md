@@ -2715,6 +2715,13 @@ joint by more than that noise, the slip is scored and refused like any
 other correlated slip; the reason says "cleared pairs sum to". Three-leg
 slips of this kind stay priceable.
 
+**Pass `quotes=` (the flattened `get_odds` quotes) to `classify`,
+`make_candidate` and `enumerate_candidates`.** The noise these gates compare
+against is then measured off the board, from legs two books both quote,
+instead of a fallback figure; the reason text says "measured from N legs"
+or "fallback". On real legs this comparison has come within 0.05pp, so the
+fallback is not good enough to settle it. All three also take `aliases=`.
+
 **A pair the table never measured still refuses outright.** F13 replaced
 "nobody measured this" with a measurement for receptions and anytime TD; it
 did not make independence an assumption anywhere.

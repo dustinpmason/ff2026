@@ -8467,16 +8467,13 @@ chk("and the alias map tolerates punctuation and case on either side",
     == ("WSH", "TE"),
     "both sides go through norm_player, so a caller need not match the "
     "meta key's exact spelling")
-# NOT whitespace runs: `norm_player` does not collapse "chig  okonkwo" to
-# "chig okonkwo", which this check found. Filed rather than fixed here —
-# norm_player is the project-wide join key and a second normalisation
-# inside _meta_lookup would be two keys for one job.
-chk("a double space is NOT closed, and that limit is known",
+# B143, fixed 2026-11-11: runs of whitespace are collapsed in the name key
+# itself, so this now resolves. It was pinned here as a known limit first.
+chk("a double space in a meta key is closed by the name key (B143)",
     ff_boost._meta_lookup("Chigoziem Okonkwo",
                           {"Chig  Okonkwo": ("WSH", "TE")},
                           aliases={"chigoziem okonkwo": "Chig Okonkwo"})
-    == (None, None),
-    "norm_player leaves internal whitespace runs intact — see BACKLOG")
+    == ("WSH", "TE"))
 chk("the exact key still wins, and costs no scan",
     ff_boost._meta_lookup("Cam Skattebo",
                           {"Cam Skattebo": ("NYG", "RB")}) == ("NYG", "RB"))
@@ -9108,6 +9105,92 @@ chk("run 3A's 32 quotes are recorded with their book",
             if b not in ff_boost.SGP_EXCHANGE_BOOKS) == 20)
 chk("and now feed the target, per book (B167)",
     len(ff_boost.sportsbook_factors()) == 43)
+
+# ===========================================================================
+# 82. B143 and B170
+# ===========================================================================
+
+section("82. whitespace in the name key; measured noise in the gates")
+
+for _a82, _b82 in (("chig  okonkwo", "Chig Okonkwo"),
+                   ("Chig\tOkonkwo", "chig okonkwo"),
+                   ("Chig\u00a0Okonkwo", "Chig Okonkwo"),
+                   ("  Jaxon   Smith - Njigba ", "Jaxon Smith-Njigba"),
+                   ("D. J.  Moore", "DJ Moore")):
+    chk(f"norm_player closes spacing: {_a82!r}",
+        ff_props.norm_player(_a82) == ff_props.norm_player(_b82),
+        f"{ff_props.norm_player(_a82)!r} vs {ff_props.norm_player(_b82)!r}")
+for _a82, _b82 in (("A. J. Brown", "A.J. Brown"), ("T J Hockenson", "TJ Hockenson"),
+                   ("J J McCarthy", "J.J. McCarthy")):
+    chk(f"spaced initials join: {_a82!r}",
+        ff_props.norm_player(_a82) == ff_props.norm_player(_b82),
+        ff_props.norm_player(_a82))
+chk("a short first name is not mistaken for an initial",
+    ff_props.norm_player("Ja Marr Chase") == "ja marr chase"
+    and ff_props.norm_player("Bo Nix") == "bo nix"
+    and ff_props.norm_player("J Smith") == "j smith")
+chk("and still keeps different people apart",
+    ff_props.norm_player("Cam Ward") != ff_props.norm_player("Cameron Ward")
+    and ff_props.norm_player("Josh Allen") != ff_props.norm_player("Josh Allan"))
+chk("the key has no leading, trailing or doubled spaces",
+    ff_props.norm_player("  Al   Bo  ") == "al bo")
+
+
+def _q82(spread_odds):
+    """Six legs, each quoted by two books that disagree by a set amount."""
+    out = []
+    for i in range(6):
+        for book, (o, u) in (("a", (-110, -110)), ("b", spread_odds)):
+            out.append({"player": f"Q{i}", "market": "player_rush_yds",
+                        "line": 50.5, "book": book, "over": o, "under": u})
+    return out
+
+
+_wide = _q82((-125, -100))
+_tight = _q82((-111, -109))
+_uw, _whyw = ff_boost.fair_uncertainty([], _wide)
+_ut, _ = ff_boost.fair_uncertainty([], _tight)
+chk("the fixtures measure a wide and a tight board",
+    _uw > 0.012 and _ut < 0.004 and "measured" in _whyw, f"{_uw} {_ut}")
+# Back + three receivers sums to about -4.1% at 50/50: refused on the 0.008
+# fallback (3.2% of noise), priceable once the board is measured as noisy.
+_s4f = ff_boost.classify(_zslip(3))
+_s4w = ff_boost.classify(_zslip(3), None, None, _wide)
+chk("classify uses MEASURED noise when given quotes (B170)",
+    not _s4f.priceable and _s4w.priceable,
+    f"fallback priceable={_s4f.priceable}, wide board priceable={_s4w.priceable}")
+# Back + two receivers sums to about -2.6%: fine on the fallback, refused
+# on a board measured to be tight.
+_s3t = ff_boost.classify(_zslip(2), None, None, _tight)
+chk("and a tight board refuses what the fallback waved through",
+    ff_boost.classify(_zslip(2)).priceable and not _s3t.priceable,
+    _s3t.reason[-160:])
+chk("the reason says the noise was measured, not assumed",
+    "measured from" in _s3t.reason, _s3t.reason[-200:])
+chk("and says fallback when it was",
+    "fallback" in _s4f.reason, _s4f.reason[-200:])
+_c82 = ff_boost.make_candidate(_zslip(3), boost_pct=0.50, quotes=_wide)
+chk("make_candidate passes quotes through and keeps them",
+    _c82.structure.priceable and _c82.quotes is _wide)
+_c82t = ff_boost.make_candidate(_zslip(2), boost_pct=0.50, quotes=_tight)
+chk("the candidate's own joint gate uses the same measured noise",
+    "measured from" in _c82t.floor[1], _c82t.floor[1][:220])
+_e82, _ee82 = _ec(_zslip(3), None, mode="single-game", event_id="E1",
+                  boost_pct=0.50, legs_per_slip=4, quotes=_wide,
+                  floor=300, ceiling=5000)
+chk("enumerate_candidates takes quotes and classifies with them",
+    _e82 is not None and _e82.candidates
+    and _e82.candidates[0].structure.priceable, _ee82)
+_al82 = [_jleg("Cameron Skattebo", .52, market="player_rush_yds", pos=None,
+               team=None),
+         _jleg("Malik Nabers", .52, market="player_reception_yds", pos=None,
+               team=None)]
+_ca82 = ff_boost.make_candidate(
+    _al82, {"Cam Skattebo": ("NYG", "RB"), "Malik Nabers": ("NYG", "WR")},
+    boost_pct=0.50, aliases={"Cameron Skattebo": "Cam Skattebo"})
+chk("make_candidate takes aliases too, so a book spelling gets a team",
+    _al82[0].team == "NYG" and _ca82.structure.priceable,
+    f"{_al82[0].team} {_ca82.structure.reason[:100]}")
 
 _summary()
 raise SystemExit(1 if fails else 0)

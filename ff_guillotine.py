@@ -495,8 +495,28 @@ def normalize_name(n: str) -> str:
     data on a raw name.
     """
     n = _SUFFIX.sub("", str(n).strip())
-    return (n.replace("’", "'").replace(".", "").replace("-", " ")
-            .replace("'", "").lower())
+    n = (n.replace("’", "'").replace(".", "").replace("-", " ")
+         .replace("'", "").lower())
+    # B143. Collapse runs of whitespace, including tabs and non-breaking
+    # spaces. "chig  okonkwo" and "chig okonkwo" were two different keys,
+    # and the hyphen replacement above can itself manufacture a double
+    # space ("Smith - Njigba"). This can only MERGE keys that differ in
+    # spacing, which is the one difference that is never meaningful.
+    toks = n.replace("\u00a0", " ").split()
+    # Spaced initials: "A. J. Brown" and "A.J. Brown" are one man, and after
+    # the dots go they are "a j brown" and "aj brown". Consecutive
+    # single-letter tokens are joined. Found by the check written for the
+    # whitespace fix, which expected the two to match and they did not.
+    out: list[str] = []
+    in_run = False                  # is out[-1] a run of single letters?
+    for t in toks:
+        single = len(t) == 1 and t.isalpha()
+        if single and in_run:
+            out[-1] += t
+        else:
+            out.append(t)
+        in_run = single
+    return " ".join(out)
 
 
 def resolve(name: str, pool: dict[str, np.ndarray]) -> str | None:

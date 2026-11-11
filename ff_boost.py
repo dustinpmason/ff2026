@@ -1375,7 +1375,7 @@ def _from_measured(relation: str, sa: str, sb: str,
                  f"{CORR_GATE_LIFT_DEV:.0%} gate{extra}")
 
 
-def classify(legs, meta=None, aliases=None) -> Structure:
+def classify(legs, meta=None, aliases=None, quotes=None) -> Structure:
     """Derive the structure FROM THE LEGS. Never takes a caller's word."""
     legs = list(legs)
     # B127. This compared RAW NAMES, the join this project forbids
@@ -1471,10 +1471,14 @@ def classify(legs, meta=None, aliases=None) -> Structure:
     if zeros and not unmeasured:
         drift, promote = _zero_drift(legs, zeros)
         if drift < 0 and promote:
+            # B170. With `quotes` the noise is MEASURED off the board (two
+            # books on the same leg); without them it is the fallback, and
+            # on real legs this comparison has come within 0.05pp. Pass the
+            # flattened get_odds quotes wherever a slip like this is scored.
             try:
-                noise = product_noise(legs)[0]
+                noise, _nwhy = product_noise(legs, quotes)
             except Exception:
-                noise = 0.0
+                noise, _nwhy = 0.0, ""
             if noise > 0 and abs(drift) > noise:
                 keep = []
                 names = {(a, b) for a, b, _r in promote}
@@ -1486,9 +1490,9 @@ def classify(legs, meta=None, aliases=None) -> Structure:
                             a_name, b_name, r,
                             why + f" — but this slip's cleared pairs sum to "
                                   f"{drift:+.2%}, past the {noise:.2%} of "
-                                  f"noise the product carries, so they are "
-                                  f"scored rather than waved through "
-                                  f"(B156)"))
+                                  f"noise the product carries ({_nwhy}), "
+                                  f"so they are scored rather than waved "
+                                  f"through (B156)"))
                     else:
                         keep.append((a_name, b_name, why))
                 zeros = keep
@@ -2155,6 +2159,10 @@ class Candidate:
     book_odds: float | None = None
     correlation_factor: float | None = None
     notes: list[str] = field(default_factory=list)
+    # B170. The flattened board quotes this candidate was classified with,
+    # so `floor` measures the product's noise from the same data. None means
+    # the fallback figure, and the reason text says which.
+    quotes: list | None = field(default=None, repr=False, compare=False)
     # B55. The minimum TOTAL ODDS a boost token requires, as the promo
     # states it. Kept separate from FLOOR, which is this project's own band
     # and is a different question: FLOOR asks "is this slip worth betting",
@@ -2283,6 +2291,7 @@ class Candidate:
                            "floor can be built on a number that does not "
                            "exist")
         return joint_verdict(self.legs, self.structure.pairs,
+                             quotes=self.quotes,
                              cis=self.structure.pair_cis)
 
     @property
@@ -2571,10 +2580,15 @@ class Candidate:
 
 
 def make_candidate(legs, meta=None, *, boost_pct: float,
-                   stake: float = 10.0) -> Candidate:
-    """One candidate from one set of legs, structure derived."""
+                   stake: float = 10.0, aliases=None,
+                   quotes=None) -> Candidate:
+    """One candidate from one set of legs, structure derived.
+
+    `aliases` and `quotes` go straight to `classify`; `quotes` is also kept
+    on the candidate so its joint gate measures noise the same way.
+    """
     legs = list(legs)
-    st = classify(legs, meta)
+    st = classify(legs, meta, aliases, quotes)
     notes = []
     for l in legs:
         if l.verdict == "CAUTION":
@@ -2584,7 +2598,7 @@ def make_candidate(legs, meta=None, *, boost_pct: float,
         notes.append(st.reason)
     return Candidate(legs=legs, structure=st, boost_pct=float(boost_pct),
                      independent_odds=independent_odds(legs), stake=stake,
-                     notes=notes)
+                     notes=notes, quotes=quotes)
 
 
 # ---------------------------------------------------------------------------
@@ -3093,7 +3107,7 @@ def _struct_key(l) -> tuple:
             l.event_id, _clean(l.team))
 
 
-def _is_priceable(legs, meta, cache=None) -> bool:
+def _is_priceable(legs, meta, cache=None, quotes=None) -> bool:
     """Is this combination's product its joint? Never raises.
 
     Cached on the structure key when a cache is given. B156's accumulation
@@ -3104,7 +3118,7 @@ def _is_priceable(legs, meta, cache=None) -> bool:
     if cache is not None and key in cache:
         return cache[key]
     try:
-        ok = bool(classify(list(legs), meta).priceable)
+        ok = bool(classify(list(legs), meta, None, quotes).priceable)
     except ValueError:
         ok = False
     if cache is not None:
@@ -3112,7 +3126,8 @@ def _is_priceable(legs, meta, cache=None) -> bool:
     return ok
 
 
-def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache):
+def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache,
+                      quotes=None):
     """A priceable combination within one quote step of `best`, or None.
 
     Only looks when the cheapest pick is NOT priceable — the common case
@@ -3121,7 +3136,7 @@ def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache):
     market and the cheapest-that-clears search is rerun per market
     combination; the best priceable result wins if it is close enough.
     """
-    if _is_priceable(best[1], meta, cache):
+    if _is_priceable(best[1], meta, cache, quotes):
         return None
     per_player = []
     for ls in lists:
@@ -3131,7 +3146,7 @@ def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache):
         per_player.append(list(by_mkt.values()))
     found = None
     for combo in product(*per_player):
-        if not _is_priceable([sub[0] for sub in combo], meta, cache):
+        if not _is_priceable([sub[0] for sub in combo], meta, cache, quotes):
             continue
         got = _cheapest_at_least(list(combo), target_dec)
         if got is None or got[0] > cl_dec:
@@ -3141,7 +3156,7 @@ def _prefer_priceable(lists, best, target_dec, cl_dec, meta, cache):
     if found is None or found[0] - best[0] > SGP_QUOTE_STEP_DEC:
         return None
     # The cache answered for the structure; confirm these exact legs.
-    return found if _is_priceable(found[1], meta, None) else None
+    return found if _is_priceable(found[1], meta, None, quotes) else None
 
 
 def _leg_key(l) -> tuple:
@@ -3249,7 +3264,8 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                          floor: float = FLOOR, ceiling: float = CEILING,
                          legs_per_slip: int | None = None, limit: int = 8,
                          stake: float | None = None,
-                         token=None) -> Shortlist:
+                         token=None, aliases=None,
+                         quotes=None) -> Shortlist:
     """Shortlist slips that clear the floor, ranked deterministically.
 
     Costs no tool calls. Price the survivors with price_sgp — the local
@@ -3514,7 +3530,7 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             swapped = ""
             if best is not None and best[0] <= cl_dec and not below_target:
                 alt = _prefer_priceable(lists, best, target_dec, cl_dec,
-                                        meta, _struct_cache)
+                                        meta, _struct_cache, quotes)
                 if alt is not None:
                     swapped = (f" — took the PRICEABLE {american(alt[0]):+.0f} "
                                f"over the cheapest {american(best[0]):+.0f}, "
@@ -3559,7 +3575,8 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
         # and an exception out of this loop takes the whole shortlist with
         # it. So it is caught and recorded as a refused combination.
         try:
-            cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake)
+            cand = make_candidate(c, meta, boost_pct=boost_pct, stake=stake,
+                                  aliases=aliases, quotes=quotes)
         except ValueError as e:
             n_dupe += 1
             dupe_reasons.append("; ".join(sorted(
