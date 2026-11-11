@@ -1144,3 +1144,28 @@ reality.
      had to be split into what each mechanism actually closes. Write the
      check against the code's behaviour, not against the sentence you
      just wrote about it.
+
+106. **Agreement between a formula and a simulation of the same model
+     verifies the algebra, not the model.** F13's joint-error expansion was
+     checked against four million Monte Carlo draws and matched to within
+     6%, and the notes concluded it "errs toward refusing on the dangerous
+     side". Both the formula and the simulation were the Gaussian copula.
+     The repo already held direct measurements of the same quantity — the
+     joint-crossing lifts — and against those the formula understates
+     every material negative cell, the unsafe way round. It also treated
+     a correlation between yes/no outcomes as a latent-normal one, which
+     no simulation of the latent model could reveal. When a model is
+     verified, ask what in the project MEASURES the thing directly, and
+     compare against that.
+
+107. **A new selection rule concentrates the output wherever the rule
+     points, so check what is true at that point.** Price targeting takes
+     the cheapest combination that clears the floor. That is F11's rule,
+     and it moved every shortlisted slip to just above the floor ON THE
+     PRODUCT — where B55 had already measured that the real quote lands
+     15-20% lower and fails the floor. Before targeting, slips were spread
+     through the band and most survived pricing; after it, by
+     construction, almost none would. And a cap sized for the stress case
+     (600 groups) was below the ordinary case (816). Both shipped green.
+     After adding a rule that picks, run one ordinary input and one
+     realistic downstream step on what it picked.

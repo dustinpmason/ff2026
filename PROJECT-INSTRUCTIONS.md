@@ -657,18 +657,28 @@ derived from `sl.candidates`, so they are empty by construction when there
 are no candidates and say nothing about whether rungs were considered. The
 live run's pool was 100% rungs and `sl.rung_legs` was `[]`.
 
-**A pool too large to price refuses rather than running.** Past
-`MAX_PLAYER_GROUPS` (600) you get a `ValueError` naming the count. Narrow
-the POOL — fewer players — not the ladders: the cost is one
-`make_candidate` per player group, so it is in the players, not the rungs.
+**A pool too large to price refuses rather than running**, with a
+`ValueError` naming the count. The bounds are generous (a 40-player
+main-line pool runs in under a second); if you hit one, narrow the POOL to
+the players Dustin would actually bet, not the ladders.
 
-**New verdict: `PRICE IT`.** The legs are priceable and clear the floor,
-but the slip's own P(cash) against its product implies a hold worse than the
-worst of the measured band — so the band says nothing about it and **no
-anticipated ROI is reported, on purpose**. The live run printed
-`P(cash): 0.0%` beside `anticipated ROI +9.3% to +21.9%` before this; both
-numbers were right and together they were nonsense. Get a real quote; that
-replaces the band with an observation.
+**A slip the hold band does not describe is resolved from its own product
+price.** When a slip's P(cash) against its product implies a hold worse
+than the worst of the measured band, no anticipated ROI is printed (the
+live run showed `P(cash): 0.0%` beside `anticipated ROI +9.3% to +21.9%`).
+Instead the report gives the boosted EV **at the full product price**, which
+is a ceiling because the real quote is normally worse. If that ceiling is
+negative the verdict is `NEGATIVE` — do not go and price it. `PRICE IT`
+appears only in the rare case the ceiling is still positive.
+
+**Same-game products are aimed ABOVE the floor, on purpose.** The floor is a
+condition on the book's real quote, and B55 measured same-game quotes at
+0.77–0.99 of the product. So `enumerate_candidates` aims the product at
+floor / (median measured factor) — about +366 for a +300 floor — and
+`build_notes` states the target, the factor and the worst case. It is a
+prediction. **Always run `price_sgp` before telling Dustin a slip clears a
+minimum**, and if `build_notes` says a group is "BELOW the price target",
+expect its quote to miss.
 
 **Pass `aliases=` when a book's spelling differs from nflverse's.** Both
 `classify()` and `rung_legs()` take it. `_meta_lookup` closes punctuation
@@ -2619,11 +2629,14 @@ read `Candidate.floor` / `.p_cash_floor` / `.ev_floor_pct`, which do it for
 you. Three outcomes:
 
 - **Every pair pointing the same way (all positive after the side signs).**
-  The product is a **FLOOR** on P(cash) — a theorem, Slepian's inequality,
-  not an estimate — so the slip can only be better than it reads. The
-  verdict is `FLOOR ONLY`, `p_cash_floor` and `ev_floor_pct` are reported
-  as **lower bounds**, and there is no threshold on the size. A QB stack at
-  +47% joint error prices exactly as a +2% one does.
+  The product is a **FLOOR** on P(cash): under a Gaussian copula that is
+  Slepian's inequality, and where a lift was measured directly it agrees.
+  **A model result backed by measurement, not a guarantee** — do not tell
+  Dustin a slip "can only be better than it reads". The verdict is
+  `FLOOR ONLY`, `p_cash_floor` and `ev_floor_pct` are reported as lower
+  bounds, and there is no threshold on the size. When the correction is
+  smaller than the noise the product already carries, `floor[1]` says
+  "about the product" — quote that, it is not a sure improvement.
 - **A negative total, inside the error the product already carries.**
   Reported, with the EV flagged **OPTIMISTIC** by that amount. The gate is
   a ratio against the legs' own propagated fair uncertainty, not a number

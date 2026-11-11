@@ -2018,8 +2018,17 @@ ind = independent_odds(SAME_STACK)
 chk("three -150 legs price at about +363 independent",
     360 <= ind <= 366, f"{ind:+.0f}")
 
-c = enumerate_candidates(SAME_STACK, META, boost_pct=0.50,
-                         mode="single-game").candidates[0]
+# A +363 product with one line per player sits between the +300 floor and
+# the same-game price target (floor / median factor). It must still be
+# shortlisted — there is nothing to retarget — and this used to index
+# `.candidates[0]` bare, so dropping that fallback crashed the section
+# instead of failing a check (lesson 103).
+_ss = enumerate_candidates(SAME_STACK, META, boost_pct=0.50,
+                           mode="single-game")
+chk("a one-line-per-player stack below the price target is still listed",
+    len(_ss.candidates) == 1, f"{len(_ss.candidates)} — {_ss.reason[:120]}")
+c = (_ss.candidates[0] if _ss.candidates
+     else make_candidate(SAME_STACK, META, boost_pct=0.50))
 c = price_candidate(c, book_odds=225, correlation_factor=0.62)
 chk("a below-floor BOOK price is rejected even when the product clears",
     c.book_odds == 225 and not c.clears_floor,
@@ -7440,7 +7449,11 @@ chk("and omits it when the order is real",
 section("73. F13 — joint error, sign, and the gate")
 
 
-def _jleg(name, p, side="OVER", market="player_rush_yds", team="BUF",
+# Default market is deliberately one MARKET_SIDE does not know. The checks
+# below pin ARITHMETIC with made-up r values, and since the 2026-11-11
+# review a mapped yards pair is also cross-checked against its measured
+# lift — which would (correctly) override an invented r for a real pair.
+def _jleg(name, p, side="OVER", market="arith_only_unmapped", team="BUF",
           pos="RB", ev="E1", liq=None, verdict="CLEAR"):
     # BoostLeg refuses a verdict without a matching verdict_side (B126), so
     # a leg whose side is deliberately unreadable has to be UNSCREENED.
@@ -7575,6 +7588,14 @@ _ok, _why = ff_boost.joint_verdict(
      ("B", "C", .2456, "t", _CI)])
 chk("all pairs positive and bracketed: a Slepian FLOOR, at any magnitude",
     _ok and "Slepian" in _why and "FLOOR" in _why, _why[:120])
+chk("a large floor is called a model result, not a guarantee",
+    "not a guarantee" in _why and "never worse" not in _why, _why[-200:])
+_rr = _C.RECORDED_MARKET_SIDE[("same", "RECEPTIONS", "RECEPTIONS")]
+_oks, _whys = ff_boost.joint_verdict(
+    [_jleg("A", .5), _jleg("B", .5)], [("A", "B", _rr[0], "t", _rr[2])])
+chk("a positive correction smaller than the noise is NOT sold as a floor",
+    _oks and "about the product" in _whys and "FLOOR" in _whys,
+    _whys[-220:])
 chk("and no threshold is applied to it — 47% still prices",
     _ok, "the direction is safe whatever the size")
 
@@ -7626,8 +7647,78 @@ _td = _C.RECORDED_MARKET_SIDE[("same", "TD", "TD")]
 _ok5, _why5 = ff_boost.joint_verdict(
     [_jleg("A", .5), _jleg("B", .5)],
     [("A", "B", _td[0], "t", _td[2])])
-chk("one same-team TD x TD pair sits just OUTSIDE the gate, at 1.02x",
+chk("on the latent-normal weight that r would sit at 1.02x",
     not _ok5 and "1.02x" in _why5, _why5[:170])
+# ...but that is the WRONG weight for it. The TD side is binary, so its r
+# is between yes/no outcomes and the joint is exact: r sqrt(qa qb / pa pb).
+# On real anytime-TD legs the same pair is 1.60x, not a knife edge at all.
+_tdl = [_jleg("A", .5, market="player_anytime_td", pos="WR"),
+        _jleg("B", .5, market="player_anytime_td", pos="TE")]
+_ok5b, _why5b = ff_boost.joint_verdict(_tdl, [("A", "B", _td[0], "t", _td[2])])
+chk("on real anytime-TD legs the same pair is 1.60x and plainly refused",
+    not _ok5b and "1.60x" in _why5b, _why5b[:170])
+# The binary weight against exhaustive arithmetic, no model involved.
+for _pa, _pb, _phi_r in ((.5, .5, -.03), (.3, .35, -.0362), (.3, .6, .05)):
+    _joint = _pa * _pb + _phi_r * ((_pa * (1 - _pa) * _pb * (1 - _pb)) ** .5)
+    _exact = _joint / (_pa * _pb) - 1.0
+    _gotb = ff_boost.joint_error(
+        [_jleg("A", _pa, market="player_anytime_td"),
+         _jleg("B", _pb, market="player_anytime_td")],
+        [("A", "B", _phi_r, "t")]).rel
+    chk(f"two yes/no legs at {_pa}/{_pb}: the term is EXACT",
+        abs(_gotb - _exact) < 1e-12, f"{_gotb:+.6f} vs {_exact:+.6f}")
+chk("at real TD probabilities the old weight understated by over 2x",
+    ff_boost._pair_weight(.3, .3, 0, 0, True, True)
+    / ff_boost._pair_weight(.3, .3, ff_boost._norm_inv(.7),
+                            ff_boost._norm_inv(.7), False, False) > 1.5)
+# One yes/no leg against a yards leg is the point-biserial case, between.
+_w_cc = ff_boost._pair_weight(.5, .5, 0, 0, False, False)
+_w_bc = ff_boost._pair_weight(.5, .5, 0, 0, True, False)
+_w_bb = ff_boost._pair_weight(.5, .5, 0, 0, True, True)
+chk("the mixed weight sits between the two, and is symmetric",
+    _w_cc < _w_bc < _w_bb
+    and abs(_w_bc - ff_boost._pair_weight(.5, .5, 0, 0, False, True)) < 1e-12
+    and abs(_w_bc - 0.7979) < 1e-3 and abs(_w_bb - 1.0) < 1e-12,
+    f"{_w_cc:.4f} {_w_bc:.4f} {_w_bb:.4f}")
+
+# --- the measured lift as a second opinion ------------------------------
+# The formula was verified against a simulation of its own model. Against
+# the directly measured lifts it understates every material negative cell.
+def _yl(name, market, pos, team="BUF", side="OVER"):
+    return _jleg(name, .5, market=market, pos=pos, team=team, side=side)
+
+
+for _rel, _ma, _mb, _pa2, _pb2 in (
+        ("same", "player_pass_yds", "player_rush_yds", "QB", "RB"),
+        ("opp", "player_rush_yds", "player_rush_yds", "RB", "RB"),
+        ("opp", "player_pass_yds", "player_rush_yds", "QB", "RB")):
+    _la = _yl("A", _ma, _pa2)
+    _lb = _yl("B", _mb, _pb2, team=("BUF" if _rel == "same" else "MIA"))
+    _sa, _sb = sorted((ff_boost.MARKET_SIDE[_ma], ff_boost.MARKET_SIDE[_mb]))
+    _lift, _lr, _ = ff_boost.MEASURED_PAIR_LIFT[(_rel, _sa, _sb)]
+    _je = ff_boost.joint_error([_la, _lb], [("A", "B", _lr, "t")])
+    chk(f"{_rel} {_sa} x {_sb}: scored no better than its measured lift",
+        _je.rel <= (_lift - 1.0) + 1e-9,
+        f"term {_je.rel:+.2%}, measured {_lift - 1:+.2%}, formula alone "
+        f"{0.6366 * _lr:+.2%}")
+    chk(f"  and the formula alone would have understated it",
+        0.6366 * _lr > (_lift - 1.0), f"{0.6366 * _lr:+.2%} vs {_lift - 1:+.2%}")
+_qb9 = _yl("Q", "player_pass_yds", "QB")
+_wr9 = _yl("W", "player_reception_yds", "WR")
+_je9 = ff_boost.joint_error([_qb9, _wr9], [("Q", "W", .2462, "t")])
+chk("a POSITIVE pair keeps the smaller of the two figures",
+    abs(_je9.rel - 0.6366 * .2462) < 1e-3,
+    f"{_je9.rel:+.2%} — measured lift is +19.9%, and taking it would make "
+    f"the floor's stated gap less conservative")
+chk("and the lift is used with the right sign for an UNDER",
+    ff_boost.joint_error(
+        [_qb9, _yl("W", "player_reception_yds", "WR", side="UNDER")],
+        [("Q", "W", .2462, "t")]).rel <= -(1.1993 - 1.0) + 1e-9)
+chk("joint_error says when it scored a pair on its lift",
+    "measured lift" in ff_boost.joint_error(
+        [_yl("A", "player_rush_yds", "RB"),
+         _yl("B", "player_rush_yds", "RB", team="MIA")],
+        [("A", "B", -.0804, "t")]).why)
 chk("the gate is a RATIO against propagated noise, not a tuned number",
     ff_boost.JOINT_OVERSTATE_RATIO == 1.0,
     "lesson 99 — if it needs tuning it is the wrong quantity")
@@ -8140,8 +8231,61 @@ chk("every shortlisted slip is inside the band",
     all(300 <= c.independent_odds <= 900 for c in _psl.candidates),
     str([round(c.independent_odds) for c in _psl.candidates]))
 chk("the shortlist reports that it chose on price",
-    any("cheapest that clears the floor" in n for n in _psl.build_notes),
-    str(_psl.build_notes)[:200])
+    any("cheapest that clears the price target" in n
+        for n in _psl.build_notes), str(_psl.build_notes)[:200])
+# The target is for the QUOTE, not the product (found in the 2026-11-11
+# review). B55 measured same-game quotes at 0.77-0.99 of the product, so a
+# product aimed AT the floor prices under it and voids a token.
+_tgt = ff_boost.american(ff_boost.to_decimal(300) / ff_boost._median_factor())
+chk("the median measured factor is derived from the list, not typed",
+    0.77 < ff_boost._median_factor() < 0.99
+    and ff_boost._median_factor() in ff_boost.SGP_FACTORS_OBSERVED,
+    str(ff_boost._median_factor()))
+chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
+    _psl.candidates and all(c.independent_odds >= _tgt - 1e-6
+                            for c in _psl.candidates),
+    f"target {_tgt:+.0f}; got "
+    f"{sorted(round(c.independent_odds) for c in _psl.candidates)[:4]}")
+chk("so at the median factor the predicted QUOTE clears the floor",
+    all(ff_boost.american(ff_boost.to_decimal(c.independent_odds)
+                          * ff_boost._median_factor()) >= 300 - 1e-6
+        for c in _psl.candidates))
+chk("the note gives the target, the factor and the worst case",
+    any("aimed at" in n and "worst" in n and "price_sgp decides" in n
+        for n in _psl.build_notes), str(_psl.build_notes)[:260])
+# A group with one line per player cannot be retargeted: kept, and flagged.
+_one = [ff_boost.BoostLeg(
+    event_id="E0", book="dk", market="player_rush_yds", player=f"Solo{i}",
+    side="OVER", odds=+60, fair_prob=0.6, fair_source="pinnacle",
+    devig_method="shin", line=50.5, player_id=f"s{i}", verdict="CLEAR",
+    verdict_side="OVER", team="NYG", pos="RB") for i in range(3)]
+_osl2, _oerr2 = _ec(_one, None, mode="single-game", event_id="E0",
+                    boost_pct=0.50, legs_per_slip=3)
+chk("a +310 product with no alternative is kept, not dropped",
+    _osl2 is not None and len(_osl2.candidates) == 1
+    and 300 <= _osl2.candidates[0].independent_odds < _tgt,
+    (_oerr2 or str([c.independent_odds for c in _osl2.candidates])))
+chk("and flagged as likely to quote UNDER the floor",
+    _osl2 is not None and any("UNDER the floor" in n
+                              for n in _osl2.build_notes),
+    str(_osl2.build_notes if _osl2 else _oerr2)[:220])
+# Cross-game parlays are not haircut, so they keep the plain floor.
+_xl = []
+for _i in range(3):
+    for _o in (-110, +100, +120):
+        _xl.append(ff_boost.BoostLeg(
+            event_id=f"X{_i}", book="dk", market="player_rush_yds",
+            player=f"Cross{_i}", side="OVER", odds=_o, fair_prob=0.5,
+            fair_source="pinnacle", devig_method="shin",
+            line=40.5 + abs(_o) / 10, player_id=f"x{_i}", verdict="CLEAR",
+            verdict_side="OVER", team=f"T{_i}", pos="RB"))
+_xsl, _xerr = _ec(_xl, None, mode="cross-game", boost_pct=0.50,
+                  legs_per_slip=3, floor=600, ceiling=900)
+chk("a cross-game build targets the floor itself",
+    _xsl is not None and _xsl.candidates
+    and min(c.independent_odds for c in _xsl.candidates) < 700
+    and not any("aimed at" in n for n in _xsl.build_notes),
+    (_xerr or str([round(c.independent_odds) for c in _xsl.candidates])))
 chk("and says how many combinations it chose between",
     any("price targeting chose between" in n for n in _psl.build_notes),
     str(_psl.build_notes)[:200])
@@ -8243,21 +8387,40 @@ chk("a genuinely too-short pool still says too short",
     _ssl.reason[:150])
 
 # --- the bounded refusal, in place of the OOM --------------------------
-chk("MAX_PLAYER_GROUPS is a real bound",
-    ff_boost.MAX_PLAYER_GROUPS > 0 and ff_boost.MAX_PLAYER_GROUPS < 10000)
-_big, _bm = _ladder_pool(n_players=30, n_rungs=4)
+# The first cap was 600 PLAYER GROUPS, and C(18, 3) = 816: an ordinary
+# single-game board of main lines was refused outright the morning after it
+# shipped. Nothing in the suite had a pool of more than 16 players, so
+# nothing noticed. These are the pools that must simply run.
+def _mainpool(n):
+    return [ff_boost.BoostLeg(
+        event_id="E0", book="dk", market="player_rush_yds", player=f"Main{i}",
+        side="OVER", odds=-110, fair_prob=0.5, fair_source="pinnacle",
+        devig_method="shin", line=50.5, player_id=f"m{i}", verdict="CLEAR",
+        verdict_side="OVER", team="NYG", pos="RB") for i in range(n)]
+
+
+for _n in (18, 40):
+    _msl, _merr = _ec(_mainpool(_n), None, mode="single-game", event_id="E0",
+                      boost_pct=0.50, legs_per_slip=3)
+    chk(f"an ordinary {_n}-player main-line pool runs, not refuses",
+        _msl is not None and _msl.candidates, _merr[:150])
+# The bound that remains is on BUILT candidates, exercised by shrinking it.
+_keep = ff_boost.MAX_BUILT_CANDIDATES
+ff_boost.MAX_BUILT_CANDIDATES = 50
 try:
-    ff_boost.enumerate_candidates(
-        _big, _bm, mode="single-game", event_id="E1", boost_pct=0.50,
-        legs_per_slip=3, floor=300, ceiling=900)
-    _bigerr = ""
-except ValueError as e:
-    _bigerr = str(e)
-chk("a pool past the bound REFUSES with a number, rather than dying",
-    "player group" in _bigerr and "narrow the POOL" in _bigerr,
-    _bigerr[:170] or "it ran — the bound did not fire")
-chk("and the refusal points at the players, not the ladders",
-    "not the rungs" in _bigerr, _bigerr[:170])
+    _bsl, _bigerr = _ec(_mainpool(18), None, mode="single-game",
+                        event_id="E0", boost_pct=0.50, legs_per_slip=3)
+finally:
+    ff_boost.MAX_BUILT_CANDIDATES = _keep
+chk("past the built-candidate bound it REFUSES with a reason",
+    _bsl is None and "in-band combination" in _bigerr
+    and "Narrow the pool" in _bigerr, _bigerr[:170] or "it ran")
+# Out-of-band groups are counted but never built.
+_osl, _oerr = _ec(_mainpool(18), None, mode="single-game", event_id="E0",
+                  boost_pct=0.50, legs_per_slip=3, floor=5000, ceiling=9000)
+chk("a pool with nothing in band builds nothing and says which way",
+    _osl is not None and not _osl.candidates and "floor" in _osl.reason.lower(),
+    (_oerr or _osl.reason)[:150])
 
 # --- `pessimistic` conflated two states --------------------------------
 _je_none = ff_boost.joint_error([_jleg("A", .5), _jleg("B", .5)], [])
@@ -8421,8 +8584,22 @@ for _l in _path.legs:
     _l.odds = +900
 chk("a slip whose P(cash) contradicts its price gets NO ROI band",
     _path.ev_band is None, str(_path.ev_band))
-chk("and its verdict says PRICE IT, not PLAY and not NEGATIVE",
-    _path.verdict == "PRICE IT", _path.verdict)
+# First shipped as PRICE IT, which was wrong: this slip is about -99% at
+# its own product price, and the real quote is normally worse than the
+# product. "The band does not apply" is not "nothing is known".
+chk("a slip that loses at its own product price is NEGATIVE, not PRICE IT",
+    _path.verdict == "NEGATIVE" and _path.ev_at_product < -0.9,
+    f"{_path.verdict} ev_at_product={_path.ev_at_product}")
+_bbl = [_jleg("A", .30, market="player_reception_yds", pos="WR", ev="E1"),
+        _jleg("B", .30, market="player_rush_yds", pos="RB", ev="E2")]
+for _l in _bbl:
+    _l.odds = +100
+_bigboost = ff_boost.make_candidate(_bbl, boost_pct=3.0)
+chk("PRICE IT survives only where the product price is still positive",
+    _bigboost.ev_band is None and _bigboost.ev_at_product > 0
+    and _bigboost.verdict == "PRICE IT",
+    f"{_bigboost.verdict} band={_bigboost.ev_band} "
+    f"ev_at_product={_bigboost.ev_at_product}")
 chk("PRICE IT is a documented verdict", "PRICE IT" in ff_boost.VERDICTS)
 _prep = ff_boost.report([_path])
 chk("the report prints the reason in place of the ROI line",
@@ -8430,9 +8607,12 @@ chk("the report prints the reason in place of the ROI line",
     "two correctly computed numbers side by side were nonsense")
 chk("it names the hold its own P(cash) implies",
     "implies a hold of" in _prep)
-chk("an unmeasured slip is ranked at 0, not buried below every negative",
-    _path.rank == 0.0,
-    "-9e9 is a ranking claim about a slip nothing has measured (B57)")
+chk("a band-less slip ranks at its product-price EV, a measured ceiling",
+    abs(_path.rank - _path.ev_at_product) < 1e-12 and -1.0 <= _path.rank < 0,
+    f"rank {_path.rank}: 0.0 put it above every measured negative, and "
+    f"-9e9 was a claim nothing measured")
+chk("the report states that ceiling", "at the full product" in _prep,
+    "the reason line must say what IS known, not only what is not")
 # A healthy slip must be untouched: the check is ONE-sided on purpose.
 _ok77 = ff_boost.make_candidate(
     [_jleg("A", .52, market="player_reception_yds", pos="WR", ev="E1"),

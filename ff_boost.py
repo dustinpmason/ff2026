@@ -443,7 +443,8 @@ MODEL_SIDE_GATE = 0.03
 # `priceable` and `independent_odds`. Re-derive with
 # `python3 ff_correlation.py`.
 from ff_correlation import (RECORDED_MARKET as _RM,
-                            RECORDED_MARKET_SIDE as _RMS)
+                            RECORDED_MARKET_SIDE as _RMS,
+                            SIDE_SPEC as _SIDE_SPEC)
 
 SAME_TEAM_CORR = {k: _RM[k][0] for k in (("QB", "WR"), ("QB", "TE"),
                                          ("QB", "RB"))}
@@ -618,12 +619,13 @@ VERDICTS = {
             "measured hold band.",
     "NEGATIVE": "Clears the floor but is -EV at the measured hold. The "
                 "boost does not cover the structure.",
-    "PRICE IT": "The legs are priceable and clear the floor, but this "
-                "slip's own P(cash) against its product implies a hold "
-                "nowhere near the measured band, so the band says nothing "
-                "about it. No anticipated ROI is reported, on purpose. Get "
-                "a real quote with price_sgp — that replaces the band with "
-                "an observation and the verdict resolves.",
+    "PRICE IT": "Rare. The measured hold band does not describe this slip "
+                "(its own P(cash) implies a hold worse than the band's "
+                "worst case) AND it is still positive at the full product "
+                "price, which takes a large boost. No anticipated ROI is "
+                "reported. A real quote from price_sgp decides it. A slip "
+                "the band does not describe that LOSES at its product price "
+                "is NEGATIVE, not this.",
     "FLOOR ONLY": "Correlated legs whose measured correlation BOUNDS the "
                   "joint instead of destroying it. P(cash) and EV are a "
                   "lower bound, not an estimate; the slip can only be "
@@ -1476,6 +1478,11 @@ def classify(legs, meta=None, aliases=None) -> Structure:
 # Neither direction is corrected by a fudge factor; the sweep is pinned in
 # the suite instead, so a regression in this arithmetic is visible.
 #
+# READ THIS PARAGRAPH FOR WHAT IT IS: agreement between a formula and a
+# simulation OF THE SAME MODEL. It shows the algebra is right. It does not
+# show the model fits football, and against the measured lifts it partly
+# does not — see "What the 2026-11-11 review found" above `joint_error`.
+#
 # The 2-leg figure in F13's backlog entry reproduces exactly. **The 3-leg
 # figure does not.** That entry says r=0.03 across three pairs costs 11.5%
 # of a 3-leg joint; it costs 5.73% closed-form and 5.89% by simulation, so
@@ -1613,6 +1620,87 @@ class JointError:
         return s
 
 
+# ---------------------------------------------------------------------------
+# What the 2026-11-11 review found in the arithmetic above
+# ---------------------------------------------------------------------------
+#
+# The closed form was "verified" against a Monte Carlo of the SAME Gaussian
+# copula. That checks the algebra. It says nothing about whether football
+# follows the copula, and two things in this repo say it does not quite:
+#
+# 1. THE MEASURED LIFTS DISAGREE, IN THE UNSAFE DIRECTION. `MEASURED_PAIR_LIFT`
+#    holds the directly measured joint-crossing lift for eleven yard pairs,
+#    and at 50/50 the formula predicts lift = 1 + 0.6366 r. Against the data:
+#
+#        same PASS x RUSH   predicted -4.9%   measured  -6.6%
+#        opp  RUSH x RUSH   predicted -5.1%   measured  -8.4%
+#        opp  PASS x RUSH   predicted -1.4%   measured  -4.6%
+#        same PASS x RECV   predicted +15.7%  measured +19.9%
+#
+#    Every material NEGATIVE cell is understated, by 1.3x to 3.2x. Each is
+#    individually within about 1.5 standard errors (these cells have 4,600
+#    to 5,700 pairs), so this is a lean and not a proof — but the header
+#    above says the formula "errs toward refusing" on the dangerous side,
+#    and that was true only against its own simulation. So where a measured
+#    lift exists the term is scored at the WORSE of the two.
+#
+# 2. THE ANYTIME-TD r IS NOT A LATENT CORRELATION. `SIDE_SPEC` marks TD as
+#    binary: its r is a correlation between two yes/no outcomes. For those
+#    the joint is EXACT with no copula at all,
+#
+#        P(A and B) = pa pb + r sqrt(pa qa pb qb)
+#
+#    so the relative error is r sqrt(qa qb / pa pb). Feeding that r to the
+#    latent-normal formula understated every TD x TD term by 1.57x at 50/50
+#    and by more at real anytime-TD probabilities (2.9x at p = 0.30). A
+#    binary leg against a yards leg is the point-biserial case, between the
+#    two. None of the suite's verdicts moved, but the knife edge recorded
+#    for one same-team TD x TD pair was 1.02x on the wrong arithmetic and
+#    is 1.60x on the right one.
+
+
+def _binary_market(market) -> bool:
+    """True when this market's measured r is between yes/no outcomes."""
+    side = MARKET_SIDE.get(market)
+    spec = _SIDE_SPEC.get(side) if side else None
+    return bool(spec and spec[2])
+
+
+def _pair_weight(pa, pb, za, zb, bin_a: bool, bin_b: bool) -> float:
+    """d(relative joint error)/dr for one pair, by what KIND of r it is."""
+    if bin_a and bin_b:
+        return math.sqrt((1.0 - pa) * (1.0 - pb) / (pa * pb))      # exact
+    if bin_a:
+        return (_phi(zb) / pb) * math.sqrt((1.0 - pa) / pa)
+    if bin_b:
+        return (_phi(za) / pa) * math.sqrt((1.0 - pb) / pb)
+    return _phi(za) * _phi(zb) / (pa * pb)
+
+
+_W50 = _phi(0.0) ** 2 / 0.25          # the yards-pair weight at 50/50
+
+
+def _lift_term(la, lb, sign, pa, pb, za, zb):
+    """This pair's term implied by its MEASURED lift, or None.
+
+    The lift sweep crossed each player's own median, so (lift - 1) is the
+    relative joint error at 50/50. It is carried to these legs'
+    probabilities with the same weight the formula uses, which is the only
+    part of the copula this leans on. None when the pair has no measured
+    lift, a market is unmapped, or a team is unknown — never a guess.
+    """
+    sa, sb = MARKET_SIDE.get(la.market), MARKET_SIDE.get(lb.market)
+    ta, tb = _clean(la.team), _clean(lb.team)
+    if (sa is None or sb is None or not ta or not tb
+            or la.event_id != lb.event_id
+            or _binary_market(la.market) or _binary_market(lb.market)):
+        return None
+    m = pair_lift("same" if ta == tb else "opp", sa, sb)
+    if m is None:
+        return None
+    return sign * (float(m[0]) - 1.0) * (_phi(za) * _phi(zb) / (pa * pb)) / _W50
+
+
 def joint_error(legs, pairs, cis=None) -> JointError:
     """First-order relative error of the independent product.
 
@@ -1628,6 +1716,7 @@ def joint_error(legs, pairs, cis=None) -> JointError:
 
     unreadable, terms, tot = [], [], 0.0
     all_ci = True
+    n_lift = 0
     for pair in pairs:
         a_name, b_name, r = pair[0], pair[1], pair[2]
         ci = pair[4] if len(pair) > 4 else None
@@ -1663,7 +1752,16 @@ def joint_error(legs, pairs, cis=None) -> JointError:
         else:
             lo, hi = float(min(ci)), float(max(ci))
             use = lo if sign > 0 else hi
-        t = sign * use * _phi(za) * _phi(zb) / (pa * pb)
+        w = _pair_weight(pa, pb, za, zb,
+                         _binary_market(la.market), _binary_market(lb.market))
+        t = sign * use * w
+        # Second opinion, where one exists: the MEASURED joint-crossing
+        # lift for this pair. See `_lift_term`. The term is scored at
+        # whichever of the two is worse for the slip.
+        tl = _lift_term(la, lb, sign, pa, pb, za, zb)
+        if tl is not None and tl < t:
+            t = tl
+            n_lift += 1
         terms.append((a_name, b_name, t))
         tot += t
 
@@ -1681,7 +1779,10 @@ def joint_error(legs, pairs, cis=None) -> JointError:
              f"probabilities and sides, scored at "
              + ("the pessimistic end of each pair's confidence interval"
                 if all_ci else
-                "point estimates — at least one pair carried no interval")))
+                "point estimates — at least one pair carried no interval")
+             + (f"; {n_lift} pair(s) scored on their measured lift instead, "
+                f"because it was worse than the formula's figure"
+                if n_lift else "")))
 
 
 # The gate. NOT a threshold on the joint error's size, which is the thing
@@ -1747,14 +1848,33 @@ def joint_verdict(legs, pairs, quotes=None, cis=None) -> tuple[bool, str]:
         return True, je.why
 
     if je.rel >= 0 and all(t[2] >= 0 for t in je.terms) and je.pessimistic:
+        # Wording corrected 2026-11-11. This used to say "a theorem" and
+        # "can only be better than it reads, never worse". Slepian's
+        # inequality is a theorem ABOUT A GAUSSIAN COPULA, and football is
+        # not obliged to be one: this repo's own tables hold a pair with a
+        # positive r and a measured lift BELOW 1 (same-team receiving,
+        # r=+0.0125, lift 0.9983). So the floor is as strong as the
+        # evidence for the direction, and a correction smaller than the
+        # noise it sits in is reported as that, not as a guarantee.
+        noise0, _ = product_noise(legs, quotes)
+        if je.rel < noise0:
+            return True, (
+                f"{je.describe()}. Every pair points the same way, so the "
+                f"product is treated as a FLOOR on P(cash) (Slepian's "
+                f"inequality, under a Gaussian copula) — but the whole "
+                f"correction is smaller than the {noise0:.2%} the product "
+                f"already carries from the legs' own fair uncertainty, so "
+                f"read this as 'about the product', not as a slip that is "
+                f"sure to be better than it looks")
         return True, (
             f"{je.describe()}. Every pair points the same way, so the "
-            f"product is a FLOOR on P(cash) by Slepian's inequality rather "
-            f"than by the expansion: the real joint is at least the product "
-            f"whatever the magnitude, and about {je.rel:+.2%} above it on "
-            f"this arithmetic. The EV on the floor is conservative by "
-            f"roughly that much — this slip can only be better than "
-            f"it reads, never worse")
+            f"product is a FLOOR on P(cash): under a Gaussian copula that "
+            f"is Slepian's inequality and holds at any magnitude, and "
+            f"where a joint-crossing lift has been measured directly for "
+            f"these pairs it points the same way. A model result backed by "
+            f"measurement, not a guarantee. The real joint is about "
+            f"{je.rel:+.2%} above the product on this arithmetic, so the EV "
+            f"on the floor is conservative by roughly that much")
 
     noise, nwhy = product_noise(legs, quotes)
     ratio = abs(je.rel) / noise if noise > 0 else float("inf")
@@ -2119,8 +2239,10 @@ class Candidate:
                     f"WORST of the measured {lo:.1%}-{hi:.1%} band. The "
                     f"band assumes legs priced about right and these are "
                     f"not, so a ROI from it would be a number about a "
-                    f"different slip. Price it and the band is replaced by "
-                    f"an observation")
+                    f"different slip. What IS known: at the full product "
+                    f"price the boosted EV is {self.ev_at_product:+.1%}, and "
+                    f"the book's real quote is normally worse than the "
+                    f"product, so that is a ceiling")
         return ""
 
     @property
@@ -2254,8 +2376,33 @@ class Candidate:
             # knowable here without a real quote, and inventing either is
             # how a pathological slip read `P(cash) 0.0%` beside
             # `anticipated ROI +9.3% to +21.9%`.
-            return "PRICE IT"
+            #
+            # Corrected 2026-11-11. "Not knowable" was wrong for most of
+            # these: the band not applying does not mean nothing is known.
+            # P(cash) and the product price give the EV AT THE PRODUCT
+            # PRICE exactly, and the book's real same-game quote is
+            # normally WORSE than the product (that gap is what the hold
+            # band measures). So when even the product price loses, the
+            # slip loses, and sending a reader to price a slip that is
+            # -98.8% before the book's cut wastes the one scarce thing in
+            # this workflow. PRICE IT is kept only for the case it fits:
+            # positive at the product price, band not applicable.
+            return "PRICE IT" if (self.ev_at_product or 0.0) > 0 else "NEGATIVE"
         return "PLAY" if self.ev_band[0] > 0 else "NEGATIVE"
+
+    @property
+    def ev_at_product(self) -> float | None:
+        """Boosted EV if the book paid the full product of the legs.
+
+        A CEILING on the real EV for independent legs, not an estimate of
+        it: the book's quote is normally below the product. Needs no quote
+        and no band.
+        """
+        p = self.p_cash
+        if p is None:
+            return None
+        d = to_decimal(self.independent_odds)
+        return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
 
     @property
     def rank(self) -> float:
@@ -2267,7 +2414,13 @@ class Candidate:
         # every measured negative, which is a ranking claim about a slip
         # nothing has measured — B57's whole objection. Zero puts it where
         # it belongs: not evidence for, not evidence against.
-        return self.ev_band[0] if self.ev_band is not None else 0.0
+        if self.ev_band is not None:
+            return self.ev_band[0]
+        # No band. The EV at the product price is a measured ceiling, so it
+        # is the honest rank: 0.0 put a slip that is -98.8% at its own
+        # product price above every measured negative on the board.
+        e = self.ev_at_product
+        return e if e is not None else 0.0
 
     @property
     def key(self) -> tuple:
@@ -2569,12 +2722,13 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
     return kept, refused
 
 
-# How many player groups price targeting will evaluate. Each one costs a
-# `make_candidate`, so this bounds the real work. 600 covers every
-# plausible board — 7 players is 35 groups, 15 is 455 — and refuses the
-# pathological pool that exhausted memory in testing rather than dying on
-# it.
-MAX_PLAYER_GROUPS = 600
+# How many player groups price targeting will WALK. Walking is a binary
+# search per group and cheap; this only stops a runaway. C(150, 3) fits.
+MAX_PLAYER_GROUPS = 500_000
+# The real cost bound: one `make_candidate` per in-band group. Measured at
+# 9,880 builds in 0.4s (40 players of main lines), so 200,000 is seconds,
+# not minutes, and a full main-line slate fits with a wide margin.
+MAX_BUILT_CANDIDATES = 200_000
 
 
 def _widen_interval(ci, *estimates) -> tuple[tuple, bool]:
@@ -2646,6 +2800,13 @@ def _meta_lookup(name, meta, aliases=None):
         if norm_player(str(k)) == want:
             return v
     return (None, None)
+
+
+def _median_factor() -> float:
+    """Median of every measured same-game quote/product factor (B55)."""
+    xs = sorted(SGP_FACTORS_OBSERVED)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
 
 
 def _leg_key(l) -> tuple:
@@ -2918,6 +3079,24 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
 
     fl_dec = to_decimal(floor)
     cl_dec = to_decimal(ceiling)
+    # WHAT THE TARGET IS A TARGET FOR. Found in the 2026-11-11 review: the
+    # first version aimed the PRODUCT at the floor, and the floor is a
+    # condition on the book's real QUOTE. B55 measured that a same-game
+    # quote is the product times 0.77 to 0.99 — a +516 product quoted +400
+    # — so a slip targeted to a +300 product quotes around +240 to +290,
+    # fails the floor once priced, and voids a token with that minimum.
+    # Targeting made this systematic: every shortlisted same-game slip sat
+    # just over the line on the wrong number.
+    #
+    # So in a same-game build the product is aimed at floor / factor, with
+    # the factor taken as the MEDIAN of the measured list rather than a
+    # constant typed here. It is still a prediction: the quote snaps to a
+    # coarse grid (B61) and the observed range is wide, so the note below
+    # gives the worst case too, and only `price_sgp` settles it. Cross-game
+    # parlays are not haircut this way and keep the plain floor.
+    sgp_factor = (_median_factor() if mode != "cross-game" else 1.0)
+    target_dec = fl_dec / sgp_factor
+    n_below_target = 0
     chosen: list[tuple] = []
     n_rung_alts = 0
     n_groups_in_band = 0
@@ -2932,25 +3111,29 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     # something to count and skip. It was 67,114 of 104,586 on the first
     # live board — work that is now never generated.
 
-    # A bounded refusal rather than an unbounded run. Price targeting is
-    # O(groups * k^(n-1) log k), and a 900-rung pool across 30 players —
-    # 4,060 groups, each priced — exhausted memory outright in testing.
-    # That is a pathological pool rather than a real board (the first live
-    # board was 155 rungs across 10 players), but dying is not a result.
-    # Refused with a number and an instruction, which is this project's
-    # rule for a limit it cannot meet.
-    n_groups_total = sum(
-        len(list(combinations(range(len(by_player)), n))) for n in sizes
-        if len(by_player) >= n)
+    # A bounded refusal rather than an unbounded run — but bounded on what
+    # actually costs something. The first version of this capped PLAYER
+    # GROUPS at 600, which C(18, 3) = 816 already exceeds: an ordinary
+    # single-game board of main lines (a QB, two backs, four receivers and
+    # two tight ends a side is 18 players) was refused outright, where the
+    # same pool had run fine for weeks. The cap was sized against the
+    # 900-rung pool that exhausted memory, and the memory went on the
+    # brute-force combination list that no longer exists, not on groups.
+    #
+    # Walking a group is cheap (a binary search); the expensive step is
+    # `make_candidate`, and that now runs ONLY for groups with an in-band
+    # combination — out-of-band groups were being built and then thrown
+    # away by the band filter. So groups get a generous bound and built
+    # candidates get the real one.
+    n_groups_total = sum(math.comb(len(by_player), n) for n in sizes
+                         if len(by_player) >= n)
     if n_groups_total > MAX_PLAYER_GROUPS:
         raise ValueError(
             f"this pool makes {n_groups_total:,} player group(s) at "
-            f"size(s) {sizes}, past the {MAX_PLAYER_GROUPS:,} this can "
-            f"price. Every group is a separate `make_candidate`, so the "
-            f"cost is in the groups and not the rungs — narrow the POOL "
-            f"(fewer players), not the ladders. {len(by_player)} distinct "
-            f"players are in it. A shortlist of 8 does not need hundreds "
-            f"of players in the pool.")
+            f"size(s) {sizes}, past the {MAX_PLAYER_GROUPS:,} this will "
+            f"walk. The cost is in the number of distinct PLAYERS "
+            f"({len(by_player)} here), not the rungs — narrow the pool to "
+            f"the players you would actually bet.")
 
     for n_legs in sizes:
         if len(by_player) < n_legs:
@@ -2969,7 +3152,17 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                 n_combo *= len(ls)
             if n_combo > 1:
                 n_rung_alts += n_combo - 1
-            best = _cheapest_at_least(lists, fl_dec)
+            best = _cheapest_at_least(lists, target_dec)
+            below_target = False
+            if (best is None or best[0] > cl_dec) and target_dec > fl_dec:
+                # Nothing reaches the price target inside the band. Fall
+                # back to the cheapest that clears the floor on the PRODUCT
+                # — the old behaviour, and the only option for a group with
+                # one line per player — but say the quote will likely miss.
+                best = _cheapest_at_least(lists, fl_dec)
+                below_target = best is not None and best[0] <= cl_dec
+                if below_target:
+                    n_below_target += 1
             # Direction, exactly, from the sorted ends — no enumeration.
             lo_dec = 1.0
             hi_dec = 1.0
@@ -2984,14 +3177,23 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                         f"{', '.join(who)}: chose {american(best[0]):+.0f} "
                         f"from {n_combo:,} combination(s) spanning "
                         f"{american(lo_dec):+.0f} to {american(hi_dec):+.0f} "
-                        f"— cheapest that clears the floor")
+                        f"— cheapest that clears the "
+                        + ("floor on the product only, BELOW the price target"
+                           if below_target else "price target"))
             elif hi_dec < fl_dec:
                 n_groups_short += 1
-                pick = [ls[-1] for ls in lists]     # the longest available
+                continue                # counted, never built
             else:
                 n_groups_long += 1
-                pick = [ls[0] for ls in lists]      # the shortest available
+                continue
+                continue                # out of band: counted, never built
             chosen.append((who, list(pick), n_combo))
+            if len(chosen) > MAX_BUILT_CANDIDATES:
+                raise ValueError(
+                    f"more than {MAX_BUILT_CANDIDATES:,} player groups have "
+                    f"an in-band combination, and each one is a full "
+                    f"`make_candidate`. Narrow the pool to the players you "
+                    f"would actually bet, or tighten the band.")
 
     n_short, n_long = n_groups_short, n_groups_long
     for who, c, n_combo in chosen:
@@ -3124,11 +3326,29 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             f"under names that normalise differently — caught on player_id, "
             f"which is the only thing that catches it")
         build_notes.extend(f"  {r}" for r in dupe_reasons[:5])
+    if sgp_factor < 1.0 and chosen:
+        worst = min(SGP_FACTORS_OBSERVED)
+        build_notes.append(
+            f"same-game products are aimed at {american(target_dec):+.0f}, "
+            f"not {floor:+.0f}: the floor applies to the book's QUOTE, and "
+            f"the measured quote/product factor has a median of "
+            f"{sgp_factor:.2f} (n={len(SGP_FACTORS_OBSERVED)}, range "
+            f"{worst:.2f}-{max(SGP_FACTORS_OBSERVED):.2f}). At the worst "
+            f"observed factor a {american(target_dec):+.0f} product quotes "
+            f"{american(target_dec * worst):+.0f}, so this is a prediction "
+            f"— price_sgp decides.")
+        if n_below_target:
+            build_notes.append(
+                f"{n_below_target} group(s) clear {floor:+.0f} on the "
+                f"product but cannot reach the price target, so their real "
+                f"quote will probably come in UNDER the floor. They are "
+                f"listed because the factor is a prediction, not because "
+                f"they are expected to clear.")
     if n_rung_alts:
         build_notes.append(
             f"price targeting chose between {n_rung_alts + len(chosen)} "
             f"combination(s) across {len(chosen)} player group(s), taking "
-            f"the CHEAPEST that clears the {floor:+.0f} floor in each — "
+            f"the CHEAPEST that clears the price target in each — "
             f"F11's rule, target the minimum and do not reach past it. "
             f"{n_groups_in_band} group(s) had an in-band option.")
         for t in target_notes[:6]:
