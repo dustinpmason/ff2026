@@ -240,6 +240,25 @@ SGP_FACTORS_OBSERVED = (
     0.9044,   # 2-leg yards,       product +243 -> quote +210
 )
 
+# Second live run, event 53178, 2026-11-11 ~14:48Z: (book, quote / ENGINE
+# product, quote / that book's own independent price). Five slips, every
+# quote returned. NOT merged into SGP_FACTORS_OBSERVED, on purpose: that
+# list feeds the same-game price target through its median, these run
+# higher (median 0.94 against 0.86), and folding them in would silently
+# lower the target from +366 to about +342 — at which 11 of the 23
+# sportsbook quotes on record would have come in under the floor. Which
+# list and which quantile the target uses is a decision, filed as B161.
+# Novig is an exchange and is the source of most of the >1.0 values.
+SGP_FACTORS_LIVE_20261111 = (
+    ("fanduel", 0.8630, 0.9243), ("draftkings", 0.8994, 0.9211),
+    ("fanduel", 0.9251, 0.9730), ("draftkings", 0.9529, 0.9549),
+    ("betrivers", 0.9101, 1.0047), ("novig", 1.0364, 0.9938),
+    ("fanduel", 0.9186, 0.9684), ("draftkings", 0.9422, 0.9462),
+    ("novig", 1.0814, 1.1050), ("draftkings", 0.9413, 0.9413),
+    ("novig", 1.1355, 1.0959), ("draftkings", 0.8987, 0.9182),
+    ("betmgm", 1.0212, 1.0575), ("novig", 1.1569, 1.0551),
+)
+
 # **The factor is not a property of a slip. It is quote / product, and the
 # quote snaps to a coarse grid.** Observed grid points: +210, +230, +400,
 # +425, +450, +475 — roughly 0.25 apart in decimal. Hold the quote near
@@ -725,6 +744,13 @@ class BoostLeg:
     # answering exactly as it did.
     level_source: str = ""
     shape_source: str = ""
+    # For a rung: the ANCHOR's de-vigged fair at the point the level was
+    # pinned to. `anchor_opening` asks whether the anchor is sitting on an
+    # exact 0.5000, and a rung's own `fair_prob` is never that — it is some
+    # point out on the ladder — so without this the question was being put
+    # to the wrong number and could not come back yes. None for a main
+    # line, where `fair_prob` IS the anchor's fair.
+    anchor_level_fair: float | None = None
     anchor_liquidity: float | None = None
     # B59. The anchor book's OWN minimum tier in THIS pull, derived from its
     # board by `modal_liquidity()`. When set it replaces the module-level
@@ -849,7 +875,9 @@ class BoostLeg:
         rather than postponing it — a hardcoded tier has already gone
         silent once (250 -> 500) and would again at 1,000.
         """
-        if abs(float(self.fair_prob) - 0.5) > 1e-9:
+        lvl = (self.anchor_level_fair if self.anchor_level_fair is not None
+               else self.fair_prob)
+        if abs(float(lvl) - 0.5) > 1e-9:
             return False
         tier = (self.opening_liquidity_tier
                 if self.opening_liquidity_tier is not None
@@ -2613,6 +2641,7 @@ class Shortlist:
 
 def rung_legs(fairs, *, book: str, market: str, event_id: str,
               verdicts=None, odds=None, meta=None, aliases=None,
+              tiers=None,
               line_type: str = "milestone") -> tuple[list, list]:
     """BoostLegs from `ff_props.ladder_fair` records. (kept, refused).
 
@@ -2709,7 +2738,24 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
             line_type=line_type,
             level_source=str(getattr(f, "anchor", "") or ""),
             shape_source=str(book),
-            anchor_liquidity=None,
+            # The anchor's depth and its fair at the pinned point, so
+            # `anchor_opening` / `anchor_thin` / `anchor_untested` can fire
+            # on a rung. Until 2026-11-11 this was a hardcoded None: the
+            # second live run built +3.6% to +15.9% "PLAY" slips from rungs
+            # whose levels sat at Pinnacle's opening limit, 121 of 306 of
+            # them on an exact 0.5000, and nothing said so (B86, again, on
+            # the legs F12 added).
+            anchor_liquidity=getattr(f, "anchor_liquidity", None),
+            anchor_level_fair=getattr(f, "anchor_fair", None),
+            # `tiers` is `book_liquidity_tiers(odds)`, keyed by ANCHOR book.
+            # Not passed -> "" (never looked up), which B75 keeps distinct
+            # from a book that quotes no tier.
+            opening_liquidity_tier=(tiers or {}).get(
+                str(getattr(f, "anchor", "") or "")),
+            tier_source=("" if tiers is None else
+                         "measured" if (tiers or {}).get(
+                             str(getattr(f, "anchor", "") or "")) is not None
+                         else "book quotes none"),
             # B128. A rung carries NO model probability, deliberately. The
             # model's level error against a sharp anchor is sd 11.5pp and
             # its SHAPE disagrees with the market's by 3.1x the ladder's own
@@ -2800,6 +2846,25 @@ def _meta_lookup(name, meta, aliases=None):
         if norm_player(str(k)) == want:
             return v
     return (None, None)
+
+
+# Below this a probability is shown as "1 in N" as well as a percentage,
+# and a priceable slip gets the LONGSHOT line. 1% is where one decimal
+# place stops carrying two significant figures; it is a display boundary,
+# not a judgement about which slips are worth betting.
+LONGSHOT_P = 0.01
+
+
+def _prob(p) -> str:
+    """A probability a person can read at any size."""
+    if p is None:
+        return "n/a"
+    p = float(p)
+    if p <= 0:
+        return "0%"
+    if p >= LONGSHOT_P:
+        return f"{p:.1%}"
+    return f"{p * 100:.3g}% (1 in {1.0 / p:,.0f})"
 
 
 def _median_factor() -> float:
@@ -3185,7 +3250,6 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
                 continue                # counted, never built
             else:
                 n_groups_long += 1
-                continue
                 continue                # out of band: counted, never built
             chosen.append((who, list(pick), n_combo))
             if len(chosen) > MAX_BUILT_CANDIDATES:
@@ -3765,9 +3829,22 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
         out.append(f"  {c.factor_note}")
 
         if c.structure.priceable:
-            out.append(f"  P(cash)         : {c.p_cash:.1%}  "
+            out.append(f"  P(cash)         : {_prob(c.p_cash)}  "
                        f"(product of the de-vigged legs)")
-            out.append(f"  boosted breakeven: {c.breakeven:.1%}")
+            out.append(f"  boosted breakeven: {_prob(c.breakeven)}")
+            if c.p_cash is not None and c.p_cash < LONGSHOT_P:
+                # The second live run printed `P(cash): 0.0%`, `breakeven:
+                # 0.0%` and `anticipated ROI +9.3% to +21.9%` for a slip
+                # paying $912,595 on $10. Every number was right — P(cash)
+                # 0.00138% against a 0.00110% breakeven — and at one decimal
+                # the report was unreadable, and said nothing about what a
+                # 1-in-72,685 shot means for a ROI figure.
+                out.append(
+                    f"  LONGSHOT: this cashes about 1 time in "
+                    f"{1.0 / c.p_cash:,.0f}. Any ROI on it is an average "
+                    f"over that many slips, the fairs behind it are deep-"
+                    f"tail rungs with the widest error in the ladder, and "
+                    f"one slip will almost certainly lose its stake.")
             if c.priced:
                 out.append(f"  EV              : {c.ev_pct:+.1%}  "
                            f"(against the quoted price)")
@@ -3810,7 +3887,7 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
             if _fok:
                 # F13. The product is not the joint, but it bounds it, and
                 # a bound is a usable number where a refusal was not.
-                out.append(f"  P(cash) FLOOR   : {c.p_cash_floor:.1%}  "
+                out.append(f"  P(cash) FLOOR   : {_prob(c.p_cash_floor)}  "
                            f"(a LOWER BOUND, not an estimate — the product "
                            f"of the de-vigged legs)")
                 if c.ev_floor_pct is not None:

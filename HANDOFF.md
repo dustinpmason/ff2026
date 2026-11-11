@@ -1169,3 +1169,21 @@ reality.
      (600 groups) was below the ordinary case (816). Both shipped green.
      After adding a rule that picks, run one ordinary input and one
      realistic downstream step on what it picked.
+
+108. **When a step computes something for its own flag, check whether the
+     next step needs it too.** `ladder_fair` worked out the anchor's
+     shallow-side liquidity to decide whether to print `anchor THIN`, then
+     let it go out of scope. One function later `rung_legs` had no depth to
+     give the leg and wrote None, so three anchor flags built over several
+     weeks could not fire on any rung — on a board where 40% of rungs sat
+     on an opening prior. The test thread found the information "existed
+     in the pull and was discarded". A None hardcoded at a hand-off is a
+     place to ask what the previous function knew.
+
+109. **A live step that cannot reach its target is not a pass.** Step 1 of
+     the second run was written to confirm an 18-player pool no longer
+     refuses, and the board had 9 players. It ran clean. The test thread
+     declined to report that as confirmation and inflated the pool to
+     prove it. When writing a test prompt, state the condition the step
+     needs ("this only tests the fix if the pool has 18+ players; if it
+     does not, say so and build one that does").

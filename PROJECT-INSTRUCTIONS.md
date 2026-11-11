@@ -534,8 +534,11 @@ if s.scratch_risk:
 - **`pregame_only`** — once a game is live, a book with no in-play feed keeps
   returning its last pregame quote forever. Nothing is stale-flagged, because
   the book is never polled again. The screen drops these in-play.
-- **`max_age`** — also pass it on the `get_odds` call itself: 120s in-play,
-  900s pregame. Unset, a 20-minute-old price reads as current.
+- **`max_age`** — exists on `get_event_ev` only (120s in-play, 900s
+  pregame). **`get_odds` has no such parameter**; an earlier version of this
+  line told you to pass it there, which was a silent no-op. For `get_odds`,
+  staleness is your job: note the pull time, and re-pull before pricing.
+  The second live run saw rung prices move inside seven minutes.
 
 ### Alternate / milestone ladders — `ladder_margin()`, `ladder_fair()`
 
@@ -693,11 +696,29 @@ aliases = {"Cameron Skattebo": "Cam Skattebo",
            "Chigoziem Okonkwo": "Chig Okonkwo"}
 ```
 
-Without it those legs come back `team=None`, and a `team=None` leg drops its
-pair to **INDEPENDENT with no flag** — a correlated slip priced as an
-uncorrelated one, which is the quietest way this engine can be wrong.
-`ladder_fair` is immune (it joins on `player_id`); `get_event_ev` carries no
-`player_id`, so that join is name-keyed and is where this bites.
+Without it those legs come back `team=None`. `classify` then **refuses the
+slip as not priceable and says why** ("no team known for X ... cannot tell a
+teammate from an opponent") — it does not quietly treat the pair as
+independent, so a refusal here is reliable and the fix is to supply the
+alias. `ladder_fair` is immune (it joins on `player_id`); `get_event_ev`
+carries no `player_id`, so that join is name-keyed and is where this bites.
+
+**`ff_props.player_series` does NOT take `aliases` and raises `LookupError`
+on a book spelling.** Translate the name yourself before calling it
+(`aliases.get(name, name)`), and wrap the call when looping over a board so
+one name does not end the loop.
+
+**Pass `tiers=ff_boost.book_liquidity_tiers(odds)` to `rung_legs()`.** Rung
+legs now carry their anchor's depth, so the report can say when a rung's
+level is an opening prior rather than a price. On the second live run 121
+of 306 rungs were pinned to a Pinnacle level at exactly 0.5000 on
+opening-limit money, and the slips built from them showed +3.6% to +15.9%
+EV with no warning. If the report prints `** OPENING ANCHOR **` or lists
+immature anchors on a rung slip, say so before quoting its EV.
+
+**A slip under 1% to cash prints `LONGSHOT` with a "1 in N" figure.** Read
+it out. A ROI band on a 1-in-70,000 slip is an average nobody will live to
+collect.
 
 **`player_pass_tds` is mapped** as of 2026-11-10, off a real board. Five
 PASS_TD cells are now reachable, including same-team passing TD x teammate

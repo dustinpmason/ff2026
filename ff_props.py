@@ -2950,6 +2950,13 @@ class LadderFair:
     # disagreement that got silently absorbed is the one thing the pinning
     # design is most likely to hide.
     level_gap: float | None = None
+    # The anchor's SHALLOW-side liquidity at the point the level was pinned
+    # to; None when the anchor reported none. Carried so a rung leg can say
+    # whether its level is a price or an opening prior — the second live run
+    # found 121 of 306 rungs pinned to an exact 0.5000 on opening-limit
+    # money with no flag able to fire, because this was computed here for
+    # the `anchor THIN` flag and then thrown away.
+    anchor_liquidity: float | None = None
     player_id: object = None
     fair_source: str = ""
     flags: list[str] = field(default_factory=list)
@@ -3444,6 +3451,7 @@ def ladder_fair(quotes: list[dict], *, book: str,
                 named = [v for v in sides if v is not None]
                 if named:
                     a_lo, a_hi = min(named), max(named)
+            rec.anchor_liquidity = a_lo
             if a_lo is None:
                 rec.flags.append(
                     f"anchor depth UNKNOWN: {rec.anchor} reported no "

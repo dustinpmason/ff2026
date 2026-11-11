@@ -8628,5 +8628,113 @@ chk("and its product-implied hold is below the band, by construction",
     _ok77.product_hold < _ok77.hold_band[0],
     f"{_ok77.product_hold:+.2%} vs band {_ok77.hold_band}")
 
+# ===========================================================================
+# 77. Findings from the second live run (event 53178, 2026-11-11)
+# ===========================================================================
+
+section("77. findings from the second live run")
+
+# --- rung legs carry the anchor's depth ---------------------------------
+# 121 of 306 live rungs were pinned to a Pinnacle level at exactly 0.5000
+# on opening-limit money, and `rung_legs` hardcoded anchor_liquidity=None,
+# so none of the three anchor flags could fire on a rung.
+def _rgd(player, thr, price, fair, pid, a_fair, a_liq):
+    r = _rg(player, thr, price, fair, pid)
+    r.anchor_fair = a_fair
+    r.anchor_liquidity = a_liq
+    return r
+
+
+_V77 = {n: ("CLEAR", "OVER", ()) for n in ("Op", "Un", "Deep", "Silent")}
+_dk, _dr = _rl([_rgd("Op", 30, +150, 0.39, "o", 0.5000, 250.0),
+                _rgd("Un", 30, +150, 0.39, "u", 0.5310, 250.0),
+                _rgd("Deep", 30, +150, 0.39, "d", 0.5000, 5000.0),
+                _rgd("Silent", 30, +150, 0.39, "s", 0.5000, None)],
+               verdicts=_V77, tiers={"pinnacle": 250.0})
+_bn = {l.player: l for l in _dk}
+chk("rung legs are built with their anchor's depth", len(_dk) == 4
+    and _bn["Op"].anchor_liquidity == 250.0
+    and _bn["Op"].anchor_level_fair == 0.5, _why0(_dr))
+chk("a rung on an exact-0.5000 level at the opening tier is anchor_opening",
+    _bn["Op"].anchor_opening and abs(_bn["Op"].fair_prob - 0.39) < 1e-9,
+    "the test must read the ANCHOR's fair, not the rung's own 0.39")
+chk("a level that has moved, still at the tier, is anchor_untested",
+    _bn["Un"].anchor_untested and not _bn["Un"].anchor_opening)
+chk("an exact 0.5000 behind deep money is neither",
+    not _bn["Deep"].anchor_opening and not _bn["Deep"].anchor_untested)
+chk("an anchor that reported nothing stays its own state",
+    _bn["Silent"].anchor_liquidity is None and _bn["Silent"].anchor_opening,
+    "a null-liquidity 0.5000 is flagged, as for a main line")
+chk("the tier lookup is recorded as having run",
+    _bn["Op"].tier_source == "measured"
+    and _bn["Op"].opening_liquidity_tier == 250.0)
+_nt, _ = _rl([_rgd("Op", 30, +150, 0.39, "o", 0.5, 250.0)], verdicts=_V77)
+chk("no tiers passed reads as never looked up, not as 'book quotes none'",
+    _nt and _nt[0].tier_source == "" and _nt[0].opening_liquidity_tier is None)
+_nt2, _ = _rl([_rgd("Op", 30, +150, 0.39, "o", 0.5, 250.0)], verdicts=_V77,
+              tiers={})
+chk("tiers passed but silent on this anchor reads 'book quotes none'",
+    _nt2 and _nt2[0].tier_source == "book quotes none")
+chk("a main line still tests its own fair_prob",
+    ff_boost.BoostLeg(
+        event_id="E1", book="dk", market="player_rush_yds", player="M",
+        side="OVER", odds=-110, fair_prob=0.5, fair_source="pinnacle",
+        devig_method="shin", line=1.5, anchor_liquidity=250.0,
+        opening_liquidity_tier=250.0).anchor_opening)
+chk("the anchor-depth column now has a number on a rung slip",
+    "thinnest leg 250" in _dsc(ff_boost.anchor_depth([_bn["Op"], _bn["Un"]])))
+chk("ladder_fair records the depth it measured",
+    "anchor_liquidity" in ff_props.LadderFair.__dataclass_fields__
+    and "rec.anchor_liquidity = a_lo" in inspect.getsource(ff_props.ladder_fair))
+
+# --- probabilities a person can read ------------------------------------
+chk("an ordinary probability prints as before", ff_boost._prob(0.137) == "13.7%")
+chk("a tiny one prints with precision and as 1 in N",
+    ff_boost._prob(1.3758e-5) == "0.00138% (1 in 72,685)", ff_boost._prob(1.3758e-5))
+chk("zero and None do not raise",
+    ff_boost._prob(0) == "0%" and ff_boost._prob(None) == "n/a")
+_lsl = [_jleg("A", .024, market="player_rush_yds", pos="RB", ev="E1"),
+        _jleg("B", .024, market="player_reception_yds", pos="WR", ev="E2"),
+        _jleg("C", .024, market="player_pass_yds", pos="QB", ev="E3")]
+for _l in _lsl:
+    _l.odds = +3800
+_ls = ff_boost.make_candidate(_lsl, boost_pct=0.50)
+_lrep = ff_boost.report([_ls])
+chk("a sane-hold longshot keeps its band — the guard is right not to fire",
+    _ls.ev_band is not None, f"product_hold {_ls.product_hold}")
+chk("but P(cash) and breakeven are no longer both '0.0%'",
+    "P(cash)         : 0.0%" not in _lrep and "1 in " in _lrep,
+    str([x.strip() for x in _lrep.splitlines()
+         if "P(cash)" in x or "breakeven" in x]))
+chk("and it carries the LONGSHOT line",
+    "LONGSHOT" in _lrep and "almost certainly lose" in _lrep)
+chk("an ordinary slip carries no LONGSHOT line",
+    "LONGSHOT" not in ff_boost.report([_ok77]))
+
+# --- the per-group "below the price target" note -------------------------
+# The live run could not exercise it and found no check for it.
+_bt = []
+for _i, _nm in enumerate(("Bt0", "Bt1", "Bt2")):
+    for _o, _ln in ((+60, 40.5), (+62, 44.5)):
+        _bt.append(ff_boost.BoostLeg(
+            event_id="E0", book="dk", market="player_rush_yds", player=_nm,
+            side="OVER", odds=_o, fair_prob=0.6, fair_source="pinnacle",
+            devig_method="shin", line=_ln, player_id=f"bt{_i}",
+            verdict="CLEAR", verdict_side="OVER", team="NYG", pos="RB"))
+_btsl, _bterr = _ec(_bt, None, mode="single-game", event_id="E0",
+                    boost_pct=0.50, legs_per_slip=3)
+chk("a multi-line group that cannot reach the target says BELOW it",
+    _btsl is not None and any("BELOW the price target" in n
+                              for n in _btsl.build_notes),
+    str(_btsl.build_notes if _btsl else _bterr)[:260])
+
+# --- the live factors are recorded, and do NOT yet move the target ------
+chk("the 2026-11-11 quotes are kept with their book",
+    len(ff_boost.SGP_FACTORS_LIVE_20261111) == 14
+    and all(len(r) == 3 for r in ff_boost.SGP_FACTORS_LIVE_20261111))
+chk("and the price target still rests on the original list alone",
+    abs(ff_boost._median_factor() - 0.8583) < 1e-9,
+    "which list and which quantile feed the target is Dustin's call (B161)")
+
 _summary()
 raise SystemExit(1 if fails else 0)
