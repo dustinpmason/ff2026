@@ -1073,7 +1073,106 @@ def bet_summary() -> str:
             L.append("")
             L.append(f"  boosted slips: {len(boosted)}  "
                      f"net ${br-bs:+,.2f} on ${bs:,.2f}")
+    _sides = side_summary(bets)
+    if _sides:
+        L.append("")
+        L.append(_sides)
     return "\n".join(x for x in L if x != "")
+
+
+MIN_LEGS_FOR_SIDE_READ = 30
+
+
+def _side_key(side) -> str:
+    s = str(side or "").strip().upper()
+    return s if s in ("OVER", "UNDER", "YES", "NO") else "OTHER"
+
+
+def _source_key(src) -> str:
+    s = norm_book(src)
+    return s or "unrecorded"
+
+
+def side_rows(bets: list[dict] | None = None, by: str = "side") -> list[dict]:
+    """Placed legs split by SIDE (or by fair source), one dict per group.
+
+    Filed 2026-11-12. The game-day shortlists leaned on UNDERs for fringe
+    players whose fairs came from thin or untested anchors. Two readings fit
+    that: books shade OVERs, so the UNDER really is the better price; or the
+    engine is picking the largest errors out of thousands of noisy fairs.
+    The log is what tells them apart, on two measures per group:
+
+      CLV      — did the price taken beat the close?
+      results  — wins against the wins the recorded fairs PREDICTED
+                 (the sum of `fair_p` over legs that settled WIN or LOSS).
+
+    If UNDERs are a real edge they beat the close and win about as often as
+    their fairs said. If they are noise they do neither, and the OVERs are
+    the comparison. PUSH and VOID legs are left out of the results columns.
+    """
+    if by not in ("side", "source"):
+        raise ValueError(f"by must be 'side' or 'source', got {by!r}")
+    if bets is None:
+        bets = _apply_grades(_bets())
+    groups: dict[str, dict] = {}
+    for b in bets:
+        for l in _legs(b):
+            k = (_side_key(l.get("side")) if by == "side"
+                 else _source_key(l.get("fair_source")))
+            g = groups.setdefault(k, {"group": k, "legs": 0, "clv": [],
+                                      "settled": 0, "wins": 0,
+                                      "with_fair": 0, "wins_with_fair": 0,
+                                      "expected": 0.0})
+            g["legs"] += 1
+            taken, close = _num(l.get("odds")), _num(l.get("closing_odds"))
+            if taken is not None and close is not None:
+                g["clv"].append(clv(taken, close))
+            if l.get("result") in ("WIN", "LOSS"):
+                g["settled"] += 1
+                won = l["result"] == "WIN"
+                g["wins"] += won
+                p = _num(l.get("fair_p"))
+                if p is not None and 0.0 < p < 1.0:
+                    g["with_fair"] += 1
+                    g["wins_with_fair"] += won
+                    g["expected"] += p
+    return [groups[k] for k in sorted(groups)]
+
+
+def side_summary(bets: list[dict] | None = None) -> str:
+    """The by-side and by-fair-source split as text; "" when no leg has a
+    closing price or a result yet."""
+    out = []
+    for by, title in (("side", "BY SIDE"), ("source", "BY FAIR SOURCE")):
+        rows = [g for g in side_rows(bets, by) if g["clv"] or g["settled"]]
+        if not rows:
+            continue
+        out.append(f"  {title} — placed legs only")
+        for g in rows:
+            parts = [f"{g['legs']} legs"]
+            if g["clv"]:
+                v = np.array(g["clv"])
+                parts.append(f"CLV {v.mean():+.2%} mean on {len(v)}, "
+                             f"{int((v > 0).sum())} beat the close")
+            else:
+                parts.append("no closing prices")
+            if g["with_fair"]:
+                parts.append(f"won {g['wins_with_fair']} of "
+                             f"{g['with_fair']} where the fairs predicted "
+                             f"{g['expected']:.1f}")
+            elif g["settled"]:
+                parts.append(f"won {g['wins']} of {g['settled']} "
+                             f"(no fair recorded to compare)")
+            out.append(f"     {g['group']:<10}: " + "; ".join(parts))
+        small = [g["group"] for g in rows
+                 if max(len(g["clv"]), g["settled"])
+                 < MIN_LEGS_FOR_SIDE_READ]
+        if small:
+            out.append(f"     COUNTS, NOT RATES — under "
+                       f"{MIN_LEGS_FOR_SIDE_READ} legs in: "
+                       f"{', '.join(small)}. Legs from one game move "
+                       f"together, so the real sample is smaller still.")
+    return "\n".join(out)
 
 
 def _check_prob(p, name: str) -> float | None:

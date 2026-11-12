@@ -375,6 +375,13 @@ line used to show the call without them, which is how a documented example
 quietly disables a protection. With both, `grade_leg` REFUSES a grade whose
 closing fair line came from the book the bet was placed at.
 
+**Log every leg with its `side`, `fair_p` and `fair_source`, and grade every
+leg with `closing_odds`.** `bet_summary()` then prints placed legs split BY
+SIDE and BY FAIR SOURCE: CLV, and wins against the wins the fairs predicted.
+This is the check on whether the engine's lean toward UNDERs on thin anchors
+(Kalshi, untested lines) is a real edge or noise in the fairs. Report those
+lines whenever you grade. They are counts, not rates, under 30 legs a group.
+
 **Grading is TWO passes, not one (B105).** The windows do not overlap:
 closing lines must be pulled within hours — the event delists, and
 `price_sgp` returns `404 event_not_at_book`, so **there is no closing SGP

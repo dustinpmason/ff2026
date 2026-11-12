@@ -9391,5 +9391,65 @@ chk("a measurable slip sorts ahead of an unpriceable one, even when its "
     "predicted EV is negative",
     _u83 is not None and _o83[0] is _n83)
 
+# ===========================================================================
+# 84. Placed legs split by side and by fair source
+# ===========================================================================
+
+section("84. by-side breakdown of the bet log")
+
+
+def _sl84(side, odds, close, res, fair, src="pinnacle"):
+    return {"player": "P", "side": side, "odds": odds, "closing_odds": close,
+            "result": res, "fair_p": fair, "fair_source": src}
+
+
+_bets84 = [{"id": "x", "kind": "bet", "legs": [
+    _sl84("UNDER", 130, 110, "WIN", 0.50, "kalshi"),
+    _sl84("under", 120, 140, "LOSS", 0.50, "Kalshi"),
+    _sl84("OVER", -110, -130, "WIN", 0.55),
+    _sl84("OVER", -110, None, "PUSH", 0.55),
+    _sl84("OVER", -110, None, None, 0.55),
+    _sl84("YES", 250, None, "LOSS", None, None)]}]
+
+
+def _sr84(by="side"):
+    try:
+        return {g["group"]: g for g in ff_betlog.side_rows(_bets84, by)}
+    except Exception as e:
+        return {"_err": f"{type(e).__name__}: {e}"}
+
+
+_s84 = _sr84()
+_u84, _o84, _y84 = (_s84.get(k, {}) for k in ("UNDER", "OVER", "YES"))
+chk("sides are grouped case-insensitively",
+    _u84.get("legs") == 2 and _o84.get("legs") == 3, str(_s84)[:200])
+chk("CLV is counted only where a closing price exists",
+    len(_u84.get("clv", [])) == 2 and len(_o84.get("clv", [])) == 1)
+chk("and has the right sign: +130 into +110 beat the close, +120 into "
+    "+140 did not",
+    len(_u84.get("clv", [])) == 2 and _u84["clv"][0] > 0 > _u84["clv"][1])
+chk("wins are set against the wins the fairs predicted",
+    _u84.get("wins_with_fair") == 1 and _u84.get("with_fair") == 2
+    and abs(_u84.get("expected", 0) - 1.0) < 1e-9)
+chk("a PUSH and an ungraded leg are in neither results column",
+    _o84.get("settled") == 1 and abs(_o84.get("expected", 0) - .55) < 1e-9)
+chk("a leg with no fair still counts as settled, with nothing predicted",
+    _y84.get("settled") == 1 and _y84.get("with_fair") == 0)
+_src84 = _sr84("source")
+chk("the same split works by fair source",
+    _src84.get("kalshi", {}).get("legs") == 2
+    and _src84.get("unrecorded", {}).get("legs") == 1, str(_src84)[:200])
+try:
+    _txt84 = ff_betlog.side_summary(_bets84)
+except Exception as e:
+    _txt84 = f"{type(e).__name__}: {e}"
+chk("the text says counts, not rates, at this sample",
+    "BY SIDE" in _txt84 and "BY FAIR SOURCE" in _txt84
+    and "COUNTS, NOT RATES" in _txt84
+    and "won 1 of 2 where the fairs predicted 1.0" in _txt84, _txt84[:300])
+chk("and is empty when nothing is graded",
+    ff_betlog.side_summary([{"id": "y", "kind": "bet", "legs": [
+        _sl84("OVER", -110, None, None, .5)]}]) == "")
+
 _summary()
 raise SystemExit(1 if fails else 0)
