@@ -2058,6 +2058,64 @@ prints a verdict, and the three cases mean different things:
 - **Hold ABOVE the band.** A worse price than expected, which understates
   rather than flatters. Self-correcting.
 
+### END EVERY BOOST RESPONSE WITH THE SUMMARY TABLE
+
+Whenever a response prices slips for one or more of Dustin's boosts (a full
+run, a re-check, or a one-off question), the LAST thing in it is this table,
+under the heading **"Top slip per boost"**. Nothing follows it except the
+sources list, if there is one. It is in addition to the detail above it, not
+instead of it.
+
+One row per boost Dustin holds, in the order he gave them, including boosts
+with nothing to use:
+
+| Boost | Call | Slip as the book posts it | Quote | Stake → returns | Chance to cash | EV | Confidence |
+|---|---|---|---|---|---|---|---|
+
+- **Boost:** book and percentage ("BetMGM 50%").
+- **Call:** one of **Use**, **Marginal**, **Skip**. Use = +EV at a real
+  quote with a cushion of 10% of P(cash) or more. Marginal = +EV at a real
+  quote with less cushion than that, or resting on an estimate-only slip.
+  Skip = nothing +EV at a real quote; write "–" in the other cells.
+- **Slip:** the single best slip for that boost, legs exactly as the book
+  words them. Best means largest cushion as a share of P(cash) among slips
+  that meet the boost's rules.
+- **No leg repeats across rows.** Assign the boost with the highest EV
+  first and work down; a later boost takes its best slip that shares no
+  player-outcome with the rows above it. If that changes a pick, say so in
+  one line under the table.
+- **Quote:** the real quote from this response's own pull, never the
+  product and never a quote carried from an earlier pull.
+- **Stake → returns:** at the boost's maximum stake.
+- **Chance to cash:** a percentage and "1 in N"; add "lower bound" or
+  "estimate" when it is one.
+- **Confidence:** **A** when every leg's fair is a tested Pinnacle line,
+  otherwise **B** plus the one thing it rests on in a few words
+  ("B, thin Kalshi line on Jefferson").
+
+**Two rows for a boost when "best value" and "most likely" differ.** The
+engine ranks on value, and value favours longer prices: the best-value pick
+on a boost with a low minimum can be a bet that loses two times in three.
+Dustin wants to see the likely outcome as well. So for each boost also find
+the **most likely** slip: the highest chance to cash among slips that meet
+the boost's rules and are +EV at a real quote with a cushion of at least 5%
+of P(cash). If it is a different slip from the best-value one, give the
+boost two rows, labelled "best value" and "most likely" in the Boost cell.
+Say plainly, in the Chance to cash cell, when even the most likely slip is
+under 50%; on a boost with a +300 minimum every slip is roughly a
+1-in-4 shot or longer, and no selection changes that. The no-repeat rule
+applies to the best-value rows; a most-likely row may not reuse a leg from
+another boost's best-value row.
+
+When Dustin asks whether you "think it will happen", answer with the chance
+to cash first and the value second. Never present a bet under 50% as
+expected to win.
+
+Under the table, at most three short lines: the time of the pull, anything
+that must be confirmed on the bet slip before placing, and any pick changed
+by the no-repeat rule. The table reports the engine's numbers; it is not a
+recommendation to bet, and the row order is not a ranking.
+
 ## Scoring a slip Dustin already built — `score_slip()` (F15)
 
 When Dustin shows you a slip he has built or is about to place, **run
