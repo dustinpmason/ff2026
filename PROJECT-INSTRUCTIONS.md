@@ -651,6 +651,27 @@ came back small.** Read `sl.build_notes` first. It reports how many
 combinations the targeting chose between, how many groups had an in-band
 option, and which rung it took for each group.
 
+**The shortlist is ordered by PREDICTED EV, and `limit=8` keeps the best
+eight.** Before 2026-11-12 unpriced slips at one price target all tied and
+were cut alphabetically, so a game-day shortlist held qualifiers for one
+boost of five while a scan of the same pools found them for all five.
+`Candidate.predicted_ev` is P(cash) (or the bound) against the quote the
+book usually gives. It is an ordering aid, not a number to quote; the
+report still says when the order is not a ranking. **If the eight look
+thin, raise `limit` rather than scanning by hand.**
+
+**Pass the boost's own minimum as `floor=`.** It is stored on each
+candidate (`min_odds`) and `clears_floor` checks against it, including
+after `price_candidate`. A slip under it reads **`BELOW MINIMUM`** — the
+boost cannot be applied — which is not a statement about its EV.
+
+**`FLOOR ONLY` and `ESTIMATE ONLY` are opposites.** `FLOOR ONLY`: the
+product understates the joint, so P(cash) and EV are lower bounds.
+`ESTIMATE ONLY`: the product slightly OVERSTATES the joint, so they are
+optimistic by about the stated joint error; use `ev_adjusted`, which takes
+it back out, and say "optimistic" when you report it. Never call an
+`ESTIMATE ONLY` number a floor.
+
 **Targeting prefers a PRICEABLE combination when it is within one quote
 step (B157).** If the cheapest combination for a group of players is
 correlated (`FLOOR ONLY` or `UNPRICEABLE`) and a fully priceable one for

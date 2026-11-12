@@ -9192,5 +9192,179 @@ chk("make_candidate takes aliases too, so a book spelling gets a team",
     _al82[0].team == "NYG" and _ca82.structure.priceable,
     f"{_al82[0].team} {_ca82.structure.reason[:100]}")
 
+# ===========================================================================
+# 83. Findings from the game-day run (event 53178, 2026-11-12)
+# ===========================================================================
+
+section("83. findings from the game-day run")
+
+
+def _gl(name, market, pos, odds, fair, side="OVER", book="betmgm",
+        team="NYG", ev="E1", line=1.5):
+    return ff_boost.BoostLeg(
+        event_id=ev, book=book, market=market, player=name, side=side,
+        odds=odds, fair_prob=fair, fair_source="pinnacle",
+        devig_method="shin", line=line, player_id=name, verdict="CLEAR",
+        verdict_side=side, team=team, pos=pos)
+
+
+# --- clears_floor uses the boost's own minimum ---------------------------
+_lowpool = [_gl("A", "player_rush_yds", "RB", -150, .58, ev="E1"),
+            _gl("B", "player_rush_yds", "RB", -140, .57, ev="E2", team="WAS")]
+_lsl, _lerr = _ec(_lowpool, None, mode="cross-game", boost_pct=0.50,
+                  floor=-300, ceiling=600, legs_per_slip=2)
+_lc = _lsl.candidates[0] if _lsl and _lsl.candidates else None
+chk("a slip built for a -300 minimum clears it at +186",
+    _lc is not None and _lc.min_odds == -300 and _lc.clears_floor
+    and _lc.odds < 300, _lerr or f"{_lc.odds if _lc else None}")
+chk("a hand-built candidate still uses the project floor",
+    ff_boost.make_candidate(_lowpool, boost_pct=0.50).min_odds is None
+    and not ff_boost.make_candidate(_lowpool, boost_pct=0.50).clears_floor)
+_lp = ff_boost.price_candidate(_lc, book_odds=170) if _lc else None
+chk("price_candidate keeps the boost's minimum and the quotes",
+    _lp is not None and _lp.min_odds == -300 and _lp.clears_floor
+    and _lp.quotes is _lc.quotes)
+_qc = ff_boost.make_candidate(_zslip(2), boost_pct=0.50, quotes=_tight)
+chk("so a priced candidate still measures its noise from the board",
+    "measured from" in ff_boost.price_candidate(_qc, book_odds=350).floor[1],
+    ff_boost.price_candidate(_qc, book_odds=350).floor[1][:160])
+
+# --- a missed minimum is not a negative EV -------------------------------
+_bm = ff_boost.price_candidate(ff_boost.make_candidate(
+    [_gl("A", "player_rush_yds", "RB", -110, .62, ev="E1"),
+     _gl("B", "player_rush_yds", "RB", -110, .62, ev="E2", team="WAS"),
+     _gl("C", "player_rush_yds", "RB", -110, .62, ev="E3", team="DAL")],
+    boost_pct=0.50), book_odds=278)
+chk("a +EV slip quoted under the minimum reads BELOW MINIMUM, not NEGATIVE",
+    _bm.verdict == "BELOW MINIMUM" and _bm.ev_pct > 0,
+    f"{_bm.verdict} ev={_bm.ev_pct}")
+chk("BELOW MINIMUM and ESTIMATE ONLY are documented verdicts",
+    "BELOW MINIMUM" in ff_boost.VERDICTS and "ESTIMATE ONLY" in ff_boost.VERDICTS)
+
+# --- an optimistic estimate is not called a floor ------------------------
+# Same-team receiving x rushing is slightly NEGATIVE: inside the noise, so
+# reported, but the product then OVERSTATES the joint.
+_neg = [_gl("RBn", "player_rush_yds", "RB", -110, .5, line=50.5),
+        _gl("W1n", "player_reception_yds", "WR", -110, .5, line=50.5)]
+# The game-day M1 slip: an opposing receiver's anytime TD beside a back's
+# rushing yards, which the run reported as overstating by 2.9%.
+_tdn = [_gl("T1", "player_anytime_td", "WR", +250, .27, line=None, team="WAS"),
+        _gl("S1", "player_rush_yds", "RB", -115, .51, line=23.5)]
+_est = None
+for _cand_legs in (_tdn, _neg):
+    _c = ff_boost.price_candidate(
+        ff_boost.make_candidate(_cand_legs, boost_pct=0.25), book_odds=550)
+    if _c.floor[0] and _c.joint.rel < 0:
+        _est = _c
+        break
+chk("the fixture is a reported slip whose product overstates the joint",
+    _est is not None, "no candidate with floor ok and a negative joint error")
+if _est is not None:
+    chk("it reads ESTIMATE ONLY, not FLOOR ONLY",
+        _est.verdict == "ESTIMATE ONLY", _est.verdict)
+    _er = ff_boost.report([_est])
+    chk("the report says ESTIMATE and OPTIMISTIC, never LOWER BOUND",
+        "P(cash) ESTIMATE" in _er and "OPTIMISTIC" in _er
+        and "LOWER BOUND" not in _er,
+        str([x.strip() for x in _er.splitlines() if "P(cash)" in x]))
+    chk("ev_adjusted takes the overstatement back out",
+        _est.ev_adjusted < _est.ev_floor_pct,
+        f"{_est.ev_adjusted} vs {_est.ev_floor_pct}")
+    chk("and a priced estimate ranks on the adjusted figure",
+        abs(_est.rank - _est.ev_adjusted) < 1e-12)
+chk("a true floor still reads FLOOR ONLY with ev_adjusted unchanged",
+    _fc.verdict == "FLOOR ONLY"
+    and (ff_boost.price_candidate(_fc, book_odds=250).ev_adjusted
+         == ff_boost.price_candidate(_fc, book_odds=250).ev_floor_pct))
+chk("a board of estimates is BOUNDED ONLY, not LIKELY NEGATIVE",
+    _est is None or ff_boost.Shortlist(
+        candidates=[_est], mode="single-game",
+        boost_pct=0.25).outlook != "LIKELY NEGATIVE")
+
+# --- the shortlist is ordered by predicted EV, not by name ---------------
+# Six players, one price each, so every 3-leg slip has the same product and
+# `ev_band` ties. The good legs belong to the players who sort LAST.
+_names = ["Aaron", "Bert", "Carl", "Xavi", "Yuri", "Zane"]
+_opool = [_gl(n, "player_rush_yds", "RB", -110,
+              0.44 if n < "M" else 0.58, book="draftkings",
+              ev=f"E{i}", team=f"T{i}")
+          for i, n in enumerate(_names)]
+_osl, _oerr = _ec(_opool, None, mode="cross-game", boost_pct=0.50,
+                  legs_per_slip=3, limit=1, floor=300, ceiling=900)
+_top = ({l.player for l in _osl.candidates[0].legs}
+        if _osl and _osl.candidates else set())
+chk("the first slip is the best predicted EV, not the first alphabetically",
+    _top == {"Xavi", "Yuri", "Zane"}, _oerr or str(sorted(_top)))
+_pc = ff_boost.make_candidate(_opool[3:], boost_pct=0.50)
+chk("predicted_ev is P(cash) against the expected quote",
+    abs(_pc.predicted_ev - (_pc.p_cash * (ff_boost.to_decimal(_pc.independent_odds) - 1) * 1.5
+                            - (1 - _pc.p_cash))) < 1e-12,
+    "a cross-game parlay is taken at its product")
+_sg = ff_boost.make_candidate(
+    [_gl("A", "player_rush_yds", "RB", -110, .5, book="draftkings"),
+     _gl("B", "player_reception_yds", "WR", -110, .5, book="draftkings",
+         team="WAS")], boost_pct=0.50)
+chk("a same-game slip is predicted at the book's MEDIAN factor",
+    _sg.predicted_ev is not None and abs(
+        _sg.predicted_ev - (_sg.p_cash * (ff_boost.to_decimal(_sg.independent_odds)
+                                          * ff_boost.expected_factor("draftkings") - 1) * 1.5
+                            - (1 - _sg.p_cash))) < 1e-12)
+chk("the median factor sits above the lower quartile used for targeting",
+    ff_boost.expected_factor("draftkings") > ff_boost._target_factor("draftkings")
+    and ff_boost.expected_factor("nobody") == ff_boost.expected_factor(None))
+chk("an unpriceable slip has no predicted EV and sorts last, not first",
+    _un.predicted_ev is None)
+# Bounded slips used to tie at 0.0 and fall back to the names.
+_b1 = ff_boost.make_candidate(
+    [_gl("Aa", "player_pass_yds", "QB", -110, .45, book="draftkings"),
+     _gl("Ab", "player_reception_yds", "WR", -110, .45, book="draftkings")],
+    boost_pct=0.50)
+_b2 = ff_boost.make_candidate(
+    [_gl("Za", "player_pass_yds", "QB", -110, .56, book="draftkings"),
+     _gl("Zb", "player_reception_yds", "WR", -110, .56, book="draftkings")],
+    boost_pct=0.50)
+chk("two bounded slips are ordered by predicted EV, not tied at zero",
+    _b1.verdict == _b2.verdict == "FLOOR ONLY" and _b2.rank > _b1.rank
+    and sorted([_b1, _b2], key=lambda c: c.key)[0] is _b2,
+    f"{_b1.rank} {_b2.rank}")
+
+# --- the reason does not claim nothing can be priced --------------------
+_rs, _rse = _ec([_gl("Qa", "player_pass_yds", "QB", -110, .45, book="draftkings"),
+                 _gl("Wa", "player_reception_yds", "WR", -110, .45, book="draftkings"),
+                 _gl("Wb", "player_reception_yds", "WR", -110, .45, book="draftkings")],
+                None, mode="single-game", event_id="E1", boost_pct=0.20,
+                legs_per_slip=3, floor=300, ceiling=900)
+chk("a shortlist of bounded slips says so and gives a predicted EV",
+    _rs is not None and _rs.candidates
+    and "can be priced at all" not in _rs.reason
+    and ("bound or estimate" in _rs.reason or "anticipated" in _rs.reason),
+    (_rse or _rs.reason)[:240])
+
+# --- player_series closes punctuation by itself --------------------------
+_wk83 = _pd.DataFrame({"player_display_name": ["J.J. McCarthy"] * 2
+                       + ["Cam Skattebo"] * 2,
+                       "season": [2026] * 4, "week": [1, 2, 1, 2],
+                       "season_type": ["REG"] * 4,
+                       "passing_yards": [243, 252, 0, 0]})
+def _ps83(name, **kw):
+    try:
+        return len(ff_props.player_series(_wk83, name, "passing_yards", **kw))
+    except Exception as e:
+        return f"{type(e).__name__}"
+chk("FanDuel's 'J.J McCarthy' finds nflverse's 'J.J. McCarthy' unaided",
+    _ps83("J.J McCarthy") == 2, str(_ps83("J.J McCarthy")))
+chk("a first-name variant still needs the alias map",
+    _ps83("Cameron Skattebo") == "LookupError")
+_wkdup = _pd.concat([_wk83, _pd.DataFrame({
+    "player_display_name": ["JJ McCarthy"], "season": [2026], "week": [3],
+    "season_type": ["REG"], "passing_yards": [1]})])
+def _psd(name):
+    try:
+        return len(ff_props.player_series(_wkdup, name, "passing_yards"))
+    except Exception as e:
+        return type(e).__name__
+chk("two nflverse names sharing a key are NOT merged by a guess",
+    _psd("J.J McCarthy") == "LookupError", str(_psd("J.J McCarthy")))
+
 _summary()
 raise SystemExit(1 if fails else 0)

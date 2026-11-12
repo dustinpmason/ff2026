@@ -669,6 +669,14 @@ VERDICTS = {
                 "reported. A real quote from price_sgp decides it. A slip "
                 "the band does not describe that LOSES at its product price "
                 "is NEGATIVE, not this.",
+    "ESTIMATE ONLY": "Correlated legs where the product slightly OVERSTATES "
+                     "the joint, by less than the noise the product already "
+                     "carries. P(cash) and EV are reported but are "
+                     "OPTIMISTIC by about the stated joint error — the "
+                     "opposite of a floor. Subtract it before comparing.",
+    "BELOW MINIMUM": "The price is under the minimum odds this slip was "
+                     "built for, so the boost cannot be applied. Says "
+                     "nothing about its EV.",
     "FLOOR ONLY": "Correlated legs whose measured correlation BOUNDS the "
                   "joint instead of destroying it. P(cash) and EV are a "
                   "lower bound, not an estimate; the slip can only be "
@@ -2163,6 +2171,12 @@ class Candidate:
     # so `floor` measures the product's noise from the same data. None means
     # the fallback figure, and the reason text says which.
     quotes: list | None = field(default=None, repr=False, compare=False)
+    # The minimum odds THIS run was built for (the boost's own minimum, as
+    # passed to `enumerate_candidates(floor=...)`). None means the project
+    # default, FLOOR. Game-day run 2026-11-12: `clears_floor` compared every
+    # slip against +300 whatever the boost, so a FanDuel slip at +124 on a
+    # +100 boost and a BetMGM slip at +110 on a -300 boost both read False.
+    min_odds: float | None = None
     # B55. The minimum TOTAL ODDS a boost token requires, as the promo
     # states it. Kept separate from FLOOR, which is this project's own band
     # and is a different question: FLOOR asks "is this slip worth betting",
@@ -2181,7 +2195,8 @@ class Candidate:
 
     @property
     def clears_floor(self) -> bool:
-        return self.odds >= FLOOR
+        return self.odds >= (FLOOR if self.min_odds is None
+                             else float(self.min_odds))
 
     # --- B55: the token's minimum applies to the PRICE, not the product ---
     @property
@@ -2509,9 +2524,20 @@ class Candidate:
             # is worse than either reading alone — the "+15.7% beside a
             # NEGATIVE verdict" failure, one layer out — so a slip whose
             # product bounds its joint says FLOOR ONLY and means it.
-            return "FLOOR ONLY" if self.floor[0] else "UNPRICEABLE"
+            if not self.floor[0]:
+                return "UNPRICEABLE"
+            # A bound and an optimistic estimate are opposite kinds of
+            # number and were both labelled FLOOR ONLY. When the product
+            # OVERSTATES the joint (inside the noise, so it is reported),
+            # the EV on it is too HIGH, not a lower bound — the game-day
+            # run found slips whose "floor" EV was optimistic by up to
+            # 2.9% carrying the label that says "can only be better".
+            return "FLOOR ONLY" if self.joint.rel >= 0 else "ESTIMATE ONLY"
         if not self.clears_floor:
-            return "NEGATIVE"
+            # Not NEGATIVE. A slip whose quote missed the minimum printed
+            # NEGATIVE beside EV +1.0%: the EV is what it is, the boost
+            # simply cannot be applied to it.
+            return "BELOW MINIMUM"
         if self.priced:
             # A real quote beats a population figure: the hold on this slip
             # is now directly observable rather than assumed.
@@ -2541,6 +2567,50 @@ class Candidate:
         return "PLAY" if self.ev_band[0] > 0 else "NEGATIVE"
 
     @property
+    def ev_adjusted(self) -> float | None:
+        """`ev_floor_pct` with a known OVERSTATEMENT taken back out.
+
+        For a floor (joint error >= 0) this is `ev_floor_pct` unchanged:
+        the understatement is left in, as margin. For an optimistic
+        estimate, P(cash) is scaled down by the joint error first.
+        """
+        if not (self.floor[0] and self.priced):
+            return None
+        p = self.p_cash_floor * (1.0 + min(0.0, self.joint.rel))
+        d = to_decimal(self.book_odds)
+        return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
+
+    @property
+    def predicted_ev(self) -> float | None:
+        """Boosted EV at the quote this slip's book is EXPECTED to give.
+
+        Product times the book's MEDIAN measured quote/product factor (the
+        expectation, where price targeting uses the lower quartile for
+        safety); a cross-game parlay is taken at its product. P(cash) is
+        the joint where the product is the joint, the floor where it is a
+        bound, and the estimate with its overstatement removed. None when
+        there is no P(cash) of any kind.
+
+        An ORDERING aid for the unpriced shortlist, not a number to quote:
+        it rests on anchors that may be soft and a factor that varies by
+        slip. `rank_is_meaningful` still says when the order is not a
+        ranking, and a real quote replaces this entirely.
+        """
+        if self.structure.priceable:
+            p = self.p_cash
+        elif self.floor[0]:
+            p = fair_joint(self.legs) * (1.0 + min(0.0, self.joint.rel))
+        else:
+            p = None
+        if p is None:
+            return None
+        d = to_decimal(self.independent_odds)
+        if not self.structure.cross_game:
+            books = {_book_key(l.book) for l in self.legs}
+            d = d * min(expected_factor(b) for b in books)
+        return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
+
+    @property
     def ev_at_product(self) -> float | None:
         """Boosted EV if the book paid the full product of the legs.
 
@@ -2560,6 +2630,18 @@ class Candidate:
         pessimistic ROI before."""
         if self.ev_pct is not None:
             return self.ev_pct
+        if self.ev_floor_pct is not None:
+            return self.ev_adjusted
+        # Unpriced: the EV at the quote this book is EXPECTED to give. Until
+        # 2026-11-12 an unpriced slip ranked on `ev_band[0]`, which depends
+        # only on the slip's PRICE — so every slip at one price target tied
+        # and the tie-break was the players' names. The game-day run's
+        # eight-slip shortlists came out alphabetical ("Antonio Williams"
+        # in almost every one) and held qualifiers on one boost of five,
+        # while a scan of the same pools found them on all five.
+        pe = self.predicted_ev
+        if pe is not None:
+            return pe
         # A slip with no band is UNKNOWN, not bad. -9e9 would bury it below
         # every measured negative, which is a ranking claim about a slip
         # nothing has measured — B57's whole objection. Zero puts it where
@@ -2673,7 +2755,7 @@ class Shortlist:
         # added, which is the opposite of what the bound says. It is listed
         # ahead of UNPRICEABLE because a bound is actionable and a refusal
         # is not, so a board holding both should surface the bound.
-        if "FLOOR ONLY" in v:
+        if "FLOOR ONLY" in v or "ESTIMATE ONLY" in v:
             return "BOUNDED ONLY"
         if "UNPRICEABLE" in v:
             return "UNPRICEABLE ONLY"
@@ -3083,6 +3165,22 @@ def target_factor_detail(book=None) -> tuple[float, str, int]:
            + (f" ({key} has only {len(xs)} quote(s) on file)" if xs
               else f" (no quotes on file for {key})" if key else ""))
     return _lower_quartile(pooled), why, len(pooled)
+
+
+def expected_factor(book=None) -> float:
+    """MEDIAN quote/product factor for a book — the expected quote.
+
+    Same data and same fallback as `target_factor_detail`, at the median
+    instead of the lower quartile: targeting wants to be safe, an expected
+    EV wants to be central.
+    """
+    by = factors_by_book()
+    xs = by.get(_book_key(book))
+    if not xs or len(xs) < MIN_QUOTES_FOR_BOOK_FACTOR:
+        xs = sportsbook_factors()
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
 
 
 _BOOK_ALIASES = {"dk": "draftkings", "fd": "fanduel", "mgm": "betmgm"}
@@ -3586,6 +3684,7 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
             # B55. So `token_minimum` can answer once the slip is priced,
             # rather than the caller having to remember to set it.
             cand.token_min_odds = float(token.min_odds)
+        cand.min_odds = float(floor)
         # The counters are GROUP counts set above, measured exactly from
         # each group's sorted ends rather than from the one combination
         # that happened to be priced. That is what lets the reason line
@@ -3622,9 +3721,18 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
         band = cands[0].hold_band
         best = max((c for c in cands if c.ev_band is not None),
                    key=lambda c: c.rank, default=None)
+        _pe = [c.predicted_ev for c in cands if c.predicted_ev is not None]
         got = (f"Best anticipated is {best.ev_band[0]:+.1%} at the "
                f"pessimistic end. " if best is not None else
-               "No candidate here can be priced at all. ")
+               # "No candidate here can be priced at all" was printed on
+               # seven of eight game-day shortlists whose slips were
+               # bounded (FLOOR ONLY / ESTIMATE ONLY) and had an EV the
+               # moment they were quoted.
+               (f"The shortlisted slips are correlated, so none has a "
+                f"plain P(cash); {len(_pe)} of {len(cands)} have a bound "
+                f"or estimate, best predicted EV {max(_pe):+.1%} at the "
+                f"quote this book usually gives. " if _pe else
+                "No candidate here can be priced at all. "))
         reason = (f"a {boost_pct:.0%} boost is unlikely to cover the "
                   f"measured hold for this structure "
                   f"({band[0]:.1%}-{band[1]:.1%}). {got}Measured minimum is "
@@ -3775,7 +3883,12 @@ def price_candidate(cand: Candidate, *, book_odds: float,
                      stake=cand.stake, book_odds=float(book_odds),
                      correlation_factor=correlation_factor,
                      notes=list(cand.notes),
-                     token_min_odds=cand.token_min_odds)
+                     token_min_odds=cand.token_min_odds,
+                     # Both were dropped here until 2026-11-12, so a priced
+                     # candidate lost its measured noise ("no quotes
+                     # supplied, using the measured fallback") and its
+                     # boost's minimum the moment it got a real quote.
+                     quotes=cand.quotes, min_odds=cand.min_odds)
 
 
 def stake_back_ev(odds: float, *, stake: float = 10.0,
@@ -4257,12 +4370,22 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
             if _fok:
                 # F13. The product is not the joint, but it bounds it, and
                 # a bound is a usable number where a refusal was not.
-                out.append(f"  P(cash) FLOOR   : {_prob(c.p_cash_floor)}  "
-                           f"(a LOWER BOUND, not an estimate — the product "
-                           f"of the de-vigged legs)")
+                if c.joint.rel >= 0:
+                    out.append(f"  P(cash) FLOOR   : {_prob(c.p_cash_floor)}  "
+                               f"(a LOWER BOUND, not an estimate — the "
+                               f"product of the de-vigged legs)")
+                else:
+                    out.append(f"  P(cash) ESTIMATE: {_prob(c.p_cash_floor)}  "
+                               f"(the product of the de-vigged legs, "
+                               f"OPTIMISTIC by about {abs(c.joint.rel):.1%} "
+                               f"— NOT a lower bound)")
                 if c.ev_floor_pct is not None:
-                    out.append(f"  EV on the floor : {c.ev_floor_pct:+.1%}  "
-                               f"(against the quoted price)")
+                    out.append(
+                        f"  EV on the {'floor' if c.joint.rel >= 0 else 'estimate'} "
+                        f": {c.ev_floor_pct:+.1%}  (against the quoted price"
+                        + ("" if c.joint.rel >= 0 else
+                           f"; optimistic, so nearer "
+                           f"{c.ev_adjusted:+.1%}") + ")")
                 else:
                     out.append("  EV on the floor : not priced yet — run "
                                "price_sgp")

@@ -368,6 +368,17 @@ def player_series(weekly: pd.DataFrame,
     biases every threshold estimate downward.
     """
     df = weekly[weekly.player_display_name == player]
+    if df.empty:
+        # Punctuation and spacing: FanDuel writes "J.J McCarthy", nflverse
+        # "J.J. McCarthy". `_meta_lookup` closed this gap and this join did
+        # not, so the game-day run raised on it. Matched on the normalised
+        # key, and only when that key names exactly ONE nflverse player.
+        want = norm_player(str(player))
+        names = [n for n in weekly.player_display_name.dropna().unique()
+                 if norm_player(str(n)) == want]
+        if len(names) == 1:
+            df = weekly[weekly.player_display_name == names[0]]
+            player = names[0]
     if df.empty and aliases:
         # B163. The same map `ff_boost.classify` and `rung_legs` take: any
         # spelling -> the nflverse display name, matched on the normalised

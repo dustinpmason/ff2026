@@ -1187,3 +1187,15 @@ reality.
      prove it. When writing a test prompt, state the condition the step
      needs ("this only tests the fix if the pool has 18+ players; if it
      does not, say so and build one that does").
+
+110. **Run the tool on the user's real task before calling it ready.** Three
+     live runs tested F12/F13 on a 50% boost with a +300 floor, because
+     that was the fixture. The first run on Dustin's actual boosts (20% to
+     50%, minimums from -300 to +400, three books, one allowing a straight
+     bet) found in an hour what those had not: the shortlist was cut
+     alphabetically, `clears_floor` was hardcoded to +300, a quote dropped
+     the measured noise, and two verdict labels said the opposite of what
+     they meant. The single most valuable result — that a boost usable on
+     a straight bet beats every same-game slip — came from the user's
+     screenshot, not from anything the engine was built to look for. Ask
+     for the real inputs early; a fixture is a guess about them.
