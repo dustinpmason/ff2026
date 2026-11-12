@@ -9366,5 +9366,30 @@ def _psd(name):
 chk("two nflverse names sharing a key are NOT merged by a guess",
     _psd("J.J McCarthy") == "LookupError", str(_psd("J.J McCarthy")))
 
+# --- run 2: unknown slips must not crowd out measurable ones -------------
+# D2, F1 (+100 band) and M1 3-leg shortlists came back 8 of 8, 40 of 40 and
+# 39 of 40 UNPRICEABLE: an unknown ranks 0.0 and every measurable slip on a
+# weak boost predicts negative.
+def _ord83():
+    try:
+        unk = ff_boost.make_candidate(
+            [_jleg("U1", .5), _jleg("U2", .5, pos="WR")], boost_pct=0.05)
+        neg = ff_boost.make_candidate(
+            [_jleg("M1", .5, ev="E1"), _jleg("M2", .5, ev="E2", team="WAS")],
+            boost_pct=0.05)
+        return unk, neg, sorted([unk, neg], key=lambda c: c.key)
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}"
+_u83, _n83, _o83 = _ord83()
+chk("the fixture is what it claims: one unknown, one measurable negative",
+    _u83 is not None and _u83.verdict == "UNPRICEABLE"
+    and _u83.predicted_ev is None and not _u83.measurable
+    and _n83.measurable and _n83.predicted_ev < 0,
+    str(_o83)[:200] if _u83 is None else
+    f"{_u83.verdict} {_u83.predicted_ev} {_n83.predicted_ev}")
+chk("a measurable slip sorts ahead of an unpriceable one, even when its "
+    "predicted EV is negative",
+    _u83 is not None and _o83[0] is _n83)
+
 _summary()
 raise SystemExit(1 if fails else 0)

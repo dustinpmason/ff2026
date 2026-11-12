@@ -2658,7 +2658,24 @@ class Candidate:
     def key(self) -> tuple:
         """Deterministic sort key. A recommendation you cannot reproduce
         cannot be audited against the bet log later."""
-        return (-self.rank, tuple(sorted(l.player for l in self.legs)))
+        return (0 if self.measurable else 1, -self.rank,
+                tuple(sorted(l.player for l in self.legs)))
+
+    @property
+    def measurable(self) -> bool:
+        """Whether ANY probability of cashing exists for this slip: a real
+        priced EV, a joint, a floor or an estimate.
+
+        Sorts ahead of `rank`. A slip with none of them ranks at 0.0
+        ("unknown, not bad"), and on a weak boost every measurable slip has
+        a NEGATIVE predicted EV, so the unknowns took the whole shortlist:
+        the second game-day run's D2, F1 (+100 band) and M1 3-leg lists
+        were 8 of 8, 40 of 40 and 39 of 40 UNPRICEABLE. An unpriceable slip
+        cannot become a qualifier whatever the book quotes; a measurable
+        one can, so it is the one worth a price_sgp call.
+        """
+        return (self.ev_pct is not None or self.ev_floor_pct is not None
+                or self.predicted_ev is not None)
 
 
 def make_candidate(legs, meta=None, *, boost_pct: float,
