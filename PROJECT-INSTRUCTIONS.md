@@ -718,9 +718,14 @@ appears only in the rare case the ceiling is still positive.
 condition on the book's real quote, and B55 measured same-game quotes at
 0.77–0.99 of the product. So `enumerate_candidates` aims the product at
 floor / (lower quartile of the measured quote/product factor **for the
-book the legs are priced at**) — for a +300 floor that is about +328 at
-DraftKings, +338 at FanDuel and +381 at BetMGM; any other book gets the
-pooled figure, about +345. Roughly one quote in four is still expected to
+book the legs are priced at, and for the number of legs in the slip where
+that book has enough quotes at that count**). As of 2026-11-13, for a +300
+floor on a three-leg slip that is about +344 at DraftKings, +338 at FanDuel
+and +389 at BetMGM; a two-leg BetMGM slip is aimed at about +325; any other
+book gets the pooled figure, about +346. Always pass `legs_per_slip`, or
+the leg count cannot be used. Quotes on slips the engine refuses are left
+out of these figures: books quote those ABOVE the product and they can
+never qualify. Roughly one quote in four is still expected to
 come in under. **Build the pool from the book Dustin's boost is at**, since
 the same players are aimed differently at each book — and
 `build_notes` states the target, the factor and the worst case. It is a
@@ -2115,6 +2120,32 @@ Under the table, at most three short lines: the time of the pull, anything
 that must be confirmed on the bet slip before placing, and any pick changed
 by the no-repeat rule. The table reports the engine's numbers; it is not a
 recommendation to bet, and the row order is not a ranking.
+
+### Check injuries and weather on EVERY boost run, before the tables
+
+The 2026-11-12 midday run priced five boosts without an injury check, and
+the evening one found a starter returning from injury whose return changed
+two legs. On every run and every re-check that prices slips:
+
+1. Pull `propline_get_injuries(sport_key="football_nfl")` AND search the
+   web for both teams' final injury report. PropLine's feed was two days
+   stale that night (it listed a player Out who played), so the feed alone
+   is not enough; where the two disagree, say so and say which you believe
+   and why.
+2. For every player on a shortlisted slip, state his status. Name any
+   teammate whose return or absence changes that player's role (a starter
+   coming back shrinks the fill-in's workload; the role check uses past
+   games and cannot see this).
+3. State the kickoff-hour forecast with wind for an outdoor game, and
+   whether the game total has moved since the last pull.
+4. Say what time you checked, and whether official inactives are out yet
+   (about 90 minutes before kickoff).
+
+**If `get_event_ev` returns no Pinnacle fairs while Pinnacle has live
+two-sided prices in `get_odds`** (it anchored 0 of 404 lines on the evening
+of 2026-11-12), say so at the top, de-vig Pinnacle's own two-sided prices
+from the same pull with `devig="shin"`, and label every such fair as
+derived that way.
 
 ## Scoring a slip Dustin already built — `score_slip()` (F15)
 

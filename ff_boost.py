@@ -240,6 +240,11 @@ SGP_FACTORS_OBSERVED = (
     0.9044,   # 2-leg yards,       product +243 -> quote +210
 )
 
+# Leg count of each SGP_FACTORS_OBSERVED row, in order, from the comments
+# beside them; None where the sitting did not record it.
+SGP_FACTORS_OBSERVED_LEGS = (3, 3, 3, 3, None, None, None, None,
+                             3, 3, 3, 3, 2)
+
 # Second live run, event 53178, 2026-11-11 ~14:48Z: (book, quote / ENGINE
 # product, quote / that book's own independent price). Five slips, every
 # quote returned. Kept as its own tuple because it carries the BOOK and two
@@ -271,6 +276,44 @@ SGP_FACTORS_LIVE_20261111_3A = (
     ("novig", 1.0674, .9887), ("draftkings", .9385, .9385),
     ("novig", 1.0829, 1.0396), ("fanduel", .8955, 1.0123),
     ("draftkings", .9508, .9508), ("novig", 1.1217, 1.2292),
+)
+
+# Game-day run 2, event 53178, 2026-11-12 ~17:30Z: 64 quotes at the three
+# books Dustin's boosts sit at. (book, LEGS IN THE SLIP, quote / engine
+# product, whether the engine could measure the slip). Two things this run
+# showed that the earlier tuples could not carry:
+#   - LEG COUNT matters (B179). BetMGM's measurable 2-leg slips came in at
+#     0.93-1.04 of the product, its 3-leg slips at 0.73-0.99.
+#   - Slips the engine REFUSES (anti-correlated pairs) are quoted ABOVE the
+#     product (B181): FanDuel 0.95-1.09, BetMGM up to 1.36. They can never
+#     be a qualifier, so they must not set the target for slips that can;
+#     pooled in, they would aim every product too low.
+# DraftKings missed its minimum on 9 of 18 here against a predicted one in
+# four: its measurable 3-leg lower quartile was 0.889 against the 0.934 the
+# target then used.
+SGP_FACTORS_LIVE_20261112 = (
+    ("draftkings", 3, 0.909, True), ("draftkings", 3, 0.950, True), ("draftkings", 3, 0.965, True),
+    ("draftkings", 3, 0.858, True), ("draftkings", 3, 0.943, True), ("draftkings", 3, 0.891, True),
+    ("draftkings", 3, 1.017, False), ("draftkings", 3, 1.008, False), ("draftkings", 3, 0.953, False),
+    ("draftkings", 3, 0.906, False), ("fanduel", 3, 1.061, False), ("fanduel", 3, 1.088, False),
+    ("fanduel", 3, 1.053, False), ("fanduel", 3, 0.946, False), ("fanduel", 3, 1.066, False),
+    ("fanduel", 3, 1.080, False), ("fanduel", 3, 1.021, False), ("fanduel", 3, 1.064, False),
+    ("fanduel", 3, 0.977, True), ("fanduel", 3, 0.865, True), ("fanduel", 3, 0.896, True),
+    ("fanduel", 3, 0.946, True), ("fanduel", 3, 0.943, True), ("fanduel", 3, 1.004, True),
+    ("fanduel", 3, 0.938, True), ("fanduel", 3, 0.961, True), ("betmgm", 2, 1.098, False),
+    ("betmgm", 2, 1.012, False), ("betmgm", 2, 1.132, False), ("betmgm", 2, 1.272, False),
+    ("betmgm", 2, 0.933, True), ("betmgm", 3, 0.815, True), ("betmgm", 3, 0.734, True),
+    ("betmgm", 3, 1.356, False), ("betmgm", 3, 1.207, False), ("betmgm", 3, 0.810, True),
+    ("betmgm", 3, 0.885, True), ("betmgm", 3, 0.699, False), ("betmgm", 3, 0.973, True),
+    ("betmgm", 2, 0.986, True), ("betmgm", 2, 1.008, True), ("betmgm", 2, 1.022, True),
+    ("betmgm", 2, 0.948, True), ("betmgm", 2, 0.934, True), ("betmgm", 2, 1.038, True),
+    ("betmgm", 2, 1.001, True), ("betmgm", 2, 0.979, True), ("betmgm", 3, 0.969, True),
+    ("betmgm", 3, 0.990, True), ("betmgm", 3, 0.967, True), ("betmgm", 3, 0.916, True),
+    ("betmgm", 3, 0.956, True), ("betmgm", 3, 0.896, True), ("betmgm", 3, 0.922, True),
+    ("betmgm", 3, 0.969, True), ("draftkings", 3, 0.864, True), ("draftkings", 3, 0.920, True),
+    ("draftkings", 3, 0.892, True), ("draftkings", 3, 0.888, True), ("betmgm", 2, 0.971, True),
+    ("draftkings", 3, 0.886, True), ("draftkings", 3, 0.910, True), ("draftkings", 3, 0.902, True),
+    ("draftkings", 3, 0.908, True),
 )
 
 SGP_FACTORS_LIVE_20261111 = (
@@ -2607,7 +2650,7 @@ class Candidate:
         d = to_decimal(self.independent_odds)
         if not self.structure.cross_game:
             books = {_book_key(l.book) for l in self.legs}
-            d = d * min(expected_factor(b) for b in books)
+            d = d * min(expected_factor(b, len(self.legs)) for b in books)
         return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
 
     @property
@@ -3124,18 +3167,33 @@ SGP_EXCHANGE_BOOKS = ("novig", "prophetx", "sxbet", "matchbook", "smarkets",
 MIN_QUOTES_FOR_BOOK_FACTOR = 8
 
 
-def factors_by_book() -> dict[str, list[float]]:
-    """Every measured quote / ENGINE-product factor, keyed by sportsbook.
+def factor_rows() -> list[tuple[str, int | None, float]]:
+    """Every sportsbook quote / ENGINE-product factor on file, as
+    (book, legs in the slip or None when it was not recorded, factor).
 
-    The original list is BetMGM's (B55). The live rows carry their book.
+    The original list is BetMGM's (B55); its leg counts are in
+    SGP_FACTORS_OBSERVED_LEGS, None where a sitting did not record them. The 2026-11-11 live runs priced three-leg shortlists only. The
+    2026-11-12 rows carry their leg count, and only the slips the engine
+    could MEASURE are used: a slip it refuses is quoted above the product
+    (B181) and can never be a qualifier, so it must not set the target.
     Exchanges are left out: see SGP_EXCHANGE_BOOKS.
     """
-    out: dict[str, list[float]] = {"betmgm": list(SGP_FACTORS_OBSERVED)}
+    out = [("betmgm", n, x) for x, n
+           in zip(SGP_FACTORS_OBSERVED, SGP_FACTORS_OBSERVED_LEGS)]
     for rows in (SGP_FACTORS_LIVE_20261111, SGP_FACTORS_LIVE_20261111_3A):
-        for book, eng, _own in rows:
-            if book in SGP_EXCHANGE_BOOKS:
-                continue
-            out.setdefault(book, []).append(eng)
+        out += [(book, 3, eng) for book, eng, _own in rows]
+    out += [(book, n, x) for book, n, x, measurable
+            in SGP_FACTORS_LIVE_20261112 if measurable]
+    return [r for r in out if r[0] not in SGP_EXCHANGE_BOOKS]
+
+
+def factors_by_book(n_legs=None) -> dict[str, list[float]]:
+    """Measured factors keyed by sportsbook; with `n_legs`, only the quotes
+    on slips of that many legs."""
+    out: dict[str, list[float]] = {}
+    for book, n, x in factor_rows():
+        if n_legs is None or n == int(n_legs):
+            out.setdefault(book, []).append(x)
     return out
 
 
@@ -3154,48 +3212,61 @@ def _lower_quartile(xs) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
 
 
-def _target_factor(book=None) -> float:
+def _target_factor(book=None, n_legs=None) -> float:
     """The quote/product factor a same-game product is aimed with.
 
     B161 (2026-11-11): the LOWER QUARTILE, not the median — a miss voids a
     token and an overshoot only lengthens the slip a little.
 
     B167 (same day, after live run 3A): PER BOOK. The factor is a property
-    of the book's pricer — lower quartile 0.83 at BetMGM, 0.91 at FanDuel,
-    0.93 at DraftKings — so one pooled figure aims a BetMGM slip too low
-    and a DraftKings slip too high. Dustin's boosts sit at all three. A
-    book with fewer than MIN_QUOTES_FOR_BOOK_FACTOR quotes, or no book
-    named, gets the pooled lower quartile.
+    of the book's pricer, so one pooled figure aims one book's slips too
+    low and another's too high. Dustin's boosts sit at three books.
+
+    B179 (2026-11-13, after the game-day quotes): PER LEG COUNT as well,
+    where that book has enough quotes at that count. A two-leg slip is
+    quoted much closer to its product than a three-leg one.
+
+    Falls back in order: the book's quotes at this leg count, the book's
+    quotes at any count, every sportsbook pooled. Each step needs
+    MIN_QUOTES_FOR_BOOK_FACTOR quotes.
     """
-    return target_factor_detail(book)[0]
+    return target_factor_detail(book, n_legs)[0]
 
 
-def target_factor_detail(book=None) -> tuple[float, str, int]:
-    """(factor, which data it came from, n)."""
-    by = factors_by_book()
+def _factor_sample(book=None, n_legs=None) -> tuple[list[float], str]:
+    """(the quotes that describe this book and leg count, what they are)."""
     key = _book_key(book)
-    xs = by.get(key) if key else None
+    if key and n_legs is not None:
+        xs = factors_by_book(n_legs).get(key)
+        if xs and len(xs) >= MIN_QUOTES_FOR_BOOK_FACTOR:
+            return xs, f"{key}'s own {int(n_legs)}-leg quotes"
+    xs = factors_by_book().get(key) if key else None
     if xs and len(xs) >= MIN_QUOTES_FOR_BOOK_FACTOR:
-        return _lower_quartile(xs), f"{key}'s own quotes", len(xs)
+        why = f"{key}'s own quotes"
+        if n_legs is not None:
+            why += f" at every leg count (too few {int(n_legs)}-leg ones)"
+        return xs, why
     pooled = sportsbook_factors()
-    why = ("all sportsbooks pooled"
-           + (f" ({key} has only {len(xs)} quote(s) on file)" if xs
-              else f" (no quotes on file for {key})" if key else ""))
-    return _lower_quartile(pooled), why, len(pooled)
+    return pooled, ("all sportsbooks pooled"
+                    + (f" ({key} has only {len(xs)} quote(s) on file)"
+                       if xs else
+                       f" (no quotes on file for {key})" if key else ""))
 
 
-def expected_factor(book=None) -> float:
+def target_factor_detail(book=None, n_legs=None) -> tuple[float, str, int]:
+    """(factor, which data it came from, n)."""
+    xs, why = _factor_sample(book, n_legs)
+    return _lower_quartile(xs), why, len(xs)
+
+
+def expected_factor(book=None, n_legs=None) -> float:
     """MEDIAN quote/product factor for a book — the expected quote.
 
     Same data and same fallback as `target_factor_detail`, at the median
     instead of the lower quartile: targeting wants to be safe, an expected
     EV wants to be central.
     """
-    by = factors_by_book()
-    xs = by.get(_book_key(book))
-    if not xs or len(xs) < MIN_QUOTES_FOR_BOOK_FACTOR:
-        xs = sportsbook_factors()
-    xs = sorted(xs)
+    xs = sorted(_factor_sample(book, n_legs)[0])
     n = len(xs)
     return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
 
@@ -3563,8 +3634,9 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     # The slip is bet at ONE book; if the pool somehow mixes books, aim with
     # the harshest of them rather than guess which one the slip lands at.
     _books = sorted({_book_key(l.book) for l in kept})
-    _fd = min((target_factor_detail(b) for b in _books),
-              key=lambda t: t[0]) if _books else target_factor_detail(None)
+    _fd = (min((target_factor_detail(b, legs_per_slip) for b in _books),
+               key=lambda t: t[0]) if _books
+           else target_factor_detail(None, legs_per_slip))
     sgp_factor = (_fd[0] if mode != "cross-game" else 1.0)
     target_dec = fl_dec / sgp_factor
     n_below_target = 0
@@ -3824,9 +3896,11 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
         build_notes.extend(f"  {r}" for r in dupe_reasons[:5])
     if sgp_factor < 1.0 and chosen:
         _bk = "/".join(_books) or "unknown book"
-        _fx = (factors_by_book().get(_books[0], [])
-               if len(_books) == 1 and "own quotes" in _fd[1]
-               else sportsbook_factors())
+        # The SAME sample the factor came from, so the range and the n
+        # in this note describe one set of quotes.
+        _fx = min((_factor_sample(b, legs_per_slip) for b in _books),
+                  key=lambda t: _lower_quartile(t[0]))[0] if _books \
+            else _factor_sample(None, legs_per_slip)[0]
         worst = min(_fx)
         build_notes.append(
             f"same-game products are aimed at {american(target_dec):+.0f}, "
