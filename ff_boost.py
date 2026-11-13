@@ -2491,6 +2491,36 @@ class Candidate:
         return 1.0 - p * to_decimal(self.odds)
 
     @property
+    def too_good(self) -> bool:
+        """Our own fairs say the book is paying MORE than fair on this slip
+        before any boost: P(cash) x product > 1.
+
+        Books do not do that on purpose. One leg can be the best price in
+        the market, but three chosen as the best of several hundred, each
+        against an anchor that has taken no money, will show this whenever
+        the anchors carry error, because the selection picks the errors.
+        The 2026-11-13 weekend run ranked twelve cross-game slips at +26%
+        to +28% this way while the typical cross-game slip at that boost
+        returns +1% to +4%. It changes no verdict; it is said in the
+        report so the EV is read as a ceiling.
+        """
+        ph = self.product_hold
+        return ph is not None and ph < 0.0
+
+    @property
+    def too_good_note(self) -> str:
+        if not self.too_good:
+            return ""
+        return (f"TOO GOOD TO TAKE AT FACE VALUE: these fairs say the book "
+                f"pays {-self.product_hold:.1%} MORE than fair on this slip "
+                f"before the boost. Books do not price above fair on "
+                f"purpose, so part of this is anchor error, and legs picked "
+                f"as the best of a large pool are picked FOR that error. "
+                f"Read the EV as a ceiling; the band for a typical slip of "
+                f"this shape is the better guide until the anchors have "
+                f"taken money.")
+
+    @property
     def ev_band_reason(self) -> str:
         """Why there is no ROI band, when there is none."""
         if not self.structure.priceable:
@@ -2899,6 +2929,14 @@ class Shortlist:
         """(slips with at least one immature-anchor leg, slips total)."""
         return (sum(1 for c in self.candidates
                     if any(l.anchor_immature for l in c.legs)),
+                len(self.candidates))
+
+    @property
+    def too_good_slips(self) -> tuple[int, int]:
+        """(slips whose own fairs say the book pays above fair, slips
+        total). A shortlist where most slips are in the first number was
+        selected on anchor error; see `Candidate.too_good`."""
+        return (sum(1 for c in self.candidates if c.too_good),
                 len(self.candidates))
 
     @property
@@ -4601,11 +4639,30 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                 out.append("  anticipated ROI : NOT AVAILABLE — see the "
                            "P(cash) line")
             else:
-                out.append(f"  anticipated ROI : {c.ev_band[0]:+.1%} to "
-                           f"{c.ev_band[1]:+.1%} across the measured hold "
-                           f"band — NOT priced yet, run price_sgp")
+                if c.structure.cross_game:
+                    # A cross-game parlay has no same-game markup: the
+                    # book multiplies the legs, so the product IS the
+                    # quote and price_sgp does not apply. Two EVs belong
+                    # here and they answer different questions; the first
+                    # weekend run printed one and ranked on the other,
+                    # 24 points apart, without saying so.
+                    out.append(f"  EV at the product: {c.ev_at_product:+.1%} "
+                               f"on THIS slip's own fairs. A cross-game "
+                               f"parlay pays the product of its legs, so "
+                               f"confirm the price on the bet slip; "
+                               f"price_sgp does not apply")
+                    out.append(f"  typical slip     : {c.ev_band[0]:+.1%} to "
+                               f"{c.ev_band[1]:+.1%} is what a cross-game "
+                               f"slip at this boost returns across the "
+                               f"measured hold band, whatever its legs")
+                else:
+                    out.append(f"  anticipated ROI : {c.ev_band[0]:+.1%} to "
+                               f"{c.ev_band[1]:+.1%} across the measured "
+                               f"hold band — NOT priced yet, run price_sgp")
                 out.append(f"  reference band  : {c.hold_band[0]:.1%}-"
                            f"{c.hold_band[1]:.1%} — {c.hold_band_reason}")
+            if c.too_good:
+                out.append(f"  ** {c.too_good_note}")
             out.append("  P(cash) is a product of de-vigged market "
                        "probabilities. It inherits whatever error is in the "
                        "anchor, which is per-LINE, not per-book.")

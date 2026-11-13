@@ -9754,5 +9754,101 @@ chk("recommended slips do not leak into the placed-bet or verdict records",
     all(r.get("kind") not in ff_betlog.SLIP_REC_KINDS
         for r in ff_betlog._bets() + ff_betlog._recs()))
 
+# --- first real run (2026-11-13): cross-game legs need their own game id ---
+def _cg87(player, ev, **kw):
+    d = _rl87(player, "YES", 140, 0.425, "kalshi", line=None,
+              market="player_anytime_td")
+    d.update(kw)
+    if ev is not None:
+        d["event_id"] = ev
+    return d
+
+
+_cgs = [_try87(lambda o=o: ff_betlog.log_slip_rec(
+    "betmgm", [_cg87("Corey Kiner", 101), _cg87(o, 202)], event_id=None))[0]
+    for o in ("Other A", "Other B", "Other C")]
+_cgl, _ecg = _try87(lambda: ff_betlog.recommended_legs(
+    [r for r in ff_betlog.slip_recs() if r["id"] in {c["id"] for c in _cgs}]))
+chk("a leg in three CROSS-GAME slips is one leg when legs carry event ids",
+    _cgl is not None and len(_cgl) == 4
+    and sum(1 for l in _cgl if l["player"] == "Corey Kiner") == 1,
+    _ecg or str(len(_cgl or [])))
+_cgj = [_try87(lambda o=o: ff_betlog.log_slip_rec(
+    "betmgm", [_cg87("Jordan Mason", None), _cg87(o, None)],
+    event_id="101,202,303"))[0] for o in ("Other D", "Other E")]
+_cgjl, _ = _try87(lambda: ff_betlog.recommended_legs(
+    [r for r in ff_betlog.slip_recs() if r["id"] in {c["id"] for c in _cgj}]))
+chk("and a slip logged with several ids JOINED falls back to the week, "
+    "not to one leg per slip",
+    _cgjl is not None
+    and sum(1 for l in _cgjl if l["player"] == "Jordan Mason") == 1,
+    str(len(_cgjl or [])))
+_cg2 = [_try87(lambda e=e: ff_betlog.log_slip_rec(
+    "betmgm", [_cg87("Same Man", e)], event_id=None))[0] for e in (501, 502)]
+_cg2l, _ = _try87(lambda: ff_betlog.recommended_legs(
+    [r for r in ff_betlog.slip_recs() if r["id"] in {c["id"] for c in _cg2}]))
+chk("the same bet on two different games stays two legs",
+    _cg2l is not None and len(_cg2l) == 2)
+chk("the betting week runs Tuesday to Monday",
+    ff_betlog._bet_week("2026-11-12T23:00:00Z")
+    == ff_betlog._bet_week("2026-11-16T23:00:00Z")
+    != ff_betlog._bet_week("2026-11-17T12:00:00Z")
+    and ff_betlog._bet_week("garbage") == "week unknown")
+
+# ===========================================================================
+# 88. Cross-game report: two EVs named for what they are; "too good" flag
+# ===========================================================================
+
+section("88. cross-game report and the too-good flag")
+
+
+def _xg(vals, boost=0.25):
+    """Three legs in three games; `vals` are fair x decimal per leg."""
+    try:
+        legs = []
+        for i, v in enumerate(vals):
+            l = _jleg(f"X{i}", .5, ev=f"G{i}", team=("AAA", "BBB", "CCC")[i])
+            d = dict(l.__dict__)
+            d["odds"] = ff_boost.american(v / .5)
+            legs.append(ff_boost.BoostLeg(**d))
+        return ff_boost.make_candidate(legs, boost_pct=boost, stake=25), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+_tg, _etg = _xg((1.02, 1.00, 1.025))
+_ok88, _eok = _xg((0.96, 0.95, 0.955))
+chk("legs the fairs say are priced ABOVE fair make a too-good slip",
+    _tg is not None and _tg.structure.cross_game and _tg.too_good
+    and abs(_tg.product_hold + 0.0455) < 1e-3, _etg or str(
+        getattr(_tg, "product_hold", None)))
+chk("an ordinary cross-game slip is not flagged",
+    _ok88 is not None and not _ok88.too_good and _ok88.too_good_note == "",
+    _eok)
+chk("the flag changes no verdict", _tg is not None
+    and _tg.verdict == _ok88.verdict == "PLAY", f"{getattr(_tg, 'verdict', 0)}")
+
+
+def _rep88(c):
+    try:
+        return ff_boost.report([c])
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+_r88, _r88ok = _rep88(_tg), _rep88(_ok88)
+chk("the report says so, and calls the EV a ceiling",
+    "TOO GOOD TO TAKE AT FACE VALUE" in _r88 and "ceiling" in _r88
+    and "TOO GOOD" not in _r88ok, _r88[-700:])
+chk("a cross-game slip shows its OWN EV and the typical slip's, named apart",
+    "EV at the product" in _r88 and "typical slip" in _r88
+    and f"{_tg.ev_at_product:+.1%}" in _r88, _r88[-700:])
+chk("and is not told to run price_sgp, which does not apply to it",
+    "run price_sgp" not in _r88 and "price_sgp does not apply" in _r88)
+_sl88 = ff_boost.Shortlist(candidates=[_tg, _ok88], mode="cross-game",
+                           boost_pct=0.25)
+chk("the shortlist counts its too-good slips",
+    _sl88.too_good_slips == (1, 2), str(_sl88.too_good_slips))
+
 _summary()
 raise SystemExit(1 if fails else 0)

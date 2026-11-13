@@ -381,7 +381,9 @@ event_id=..., quote=..., boost_pct=..., p_cash=..., ev=..., tier=...,
 call=...)` once for each slip in the closing "Top slip per boost" table and
 each Tier A / Tier B qualifier (a straight bet is a one-leg slip). Each leg
 is a dict with `player`, `market`, `line`, `side`, `odds` (the price at the
-boost's book), `fair_p` and `fair_source` — the BOOK NAME ONLY ("pinnacle",
+boost's book), `fair_p`, `fair_source` and, **on a cross-game slip, its own
+`event_id`** (pass `event_id=None` for the slip itself; never join ids).
+`fair_source` is the BOOK NAME ONLY ("pinnacle",
 "kalshi"); put pull times and liquidity in `note`. When Dustin places one,
 log it with `log_bet` as usual AND pass `placed=True, bet_id=...` on its
 slip record. This is a record only and feeds nothing; it exists because
@@ -2098,7 +2100,8 @@ with nothing to use:
 |---|---|---|---|---|---|---|---|
 
 - **Boost:** book and percentage ("BetMGM 50%").
-- **Call:** one of **Use**, **Marginal**, **Skip**. Use = +EV at a real
+- **Call:** one of **Use**, **Marginal**, **Skip**. A `too_good` slip, or one
+  with no real price to read, is Marginal at most. Use = +EV at a real
   quote with a cushion of 10% of P(cash) or more. Marginal = +EV at a real
   quote with less cushion than that, or resting on an estimate-only slip.
   Skip = nothing +EV at a real quote; write "–" in the other cells.
@@ -2114,7 +2117,8 @@ with nothing to use:
 - **Stake → returns:** at the boost's maximum stake.
 - **Chance to cash:** a percentage and "1 in N"; add "lower bound" or
   "estimate" when it is one.
-- **Confidence:** **A** when every leg's fair is a tested Pinnacle line,
+- **Confidence:** **A** when every leg's fair is a Pinnacle line with
+  liquidity above its opening tier,
   otherwise **B** plus the one thing it rests on in a few words
   ("B, thin Kalshi line on Jefferson").
 
@@ -2263,10 +2267,38 @@ Legs in different games are independent, so a cross-game slip's value is
 the product of each leg's `fair_prob x decimal`. The best slips are made
 of the best legs. A full Sunday pool is past what `enumerate_candidates`
 will walk, so per event keep the five legs with the highest
-`fair_prob x decimal` (non-VETO, and prefer tested anchors), then
-enumerate with `mode="cross-game"`. Price the shortlist with
-`propline_price_parlay`; the quote should equal the product, and if it
-does not, report the ratio.
+`fair_prob x decimal` (non-VETO), then enumerate with
+`mode="cross-game"`.
+
+**Choosing the five: "no flag" is not "tested".** A book that reports no
+liquidity (Bovada) gets no flag at all, and a Kalshi contract with a few
+hundred dollars on it can be unflagged while every Pinnacle line on the
+board is flagged at its opening limit. So do not prefer unflagged legs.
+Rank each game's legs by value, and beside each write what the fair rests
+on in plain terms: the book, the dollars behind it, and whether Pinnacle is
+above its opening tier. A leg counts as VERIFIED only when its fair is a
+Pinnacle two-sided line with liquidity above the derived opening tier and
+not at exactly 0.5000.
+
+**A cross-game quote is the product of the legs; the bet slip confirms
+it.** `propline_price_parlay` returns no BetMGM entry for a slip with an
+anytime-TD leg, and where it does return one its source is
+`legs_multiplied`, which is PropLine's arithmetic and not a book quote. So
+do not report a quote/product ratio for cross-game slips. Show the product,
+say it is the product, and ask Dustin to read the price off the slip.
+
+**Read `too_good` before the EV.** `Candidate.too_good` is True when the
+slip's own fairs say the book pays more than fair before the boost, and
+`sl.too_good_slips` counts them. A shortlist built from the best legs of
+several hundred on untested anchors will be mostly too-good, because the
+selection picks the anchor errors. For such a slip: give the EV on its own
+fairs AND the typical-slip band `report()` prints, say the first is a
+ceiling, and never call it "Use". Report `sl.too_good_slips`.
+
+**Teams go stale after a trade or signing.** `build_meta` reads the last
+game a player appeared in. For every player on a shortlisted slip, check
+his current team against the PropLine event he is listed under, and say so
+when they differ; on a same-game slip a wrong team misclassifies the pair.
 
 ## Stake-back tokens are NOT boosts — do not run them through `ff_boost`
 

@@ -1209,7 +1209,9 @@ def log_slip_rec(book: str, legs: list[dict], *, event_id=_MUST_PASS,
 
     `legs` are dicts with player, market, line, side, odds, fair_p and
     fair_source (the BOOK name only, e.g. "pinnacle" — detail goes in
-    `note`). Log every slip in the closing table and every Tier A / Tier B
+    `note`). For a CROSS-GAME slip give each leg its own `event_id` and
+    pass `event_id=None` for the slip: one id per slip made a leg that sat
+    in nine cross-game slips read as nine legs on its first real run. Log every slip in the closing table and every Tier A / Tier B
     qualifier, at the time it is shown. Set `placed=True` and `bet_id` for a
     slip Dustin bet, so its legs are not counted twice beside `log_bet`'s.
     """
@@ -1235,6 +1237,8 @@ def log_slip_rec(book: str, legs: list[dict], *, event_id=_MUST_PASS,
             "odds": float(l["odds"]),
             "fair_p": None if fp is None else _check_prob(fp, "fair_p"),
             "fair_source": str(l.get("fair_source") or ""),
+            **({"event_id": l["event_id"]}
+               if l.get("event_id") is not None else {}),
             "result": None, "actual": None, "closing_odds": None})
     return _append({
         "id": uuid.uuid4().hex[:12], "kind": "slip_rec",
@@ -1293,11 +1297,41 @@ def slip_recs(include_test: bool = False) -> list[dict]:
     return list(by_id.values())
 
 
+def _bet_week(logged_at) -> str:
+    """The Tuesday-to-Monday week a record was logged in, as a label."""
+    try:
+        import datetime as _dt
+        t = _dt.datetime.fromisoformat(str(logged_at).replace("Z", "+00:00"))
+        y, w, _ = (t - _dt.timedelta(days=1)).isocalendar()
+        return f"week {y}-{w:02d}"
+    except Exception:
+        return "week unknown"
+
+
+def _leg_event(slip: dict, l: dict) -> str:
+    """Which game a recommended leg is on.
+
+    The leg's own `event_id` when it has one. Otherwise the slip's, when
+    that is ONE id. A slip id that is several ids joined, or missing, says
+    nothing about which game this leg is on, so the leg falls back to the
+    betting week it was logged in: one player has one game in it. That
+    fallback is NFL-shaped and is only reached by records without per-leg
+    ids.
+    """
+    own = _norm_event(l.get("event_id"))
+    if own:
+        return own
+    ev = _norm_event(slip.get("event_id"))
+    if ev and re.fullmatch(r"[A-Za-z0-9_-]+", ev):
+        return ev
+    return _bet_week(slip.get("logged_at"))
+
+
 def _leg_identity(event_id, book, l) -> tuple:
     """One bet on one outcome at one book. The same leg sits in many
     recommended slips and is ONE observation, not one per slip."""
     from ff_props import norm_player as _np
-    return (_norm_event(event_id), norm_book(book),
+    return (str(event_id), norm_book(book),
             _np(str(l.get("player") or "")), str(l.get("market") or ""),
             _num(l.get("line")), _side_key(l.get("side")))
 
@@ -1314,7 +1348,7 @@ def recommended_legs(recs: list[dict] | None = None) -> list[dict]:
     best: dict[tuple, dict] = {}
     for r in recs:
         for l in _legs(r):
-            k = _leg_identity(r.get("event_id"), r.get("book"), l)
+            k = _leg_identity(_leg_event(r, l), r.get("book"), l)
             cur = best.get(k)
             score = ((_num(l.get("closing_odds")) is not None)
                      + (l.get("result") in ("WIN", "LOSS", "PUSH", "VOID")))
