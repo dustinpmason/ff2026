@@ -2226,6 +2226,30 @@ agreement. A percentage is refused at construction — pass 0.72, not 72.
 **Read `NOTHING FOUND AGAINST IT` literally.** It is deliberately not
 "good". It means every check that could run, ran, and none fired.
 
+## Bonus bets (profit only) — `ff_boost.bonus_bet_ev`
+
+A bonus bet pays the profit and keeps the stake, so it cannot lose money;
+the question is which bet turns the most of its face into cash.
+`bonus_bet_ev(fair_prob, odds, stake=face)` returns the cash value, the
+`conversion` (value / face) and `p_cash`. Conversion is
+(fair x decimal) x (1 - 1/decimal): it wants a LONG price on a leg with
+LITTLE hold. Always show conversion and chance to cash together, and give
+Dustin two options: the highest conversion, and the highest conversion
+among bets with at least a 35% chance to cash. Use only legs with a fair
+from a tested anchor for the first; say so when none exists. A bonus bet
+is not a boost and never goes through `enumerate_candidates`.
+
+### Cross-game parlay tokens: narrow the pool before enumerating
+
+Legs in different games are independent, so a cross-game slip's value is
+the product of each leg's `fair_prob x decimal`. The best slips are made
+of the best legs. A full Sunday pool is past what `enumerate_candidates`
+will walk, so per event keep the five legs with the highest
+`fair_prob x decimal` (non-VETO, and prefer tested anchors), then
+enumerate with `mode="cross-game"`. Price the shortlist with
+`propline_price_parlay`; the quote should equal the product, and if it
+does not, report the ratio.
+
 ## Stake-back tokens are NOT boosts — do not run them through `ff_boost`
 
 A "bet reset", "safety net" or "second chance" token refunds the stake as

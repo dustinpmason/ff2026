@@ -4215,6 +4215,37 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
                            ("optimistic", 0.71))}
 
 
+def bonus_bet_ev(fair_prob: float, odds: float, *, stake: float) -> dict:
+    """What spending a BONUS BET (profit only, stake not returned) on one
+    bet is worth, in cash.
+
+        EV = p * (d - 1) * S          conversion = EV / S = p * (d - 1)
+
+    There is nothing to lose, so EV is never negative; the question is
+    which bet turns the most of the face value into cash. Write the
+    conversion as (p * d) * (1 - 1/d): the first factor is how fairly the
+    leg is priced (1.0 = no hold), the second rises with the price. So a
+    bonus bet wants a LONG price on a leg with LITTLE hold, and those pull
+    against each other, because a book's hold grows with the price. A
+    +100 leg at fair converts 50%; a +400 leg at fair converts 80%; a
+    +1200 First TD leg carrying a 39% hold converts about 56%.
+
+    The price of a higher conversion is a lower chance of getting anything:
+    `p_cash` is returned beside it so both are stated together. Filed
+    2026-11-13, when Dustin held an $8.11 bonus bet from a stake-back.
+    """
+    p = float(fair_prob)
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"fair_prob must be inside (0, 1), got {fair_prob!r}")
+    if stake is None or float(stake) <= 0:
+        raise ValueError(f"stake must be positive, got {stake!r}")
+    d = to_decimal(odds)
+    conv = p * (d - 1.0)
+    return {"ev": conv * float(stake), "conversion": conv, "p_cash": p,
+            "pays_if_wins": (d - 1.0) * float(stake),
+            "leg_fairness": p * d, "stake": float(stake)}
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------

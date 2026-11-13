@@ -9537,5 +9537,34 @@ chk("and is empty when nothing is graded",
     ff_betlog.side_summary([{"id": "y", "kind": "bet", "legs": [
         _sl84("OVER", -110, None, None, .5)]}]) == "")
 
+# ===========================================================================
+# 85. Bonus bets (profit only)
+# ===========================================================================
+
+section("85. bonus bet value")
+
+
+def _bb(p, o, st=8.11):
+    try:
+        return ff_boost.bonus_bet_ev(p, o, stake=st)
+    except Exception as e:
+        return {"_err": f"{type(e).__name__}: {e}"}
+
+
+_b1, _b4 = _bb(0.5, 100), _bb(0.2, 400)
+chk("a fair +100 leg converts half the face, a fair +400 leg 80%",
+    abs(_b1.get("conversion", 0) - 0.5) < 1e-9
+    and abs(_b4.get("conversion", 0) - 0.8) < 1e-9, f"{_b1} {_b4}")
+chk("the cash value is conversion x face, and the stake is NOT returned",
+    abs(_b4.get("ev", 0) - 0.8 * 8.11) < 1e-9
+    and abs(_b4.get("pays_if_wins", 0) - 4 * 8.11) < 1e-9)
+chk("hold eats it: a 0.075 First TD leg at +1200 converts 90%, not 92%",
+    abs(_bb(0.075, 1200).get("conversion", 0) - 0.90) < 1e-9)
+chk("the chance of collecting anything is reported beside the value",
+    _b4.get("p_cash") == 0.2 and abs(_b4.get("leg_fairness", 0) - 1.0) < 1e-9)
+chk("a probability outside (0, 1) and a zero stake are refused",
+    "_err" in _bb(1.0, 100) and "_err" in _bb(0.0, 100)
+    and "_err" in _bb(0.5, 100, 0))
+
 _summary()
 raise SystemExit(1 if fails else 0)
