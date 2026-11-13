@@ -8240,7 +8240,7 @@ chk("the shortlist reports that it chose on price",
 # review). B55 measured same-game quotes at 0.77-0.99 of the product, so a
 # product aimed AT the floor prices under it and voids a token.
 _tgt = ff_boost.american(ff_boost.to_decimal(300)
-                         / ff_boost._target_factor("draftkings"))
+                         / ff_boost._target_factor("draftkings", 3, 300))
 chk("the target factor is derived from the measurements, not typed",
     0.77 < ff_boost._target_factor() < 0.99, str(ff_boost._target_factor()))
 chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
@@ -8250,7 +8250,7 @@ chk("every same-game slip's PRODUCT clears floor / factor, not just floor",
     f"{sorted(round(c.independent_odds) for c in _psl.candidates)[:4]}")
 chk("so at the target factor the predicted QUOTE clears the floor",
     all(ff_boost.american(ff_boost.to_decimal(c.independent_odds)
-                          * ff_boost._target_factor("draftkings"))
+                          * ff_boost._target_factor("draftkings", 3, 300))
         >= 300 - 1e-6 for c in _psl.candidates))
 chk("the note gives the target, the factor and the worst case",
     any("aimed at" in n and "worst" in n and "price_sgp decides" in n
@@ -8735,27 +8735,30 @@ chk("the 2026-11-11 quotes are kept with their book",
 _fb = ff_boost.factors_by_book()
 chk("factors are kept per sportsbook, exchanges excluded",
     {k: len(v) for k, v in _fb.items()}
-    == {"betmgm": 37, "fanduel": 16, "draftkings": 32, "betrivers": 3},
+    == {"betmgm": 70, "fanduel": 30, "draftkings": 46, "betrivers": 3},
     str({k: len(v) for k, v in _fb.items()}))
-# Figures as of 2026-11-13, with the game-day quotes in (B179).
-for _bk, _want, _prod in (("draftkings", 0.901, 344), ("fanduel", 0.913, 338),
-                          ("betmgm", 0.858, 366)):
-    _f, _why, _n = ff_boost.target_factor_detail(_bk)
+# Figures as of 2026-11-13, with BOTH game-day runs' quotes in (B179,
+# B191). A three-leg slip against a +300 minimum:
+for _bk, _want, _prod in (("draftkings", 0.900, 344), ("fanduel", 0.896, 346),
+                          ("betmgm", 0.829, 382)):
+    _f, _why, _n = ff_boost.target_factor_detail(_bk, 3, 300)
+    _xs = ff_boost._factor_sample(_bk, 3, 300)[0]
     chk(f"{_bk} is aimed with its OWN lower quartile, about {_want}",
-        abs(_f - _want) < 2e-3 and "own quotes" in _why
-        and abs(_f - ff_boost._lower_quartile(_fb[_bk])) < 1e-12,
+        abs(_f - _want) < 2e-3 and f"{_bk}'s own 3-leg long-priced" in _why
+        and abs(_f - ff_boost._lower_quartile(_xs)) < 1e-12 and _n == len(_xs),
         f"{_f:.4f} {_why}")
     chk(f"  which puts a +300 floor's product target near +{_prod}",
         abs(ff_boost.american(4.0 / _f) - _prod) < 2,
         str(ff_boost.american(4.0 / _f)))
     chk(f"  with about a quarter of {_bk}'s own quotes below it, not half",
-        0.15 <= sum(1 for x in _fb[_bk] if x < _f) / len(_fb[_bk]) <= 0.30)
+        0.15 <= sum(1 for x in _xs if x < _f) / len(_xs) <= 0.30)
 chk("the three books' targets really differ, which is why pooling was wrong",
-    ff_boost._target_factor("betmgm") < ff_boost._target_factor("draftkings")
-    < ff_boost._target_factor("fanduel"))
+    ff_boost._target_factor("betmgm", 3, 300)
+    < ff_boost._target_factor("fanduel", 3, 300)
+    < ff_boost._target_factor("draftkings", 3, 300))
 _pf, _pwhy, _pn = ff_boost.target_factor_detail(None)
 chk("no book named falls back to the pooled lower quartile",
-    _pn == 88 and "pooled" in _pwhy and abs(_pf - 0.896) < 2e-3, f"{_pf} {_pwhy}")
+    _pn == 149 and "pooled" in _pwhy and abs(_pf - 0.900) < 2e-3, f"{_pf} {_pwhy}")
 chk("a book with too few quotes is pooled, and the reason says how many",
     ff_boost.target_factor_detail("betrivers")[0] == _pf
     and "only 3 quote" in ff_boost.target_factor_detail("betrivers")[1])
@@ -8768,35 +8771,53 @@ chk("book names are matched loosely: dk, DraftKings, ' fanduel '",
     and ff_boost._target_factor(" FanDuel ") == ff_boost._target_factor("fanduel"))
 _m3 = ff_boost.factors_by_book(3)["betmgm"]
 chk("the pooled BetMGM miss this rule exists to prevent",
-    sum(1 for x in _m3 if x < _pf) == 11 and len(_m3) == 22,
+    sum(1 for x in _m3 if x < _pf) == 17 and len(_m3) == 38,
     f"aimed with the pooled factor, "
     f"{sum(1 for x in _m3 if x < _pf)} of BetMGM's {len(_m3)} three-leg "
     f"quotes miss")
 
 # --- B179: the factor also depends on LEG COUNT --------------------------
-_f2, _w2, _n2 = ff_boost.target_factor_detail("betmgm", 2)
-_f3, _w3, _n3 = ff_boost.target_factor_detail("betmgm", 3)
+_f2, _w2, _n2 = ff_boost.target_factor_detail("betmgm", 2, 400)
+_f3, _w3, _n3 = ff_boost.target_factor_detail("betmgm", 3, 400)
 chk("BetMGM two-leg slips are aimed with BetMGM's two-leg quotes",
-    _n2 == 11 and "2-leg" in _w2 and abs(_f2 - 0.941) < 2e-3, f"{_f2} {_w2}")
+    _n2 == 12 and "2-leg long-priced" in _w2 and abs(_f2 - 0.924) < 2e-3,
+    f"{_f2} {_w2}")
 chk("and its three-leg slips with its three-leg quotes, a harsher figure",
-    _n3 == 22 and "3-leg" in _w3 and abs(_f3 - 0.819) < 2e-3 and _f3 < _f2,
-    f"{_f3} {_w3}")
-chk("  so a +400 two-leg target is about +431 and a three-leg about +511",
-    abs(ff_boost.american(5.0 / _f2) - 431) < 2
-    and abs(ff_boost.american(5.0 / _f3) - 511) < 2,
+    _n3 == 38 and "3-leg long-priced" in _w3 and abs(_f3 - 0.829) < 2e-3
+    and _f3 < _f2, f"{_f3} {_w3}")
+chk("  so a +400 two-leg target is about +441 and a three-leg about +503",
+    abs(ff_boost.american(5.0 / _f2) - 441) < 2
+    and abs(ff_boost.american(5.0 / _f3) - 503) < 2,
     f"{ff_boost.american(5.0 / _f2):+.0f} {ff_boost.american(5.0 / _f3):+.0f}")
-_fdk2 = ff_boost.target_factor_detail("draftkings", 2)
-chk("a leg count with too few quotes falls back to the book, and says so",
-    _fdk2[0] == ff_boost._target_factor("draftkings")
+_fdk2 = ff_boost.target_factor_detail("draftkings", 2, 300)
+chk("a leg count with too few quotes falls back to the book's band, "
+    "and says so",
+    _fdk2[0] == ff_boost._target_factor("draftkings", 3, 300)
     and "too few 2-leg" in _fdk2[1], _fdk2[1])
 chk("the expected (median) factor follows the leg count too",
-    ff_boost.expected_factor("betmgm", 2) > ff_boost.expected_factor("betmgm", 3))
+    ff_boost.expected_factor("betmgm", 2, 400)
+    > ff_boost.expected_factor("betmgm", 3, 400))
+# B191: and on the PRICE BAND. A short slip is quoted closer to its product.
+chk("a minimum under +200 is the short band, +200 and up the long one",
+    ff_boost.price_band(-300) == ff_boost.price_band(199) == "short"
+    and ff_boost.price_band(200) == ff_boost.price_band(400) == "long"
+    and ff_boost.price_band(None) is None)
+_fs, _ws, _ns = ff_boost.target_factor_detail("betmgm", 2, -300)
+chk("BetMGM's -300 token is aimed with its SHORT two-leg quotes",
+    _ns == 16 and "2-leg short-priced" in _ws and abs(_fs - 0.977) < 2e-3
+    and _fs > _f2, f"{_fs} {_ws}")
+chk("  about -274, where the long-band figure would have said -253",
+    abs(ff_boost.american((4.0 / 3.0) / _fs) + 274) < 2,
+    str(ff_boost.american((4.0 / 3.0) / _fs)))
+_ffs = ff_boost.target_factor_detail("fanduel", 3, 100)
+chk("a band with too few quotes falls back to the whole book, and says so",
+    _ffs[2] == 30 and "too few closer ones" in _ffs[1], str(_ffs))
 def _pe_args():
     seen = []
     real = ff_boost.expected_factor
-    def spy(book=None, n_legs=None):
-        seen.append((book, n_legs))
-        return real(book, n_legs)
+    def spy(book=None, n_legs=None, price=None):
+        seen.append((book, n_legs, price))
+        return real(book, n_legs, price)
     ff_boost.expected_factor = spy
     try:
         c = ff_boost.make_candidate(
@@ -8812,15 +8833,20 @@ def _pe_args():
 _pa, _ppe = _pe_args()
 chk("a slip's predicted EV asks for the factor at ITS leg count",
     _ppe is not None and isinstance(_pa, list) and _pa
-    and all(a[1] == 2 for a in _pa), f"{_pa} {_ppe}")
+    and all(a[1] == 2 and a[2] is not None for a in _pa), f"{_pa} {_ppe}")
 _r12 = ff_boost.SGP_FACTORS_LIVE_20261112
 chk("the game-day quotes are on file: 64, of which 19 the engine refused",
     len(_r12) == 64 and sum(1 for r in _r12 if not r[3]) == 19,
     f"{len(_r12)} {sum(1 for r in _r12 if not r[3])}")
+_r12b = ff_boost.SGP_FACTORS_LIVE_20261112_RUN1
+chk("run 1's quotes are on file too: 79, of which 18 the engine refused",
+    len(_r12b) == 79 and sum(1 for r in _r12b if not r[3]) == 18,
+    f"{len(_r12b)} {sum(1 for r in _r12b if not r[3])}")
 chk("a quote on a slip the engine REFUSES does not set the target",
     max(r[2] for r in _r12 if not r[3]) > 1.3
-    and max(x for _, _, x in ff_boost.factor_rows()) < 1.06,
-    str(max(x for _, _, x in ff_boost.factor_rows())))
+    and len(ff_boost.factor_rows()) == 149
+    and max(r[2] for r in ff_boost.factor_rows()) < 1.1,
+    str(max(r[2] for r in ff_boost.factor_rows())))
 # The same pool at three books is aimed at three different products.
 def _rebook(legs, book):
     out = []
@@ -8838,12 +8864,12 @@ for _bk in ("draftkings", "fanduel", "betmgm"):
     _minp[_bk] = (min(c.independent_odds for c in _bsl2.candidates)
                   if _bsl2 and _bsl2.candidates else None)
     chk(f"a {_bk} pool's note names {_bk} and its own quotes",
-        _bsl2 is not None and any(f"slip at {_bk}" in n and f"{_bk}'s own 3-leg quotes" in n
+        _bsl2 is not None and any(f"slip at {_bk}" in n and f"{_bk}'s own 3-leg long-priced quotes" in n
                                   for n in _bsl2.build_notes),
         str(_bsl2.build_notes if _bsl2 else _be2)[:240])
 chk("and BetMGM slips are aimed longer than DraftKings ones",
     None not in _minp.values()
-    and _minp["betmgm"] > _minp["draftkings"] >= _minp["fanduel"],
+    and _minp["betmgm"] > _minp["fanduel"] >= _minp["draftkings"],
     str(_minp))
 _mix, _mixe = _ec(_rebook(_pl[:48], "draftkings") + _rebook(_pl[48:], "betmgm"),
                   _pm, mode="single-game", event_id="E1", boost_pct=0.50,
@@ -9159,7 +9185,7 @@ chk("run 3A's 32 quotes are recorded with their book",
     and sum(1 for b, _, _ in ff_boost.SGP_FACTORS_LIVE_20261111_3A
             if b not in ff_boost.SGP_EXCHANGE_BOOKS) == 20)
 chk("and now feed the target, per book (B167)",
-    len(ff_boost.sportsbook_factors()) == 88)
+    len(ff_boost.sportsbook_factors()) == 149)
 
 # ===========================================================================
 # 82. B143 and B170

@@ -280,7 +280,8 @@ SGP_FACTORS_LIVE_20261111_3A = (
 
 # Game-day run 2, event 53178, 2026-11-12 ~17:30Z: 64 quotes at the three
 # books Dustin's boosts sit at. (book, LEGS IN THE SLIP, quote / engine
-# product, whether the engine could measure the slip). Two things this run
+# product, whether the engine could measure the slip, the engine product in
+# American odds). Things this run
 # showed that the earlier tuples could not carry:
 #   - LEG COUNT matters (B179). BetMGM's measurable 2-leg slips came in at
 #     0.93-1.04 of the product, its 3-leg slips at 0.73-0.99.
@@ -292,28 +293,87 @@ SGP_FACTORS_LIVE_20261111_3A = (
 # four: its measurable 3-leg lower quartile was 0.889 against the 0.934 the
 # target then used.
 SGP_FACTORS_LIVE_20261112 = (
-    ("draftkings", 3, 0.909, True), ("draftkings", 3, 0.950, True), ("draftkings", 3, 0.965, True),
-    ("draftkings", 3, 0.858, True), ("draftkings", 3, 0.943, True), ("draftkings", 3, 0.891, True),
-    ("draftkings", 3, 1.017, False), ("draftkings", 3, 1.008, False), ("draftkings", 3, 0.953, False),
-    ("draftkings", 3, 0.906, False), ("fanduel", 3, 1.061, False), ("fanduel", 3, 1.088, False),
-    ("fanduel", 3, 1.053, False), ("fanduel", 3, 0.946, False), ("fanduel", 3, 1.066, False),
-    ("fanduel", 3, 1.080, False), ("fanduel", 3, 1.021, False), ("fanduel", 3, 1.064, False),
-    ("fanduel", 3, 0.977, True), ("fanduel", 3, 0.865, True), ("fanduel", 3, 0.896, True),
-    ("fanduel", 3, 0.946, True), ("fanduel", 3, 0.943, True), ("fanduel", 3, 1.004, True),
-    ("fanduel", 3, 0.938, True), ("fanduel", 3, 0.961, True), ("betmgm", 2, 1.098, False),
-    ("betmgm", 2, 1.012, False), ("betmgm", 2, 1.132, False), ("betmgm", 2, 1.272, False),
-    ("betmgm", 2, 0.933, True), ("betmgm", 3, 0.815, True), ("betmgm", 3, 0.734, True),
-    ("betmgm", 3, 1.356, False), ("betmgm", 3, 1.207, False), ("betmgm", 3, 0.810, True),
-    ("betmgm", 3, 0.885, True), ("betmgm", 3, 0.699, False), ("betmgm", 3, 0.973, True),
-    ("betmgm", 2, 0.986, True), ("betmgm", 2, 1.008, True), ("betmgm", 2, 1.022, True),
-    ("betmgm", 2, 0.948, True), ("betmgm", 2, 0.934, True), ("betmgm", 2, 1.038, True),
-    ("betmgm", 2, 1.001, True), ("betmgm", 2, 0.979, True), ("betmgm", 3, 0.969, True),
-    ("betmgm", 3, 0.990, True), ("betmgm", 3, 0.967, True), ("betmgm", 3, 0.916, True),
-    ("betmgm", 3, 0.956, True), ("betmgm", 3, 0.896, True), ("betmgm", 3, 0.922, True),
-    ("betmgm", 3, 0.969, True), ("draftkings", 3, 0.864, True), ("draftkings", 3, 0.920, True),
-    ("draftkings", 3, 0.892, True), ("draftkings", 3, 0.888, True), ("betmgm", 2, 0.971, True),
-    ("draftkings", 3, 0.886, True), ("draftkings", 3, 0.910, True), ("draftkings", 3, 0.902, True),
-    ("draftkings", 3, 0.908, True),
+    ("draftkings", 3, 0.909, True, 417), ("draftkings", 3, 0.950, True, 337),
+    ("draftkings", 3, 0.965, True, 335), ("draftkings", 3, 0.858, True, 329),
+    ("draftkings", 3, 0.943, True, 329), ("draftkings", 3, 0.891, True, 329),
+    ("draftkings", 3, 1.017, False, 436), ("draftkings", 3, 1.008, False, 436),
+    ("draftkings", 3, 0.953, False, 435), ("draftkings", 3, 0.906, False, 446),
+    ("fanduel", 3, 1.061, False, 124), ("fanduel", 3, 1.088, False, 123),
+    ("fanduel", 3, 1.053, False, 120), ("fanduel", 3, 0.946, False, 208),
+    ("fanduel", 3, 1.066, False, 121), ("fanduel", 3, 1.080, False, 120),
+    ("fanduel", 3, 1.021, False, 119), ("fanduel", 3, 1.064, False, 126),
+    ("fanduel", 3, 0.977, True, 339), ("fanduel", 3, 0.865, True, 343),
+    ("fanduel", 3, 0.896, True, 341), ("fanduel", 3, 0.946, True, 339),
+    ("fanduel", 3, 0.943, True, 339), ("fanduel", 3, 1.004, True, 339),
+    ("fanduel", 3, 0.938, True, 341), ("fanduel", 3, 0.961, True, 341),
+    ("betmgm", 2, 1.098, False, 515), ("betmgm", 2, 1.012, False, 443),
+    ("betmgm", 2, 1.132, False, 695), ("betmgm", 2, 1.272, False, 509),
+    ("betmgm", 2, 0.933, True, 838), ("betmgm", 3, 0.815, True, 513),
+    ("betmgm", 3, 0.734, True, 513), ("betmgm", 3, 1.356, False, 508),
+    ("betmgm", 3, 1.207, False, 542), ("betmgm", 3, 0.810, True, 610),
+    ("betmgm", 3, 0.885, True, 522), ("betmgm", 3, 0.699, False, 508),
+    ("betmgm", 3, 0.973, True, 517), ("betmgm", 2, 0.986, True, 189),
+    ("betmgm", 2, 1.008, True, 158), ("betmgm", 2, 1.022, True, 164),
+    ("betmgm", 2, 0.948, True, 132), ("betmgm", 2, 0.934, True, 194),
+    ("betmgm", 2, 1.038, True, 189), ("betmgm", 2, 1.001, True, 125),
+    ("betmgm", 2, 0.979, True, 145), ("betmgm", 3, 0.969, True, 364),
+    ("betmgm", 3, 0.990, True, 324), ("betmgm", 3, 0.967, True, 376),
+    ("betmgm", 3, 0.916, True, 373), ("betmgm", 3, 0.956, True, 287),
+    ("betmgm", 3, 0.896, True, 430), ("betmgm", 3, 0.922, True, 334),
+    ("betmgm", 3, 0.969, True, 261), ("draftkings", 3, 0.864, True, 330),
+    ("draftkings", 3, 0.920, True, 328), ("draftkings", 3, 0.892, True, 328),
+    ("draftkings", 3, 0.888, True, 351), ("betmgm", 2, 0.971, True, 775),
+    ("draftkings", 3, 0.886, True, 442), ("draftkings", 3, 0.910, True, 586),
+    ("draftkings", 3, 0.902, True, 438), ("draftkings", 3, 0.908, True, 439),
+)
+
+# Game-day run 1, same event, 2026-11-12 ~15:50Z, two hours before run 2:
+# 79 quotes in the same five columns. Six more were quoted but are left
+# out because run 2 re-quoted the SAME slip at the SAME price, and one
+# price is one observation. Caveat: a shortlist's slips share legs (one
+# BetMGM leg sits in 16 of these), so these are fewer independent readings
+# than the count suggests.
+SGP_FACTORS_LIVE_20261112_RUN1 = (
+    ("draftkings", 3, 0.947, False, 338), ("draftkings", 3, 0.926, True, 330),
+    ("draftkings", 3, 0.894, False, 332), ("draftkings", 3, 0.929, True, 336),
+    ("draftkings", 3, 0.939, True, 331), ("draftkings", 3, 0.923, False, 334),
+    ("draftkings", 3, 0.924, False, 484), ("draftkings", 3, 1.107, False, 437),
+    ("draftkings", 3, 0.923, True, 442), ("draftkings", 3, 0.942, False, 436),
+    ("draftkings", 3, 0.930, False, 449), ("draftkings", 3, 1.117, False, 437),
+    ("draftkings", 3, 0.930, True, 454), ("draftkings", 3, 0.820, True, 437),
+    ("fanduel", 3, 1.021, True, 119), ("fanduel", 3, 1.047, True, 124),
+    ("fanduel", 3, 1.053, False, 124), ("fanduel", 3, 1.037, True, 120),
+    ("fanduel", 3, 0.982, True, 183), ("fanduel", 3, 0.997, True, 172),
+    ("fanduel", 3, 0.958, True, 250), ("fanduel", 3, 1.012, True, 157),
+    ("fanduel", 3, 0.882, True, 340), ("fanduel", 3, 0.856, False, 341),
+    ("fanduel", 3, 0.867, False, 341), ("fanduel", 3, 0.841, False, 340),
+    ("fanduel", 3, 0.973, False, 340), ("fanduel", 3, 0.943, True, 340),
+    ("fanduel", 3, 0.950, True, 339), ("fanduel", 3, 0.896, True, 342),
+    ("betmgm", 2, 0.909, True, 670), ("betmgm", 2, 0.927, True, 547),
+    ("betmgm", 2, 1.013, True, 591), ("betmgm", 2, 0.916, True, 610),
+    ("betmgm", 2, 0.929, True, 600), ("betmgm", 2, 0.968, False, 520),
+    ("betmgm", 2, 0.995, True, 553), ("betmgm", 3, 0.810, False, 610),
+    ("betmgm", 3, 0.950, True, 505), ("betmgm", 3, 0.826, True, 626),
+    ("betmgm", 3, 0.900, True, 511), ("betmgm", 3, 0.857, True, 542),
+    ("betmgm", 3, 0.947, True, 507), ("betmgm", 3, 0.829, True, 503),
+    ("betmgm", 2, 1.022, True, 105), ("betmgm", 2, 1.094, True, 119),
+    ("betmgm", 2, 0.999, True, 125), ("betmgm", 2, 1.013, True, 122),
+    ("betmgm", 2, 1.016, True, -103), ("betmgm", 2, 1.038, False, -108),
+    ("betmgm", 2, 1.032, True, 104), ("betmgm", 2, 0.920, True, 193),
+    ("betmgm", 3, 0.982, True, 307), ("betmgm", 3, 0.956, True, 277),
+    ("betmgm", 3, 0.995, True, 302), ("betmgm", 3, 0.920, True, 313),
+    ("betmgm", 3, 0.933, True, 307), ("betmgm", 3, 0.970, False, 261),
+    ("betmgm", 3, 0.991, False, 253), ("betmgm", 3, 0.965, True, 273),
+    ("draftkings", 3, 0.957, True, 328), ("draftkings", 3, 0.946, True, 328),
+    ("draftkings", 3, 0.883, True, 328), ("draftkings", 3, 0.855, True, 328),
+    ("draftkings", 3, 0.934, True, 328), ("draftkings", 3, 0.831, True, 435),
+    ("draftkings", 3, 0.934, True, 435), ("draftkings", 3, 0.941, True, 437),
+    ("fanduel", 3, 0.883, True, 339), ("fanduel", 3, 0.959, True, 343),
+    ("fanduel", 3, 0.937, True, 222), ("betmgm", 3, 0.829, True, 533),
+    ("betmgm", 3, 0.827, True, 505), ("betmgm", 3, 0.961, True, 275),
+    ("betmgm", 3, 0.905, True, 287), ("betmgm", 2, 0.943, True, 854),
+    ("betmgm", 2, 0.993, True, 554), ("betmgm", 2, 0.977, True, 565),
+    ("betmgm", 2, 0.971, True, 168),
 )
 
 SGP_FACTORS_LIVE_20261111 = (
@@ -2650,7 +2710,8 @@ class Candidate:
         d = to_decimal(self.independent_odds)
         if not self.structure.cross_game:
             books = {_book_key(l.book) for l in self.legs}
-            d = d * min(expected_factor(b, len(self.legs)) for b in books)
+            d = d * min(expected_factor(b, len(self.legs), american(d))
+                        for b in books)
         return p * (d - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
 
     @property
@@ -3167,32 +3228,53 @@ SGP_EXCHANGE_BOOKS = ("novig", "prophetx", "sxbet", "matchbook", "smarkets",
 MIN_QUOTES_FOR_BOOK_FACTOR = 8
 
 
-def factor_rows() -> list[tuple[str, int | None, float]]:
+# A slip whose product is shorter than this is in the SHORT band. Both
+# game-day runs showed the factor depends on price level inside one book
+# and one leg count (B191): FanDuel three-leg slips near +120 were quoted
+# at 0.96-1.05 of the product, near +340 at 0.87-0.96; BetMGM two-leg slips
+# near +120 at 0.92-1.09, near +600 at 0.91-1.01.
+SHORT_BAND_BELOW = 200.0
+
+
+def price_band(american_odds) -> str | None:
+    """"short" / "long" for a product or a boost minimum; None for None."""
+    if american_odds is None:
+        return None
+    return "short" if float(american_odds) < SHORT_BAND_BELOW else "long"
+
+
+def factor_rows() -> list[tuple[str, int | None, float, str]]:
     """Every sportsbook quote / ENGINE-product factor on file, as
-    (book, legs in the slip or None when it was not recorded, factor).
+    (book, legs in the slip or None when not recorded, factor, price band).
 
     The original list is BetMGM's (B55); its leg counts are in
-    SGP_FACTORS_OBSERVED_LEGS, None where a sitting did not record them. The 2026-11-11 live runs priced three-leg shortlists only. The
-    2026-11-12 rows carry their leg count, and only the slips the engine
-    could MEASURE are used: a slip it refuses is quoted above the product
-    (B181) and can never be a qualifier, so it must not set the target.
-    Exchanges are left out: see SGP_EXCHANGE_BOOKS.
+    SGP_FACTORS_OBSERVED_LEGS, None where a sitting did not record them,
+    and every product recorded beside it was +236 or longer, so it is
+    banded "long". The 2026-11-11 live runs priced three-leg shortlists
+    aimed at +300 and up: "long". The 2026-11-12 rows carry their leg
+    count and product, and only the slips the engine could MEASURE are
+    used: a slip it refuses is often quoted above the product (B181) and
+    can never be a qualifier, so it must not set the target. Exchanges are
+    left out: see SGP_EXCHANGE_BOOKS.
     """
-    out = [("betmgm", n, x) for x, n
+    out = [("betmgm", n, x, "long") for x, n
            in zip(SGP_FACTORS_OBSERVED, SGP_FACTORS_OBSERVED_LEGS)]
     for rows in (SGP_FACTORS_LIVE_20261111, SGP_FACTORS_LIVE_20261111_3A):
-        out += [(book, 3, eng) for book, eng, _own in rows]
-    out += [(book, n, x) for book, n, x, measurable
-            in SGP_FACTORS_LIVE_20261112 if measurable]
+        out += [(book, 3, eng, "long") for book, eng, _own in rows]
+    out += [(book, n, x, price_band(product))
+            for book, n, x, measurable, product
+            in SGP_FACTORS_LIVE_20261112 + SGP_FACTORS_LIVE_20261112_RUN1
+            if measurable]
     return [r for r in out if r[0] not in SGP_EXCHANGE_BOOKS]
 
 
-def factors_by_book(n_legs=None) -> dict[str, list[float]]:
-    """Measured factors keyed by sportsbook; with `n_legs`, only the quotes
-    on slips of that many legs."""
+def factors_by_book(n_legs=None, band=None) -> dict[str, list[float]]:
+    """Measured factors keyed by sportsbook; `n_legs` and `band` each
+    narrow it to quotes on slips of that leg count / price band."""
     out: dict[str, list[float]] = {}
-    for book, n, x in factor_rows():
-        if n_legs is None or n == int(n_legs):
+    for book, n, x, bd in factor_rows():
+        if ((n_legs is None or n == int(n_legs))
+                and (band is None or bd == band)):
             out.setdefault(book, []).append(x)
     return out
 
@@ -3212,7 +3294,7 @@ def _lower_quartile(xs) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
 
 
-def _target_factor(book=None, n_legs=None) -> float:
+def _target_factor(book=None, n_legs=None, price=None) -> float:
     """The quote/product factor a same-game product is aimed with.
 
     B161 (2026-11-11): the LOWER QUARTILE, not the median — a miss voids a
@@ -3222,29 +3304,47 @@ def _target_factor(book=None, n_legs=None) -> float:
     of the book's pricer, so one pooled figure aims one book's slips too
     low and another's too high. Dustin's boosts sit at three books.
 
-    B179 (2026-11-13, after the game-day quotes): PER LEG COUNT as well,
-    where that book has enough quotes at that count. A two-leg slip is
-    quoted much closer to its product than a three-leg one.
+    B179 / B191 (2026-11-13, after the game-day quotes): PER LEG COUNT and
+    PER PRICE BAND as well, where the book has enough quotes. A two-leg
+    slip is quoted closer to its product than a three-leg one, and a short
+    slip closer than a long one.
 
-    Falls back in order: the book's quotes at this leg count, the book's
-    quotes at any count, every sportsbook pooled. Each step needs
-    MIN_QUOTES_FOR_BOOK_FACTOR quotes.
+    `price` is the boost's minimum (or a slip's product), in American
+    odds. Falls back in order, each step needing
+    MIN_QUOTES_FOR_BOOK_FACTOR quotes: book + leg count + band; book +
+    band; book; every sportsbook pooled.
     """
-    return target_factor_detail(book, n_legs)[0]
+    return target_factor_detail(book, n_legs, price)[0]
 
 
-def _factor_sample(book=None, n_legs=None) -> tuple[list[float], str]:
-    """(the quotes that describe this book and leg count, what they are)."""
+def _factor_sample(book=None, n_legs=None, price=None
+                   ) -> tuple[list[float], str]:
+    """(the quotes that describe this book, leg count and price band, and
+    what they are)."""
     key = _book_key(book)
-    if key and n_legs is not None:
-        xs = factors_by_book(n_legs).get(key)
-        if xs and len(xs) >= MIN_QUOTES_FOR_BOOK_FACTOR:
-            return xs, f"{key}'s own {int(n_legs)}-leg quotes"
+    band = price_band(price)
+    enough = lambda xs: bool(xs) and len(xs) >= MIN_QUOTES_FOR_BOOK_FACTOR
+    if key:
+        if n_legs is not None and band:
+            xs = factors_by_book(n_legs, band).get(key)
+            if enough(xs):
+                return xs, f"{key}'s own {int(n_legs)}-leg {band}-priced quotes"
+        if band:
+            xs = factors_by_book(None, band).get(key)
+            if enough(xs):
+                return xs, (f"{key}'s own {band}-priced quotes"
+                            + (f" at every leg count (too few "
+                               f"{int(n_legs)}-leg ones)"
+                               if n_legs is not None else ""))
+        elif n_legs is not None:
+            xs = factors_by_book(n_legs).get(key)
+            if enough(xs):
+                return xs, f"{key}'s own {int(n_legs)}-leg quotes"
     xs = factors_by_book().get(key) if key else None
-    if xs and len(xs) >= MIN_QUOTES_FOR_BOOK_FACTOR:
+    if enough(xs):
         why = f"{key}'s own quotes"
-        if n_legs is not None:
-            why += f" at every leg count (too few {int(n_legs)}-leg ones)"
+        if n_legs is not None or band:
+            why += " at every leg count and price (too few closer ones)"
         return xs, why
     pooled = sportsbook_factors()
     return pooled, ("all sportsbooks pooled"
@@ -3253,20 +3353,21 @@ def _factor_sample(book=None, n_legs=None) -> tuple[list[float], str]:
                        f" (no quotes on file for {key})" if key else ""))
 
 
-def target_factor_detail(book=None, n_legs=None) -> tuple[float, str, int]:
+def target_factor_detail(book=None, n_legs=None, price=None
+                         ) -> tuple[float, str, int]:
     """(factor, which data it came from, n)."""
-    xs, why = _factor_sample(book, n_legs)
+    xs, why = _factor_sample(book, n_legs, price)
     return _lower_quartile(xs), why, len(xs)
 
 
-def expected_factor(book=None, n_legs=None) -> float:
+def expected_factor(book=None, n_legs=None, price=None) -> float:
     """MEDIAN quote/product factor for a book — the expected quote.
 
     Same data and same fallback as `target_factor_detail`, at the median
     instead of the lower quartile: targeting wants to be safe, an expected
     EV wants to be central.
     """
-    xs = sorted(_factor_sample(book, n_legs)[0])
+    xs = sorted(_factor_sample(book, n_legs, price)[0])
     n = len(xs)
     return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
 
@@ -3634,9 +3735,10 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
     # The slip is bet at ONE book; if the pool somehow mixes books, aim with
     # the harshest of them rather than guess which one the slip lands at.
     _books = sorted({_book_key(l.book) for l in kept})
-    _fd = (min((target_factor_detail(b, legs_per_slip) for b in _books),
+    _fd = (min((target_factor_detail(b, legs_per_slip, floor)
+                for b in _books),
                key=lambda t: t[0]) if _books
-           else target_factor_detail(None, legs_per_slip))
+           else target_factor_detail(None, legs_per_slip, floor))
     sgp_factor = (_fd[0] if mode != "cross-game" else 1.0)
     target_dec = fl_dec / sgp_factor
     n_below_target = 0
@@ -3898,9 +4000,9 @@ def enumerate_candidates(legs, meta=None, *, boost_pct: float | None = None,
         _bk = "/".join(_books) or "unknown book"
         # The SAME sample the factor came from, so the range and the n
         # in this note describe one set of quotes.
-        _fx = min((_factor_sample(b, legs_per_slip) for b in _books),
+        _fx = min((_factor_sample(b, legs_per_slip, floor) for b in _books),
                   key=lambda t: _lower_quartile(t[0]))[0] if _books \
-            else _factor_sample(None, legs_per_slip)[0]
+            else _factor_sample(None, legs_per_slip, floor)[0]
         worst = min(_fx)
         build_notes.append(
             f"same-game products are aimed at {american(target_dec):+.0f}, "

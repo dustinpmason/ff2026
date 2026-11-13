@@ -718,14 +718,16 @@ appears only in the rare case the ceiling is still positive.
 condition on the book's real quote, and B55 measured same-game quotes at
 0.77–0.99 of the product. So `enumerate_candidates` aims the product at
 floor / (lower quartile of the measured quote/product factor **for the
-book the legs are priced at, and for the number of legs in the slip where
-that book has enough quotes at that count**). As of 2026-11-13, for a +300
-floor on a three-leg slip that is about +344 at DraftKings, +338 at FanDuel
-and +389 at BetMGM; a two-leg BetMGM slip is aimed at about +325; any other
-book gets the pooled figure, about +346. Always pass `legs_per_slip`, or
-the leg count cannot be used. Quotes on slips the engine refuses are left
-out of these figures: books quote those ABOVE the product and they can
-never qualify. Roughly one quote in four is still expected to
+book the legs are priced at, for the number of legs in the slip, and for
+the price band of the boost's minimum** (short = under +200, long = +200
+and up), wherever that book has at least 8 quotes that close; otherwise it
+widens to the book, then to all books. As of 2026-11-13, three-leg slips
+against a +300 minimum are aimed at about +344 at DraftKings, +346 at
+FanDuel and +382 at BetMGM. A two-leg BetMGM slip is aimed at about +333
+for +300 and +441 for +400; BetMGM's -300 token at about -274. Always pass
+`legs_per_slip` and the boost's real `floor`, or neither can be used.
+Quotes on slips the engine refuses are left out of these figures: books
+often quote those ABOVE the product and they can never qualify. Roughly one quote in four is still expected to
 come in under. **Build the pool from the book Dustin's boost is at**, since
 the same players are aimed differently at each book — and
 `build_notes` states the target, the factor and the worst case. It is a
