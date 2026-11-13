@@ -9439,6 +9439,11 @@ _src84 = _sr84("source")
 chk("the same split works by fair source",
     _src84.get("kalshi", {}).get("legs") == 2
     and _src84.get("unrecorded", {}).get("legs") == 1, str(_src84)[:200])
+chk("free text after the book name does not split the source groups",
+    ff_betlog._source_key("Pinnacle +129/-157, liq 1000") == "pinnacle"
+    and ff_betlog._source_key("Kalshi 24.5 -223/+203, thin side $86")
+    == "kalshi" and ff_betlog._source_key(None) == "unrecorded"
+    and ff_betlog._source_key("  ") == "unrecorded")
 try:
     _txt84 = ff_betlog.side_summary(_bets84)
 except Exception as e:

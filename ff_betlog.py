@@ -1089,8 +1089,14 @@ def _side_key(side) -> str:
 
 
 def _source_key(src) -> str:
-    s = norm_book(src)
-    return s or "unrecorded"
+    """The book a fair came from: the FIRST word of `fair_source`.
+
+    The first night's log wrote free text after the name ("Pinnacle
+    +129/-157, liq 1000"), which made one group per leg and defeated the
+    split.
+    """
+    m = re.match(r"[^A-Za-z0-9]*([A-Za-z0-9]+)", str(src or ""))
+    return norm_book(m.group(1)) if m else "unrecorded"
 
 
 def side_rows(bets: list[dict] | None = None, by: str = "side") -> list[dict]:
