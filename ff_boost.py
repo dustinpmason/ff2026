@@ -4309,6 +4309,26 @@ def fair_uncertainty(legs, quotes=None) -> tuple[float, str]:
     """
     if not quotes:
         return FAIR_UNCERTAINTY_FALLBACK, "no quotes supplied, using the measured fallback"
+    # B184. The answer depends on the BOARD, not on the slip, and one board
+    # is asked about thousands of times in a shortlist build: every gate,
+    # floor and ordering key comes through here. Re-measuring it each time
+    # was 99% of a 10-minute DraftKings build on 2026-11-12. One entry, held
+    # by the list object itself so its identity cannot be reused, and
+    # dropped if the list's length changes.
+    global _FAIR_U_CACHE
+    _c = _FAIR_U_CACHE
+    if _c is not None and _c[0] is quotes and _c[1] == len(quotes):
+        return _c[2]
+    out = _measure_fair_uncertainty(quotes)
+    _FAIR_U_CACHE = (quotes, len(quotes), out)
+    return out
+
+
+_FAIR_U_CACHE = None
+
+
+def _measure_fair_uncertainty(quotes) -> tuple[float, str]:
+    """The measurement behind `fair_uncertainty`, uncached."""
     from ff_props import devig as _dv, norm_player as _np
     by_leg: dict[tuple, list[float]] = {}
     for q in quotes:

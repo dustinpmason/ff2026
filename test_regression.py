@@ -9566,5 +9566,193 @@ chk("a probability outside (0, 1) and a zero stake are refused",
     "_err" in _bb(1.0, 100) and "_err" in _bb(0.0, 100)
     and "_err" in _bb(0.5, 100, 0))
 
+# ===========================================================================
+# 86. B184 — the board's noise is measured once per board, not once per ask
+# ===========================================================================
+
+section("86. shortlist build speed: one noise measurement per board")
+
+_pl86, _pm86 = _ladder_pool()
+
+
+def _q86(spread=4):
+    out = []
+    for j in range(7):
+        for b, d in (("draftkings", 0), ("pinnacle", spread)):
+            out.append({"player": f"Player{j}", "market": "player_reception_yds",
+                        "line": 49.5, "book": b, "over": -115 + d,
+                        "under": -105 - d})
+    return out
+
+
+def _count86(fn):
+    calls = []
+    real = ff_boost._measure_fair_uncertainty
+    def spy(quotes):
+        calls.append(len(quotes))
+        return real(quotes)
+    ff_boost._measure_fair_uncertainty = spy
+    ff_boost._FAIR_U_CACHE = None
+    try:
+        out = fn()
+    except Exception as e:
+        out = f"{type(e).__name__}: {e}"
+    finally:
+        ff_boost._measure_fair_uncertainty = real
+    return len(calls), out
+
+
+_qa = _q86()
+_n86, _sl86 = _count86(lambda: ff_boost.enumerate_candidates(
+    _pl86, _pm86, mode="single-game", event_id="E1", boost_pct=0.50,
+    legs_per_slip=3, floor=300, ceiling=900, quotes=_qa))
+chk("a whole shortlist build measures the board ONCE",
+    _n86 == 1 and not isinstance(_sl86, str) and len(_sl86.candidates) > 0,
+    f"{_n86} measurement(s); {str(_sl86)[:120]}")
+chk("and the noise it reports is still the measured one",
+    not isinstance(_sl86, str)
+    and "measured from 7 legs" in ff_boost.fair_uncertainty([], _qa)[1])
+
+
+def _sig86(sl):
+    return [(c.key, round(c.independent_odds, 9), c.verdict,
+             [(l.player, l.line, l.side, l.odds) for l in c.legs])
+            for c in sl.candidates] + [sl.build_notes, sl.outlook, sl.reason]
+
+
+def _uncached86():
+    real = ff_boost.fair_uncertainty
+    ff_boost.fair_uncertainty = lambda legs, quotes=None: (
+        ff_boost._measure_fair_uncertainty(quotes) if quotes
+        else real(legs, quotes))
+    try:
+        return _sig86(ff_boost.enumerate_candidates(
+            _pl86, _pm86, mode="single-game", event_id="E1", boost_pct=0.50,
+            legs_per_slip=3, floor=300, ceiling=900, quotes=_qa))
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    finally:
+        ff_boost.fair_uncertainty = real
+
+
+chk("the shortlist is IDENTICAL with the measurement repeated every time",
+    not isinstance(_sl86, str) and _sig86(_sl86) == _uncached86())
+_qb = _q86(spread=12)
+chk("a different board is measured afresh, not answered from the last one",
+    ff_boost.fair_uncertainty([], _qb)[0] > ff_boost.fair_uncertainty([], _qa)[0]
+    and ff_boost.fair_uncertainty([], _qb) == ff_boost._measure_fair_uncertainty(_qb))
+_qc = _q86()
+_u1 = ff_boost.fair_uncertainty([], _qc)
+_qc.extend({"player": f"Extra{j}", "market": "player_rush_yds", "line": 20.5,
+            "book": b, "over": -110 + d, "under": -110 - d}
+           for j in range(3) for b, d in (("draftkings", 0), ("pinnacle", 30)))
+chk("a list that GREW is measured again",
+    "measured from 10 legs" in ff_boost.fair_uncertainty([], _qc)[1]
+    and "measured from 7 legs" in _u1[1])
+chk("no quotes still says so, and is not served from the cache",
+    "no quotes supplied" in ff_boost.fair_uncertainty([], None)[1])
+
+# ===========================================================================
+# 87. B196 — every recommended slip is logged, not only the placed ones
+# ===========================================================================
+
+section("87. recommended slips")
+
+
+def _rl87(player, side, odds, fair, src="pinnacle", line=1.5,
+          market="player_receptions"):
+    return {"player": player, "market": market, "line": line, "side": side,
+            "odds": odds, "fair_p": fair, "fair_source": src}
+
+
+def _try87(fn):
+    try:
+        return fn(), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+_before87 = len(ff_betlog.slip_recs())
+_ra, _ea = _try87(lambda: ff_betlog.log_slip_rec(
+    "fanduel", [_rl87("Van Jefferson", "under", -245, 0.675, "kalshi"),
+                _rl87("Cam Skattebo", "UNDER", -140, 0.587)],
+    event_id=53178, quote=329, boost_pct=0.30, p_cash=0.215, ev=0.134,
+    tier="B", call="Use"))
+_rb, _eb = _try87(lambda: ff_betlog.log_slip_rec(
+    "fanduel", [_rl87("Van  Jefferson", "UNDER", -245, 0.675, "kalshi"),
+                _rl87("Malik Nabers", "OVER", 154, 0.36, line=6.5)],
+    event_id="53178", quote=314, boost_pct=0.30, placed=True, bet_id="b1"))
+chk("a recommended slip is logged with its legs",
+    _ra is not None and _ra["kind"] == "slip_rec" and len(_ra["legs"]) == 2
+    and _ra["legs"][0]["side"] == "UNDER", _ea)
+chk("it needs event_id, like every other record",
+    "event_id" in _try87(lambda: ff_betlog.log_slip_rec(
+        "fanduel", [_rl87("A", "OVER", -110, .5)]))[1])
+chk("a leg with no price is refused: without it there is no CLV",
+    "CLV" in _try87(lambda: ff_betlog.log_slip_rec(
+        "fanduel", [{"player": "A", "market": "m", "side": "OVER"}],
+        event_id=1))[1])
+chk("an unreadable side is refused",
+    "side" in _try87(lambda: ff_betlog.log_slip_rec(
+        "fanduel", [_rl87("A", "MAYBE", -110, .5)], event_id=1))[1])
+chk("a fair written as a percentage is refused",
+    _try87(lambda: ff_betlog.log_slip_rec(
+        "fanduel", [_rl87("A", "OVER", -110, 52.0)], event_id=1))[0] is None)
+_rt, _ = _try87(lambda: ff_betlog.log_slip_rec(
+    "fanduel", [_rl87("Test Only", "OVER", -110, .5)], event_id=1,
+    is_test=True))
+chk("a test slip is kept out of the live set",
+    len(ff_betlog.slip_recs()) == _before87 + 2
+    and len(ff_betlog.slip_recs(include_test=True)) == _before87 + 3)
+_mine87 = [r for r in ff_betlog.slip_recs()
+           if _ra and _rb and r["id"] in (_ra["id"], _rb["id"])]
+_dl87, _ed87 = _try87(lambda: ff_betlog.recommended_legs(_mine87))
+chk("the same leg in two slips is ONE observation (spacing and case aside)",
+    _dl87 is not None and len(_dl87) == 3, _ed87 or str(len(_dl87 or [])))
+chk("nothing graded yet reads as that, not as a table",
+    "none graded yet" in _try87(
+        lambda: ff_betlog.recommended_summary(_mine87))[0])
+_g87, _eg87 = _try87(lambda: ff_betlog.grade_slip_rec_leg(
+    _ra["id"], 0, "WIN", actual=0, closing_odds=-260))
+_try87(lambda: ff_betlog.grade_slip_rec_leg(_ra["id"], 1, "LOSS", actual=3,
+                                            closing_odds=-140))
+_mine87 = [r for r in ff_betlog.slip_recs()
+           if _ra and _rb and r["id"] in (_ra["id"], _rb["id"])]
+_dl87, _ = _try87(lambda: ff_betlog.recommended_legs(_mine87))
+_vj87 = next((l for l in (_dl87 or []) if "Jefferson" in l["player"]), {})
+chk("a grade on one copy of a leg serves the other copy",
+    _g87 is not None and _vj87.get("result") == "WIN"
+    and _vj87.get("closing_odds") == -260, _eg87 or str(_vj87))
+chk("and the leg is marked placed because one of its slips was",
+    _vj87.get("placed") is True)
+chk("grading a slip or a leg that does not exist is refused",
+    "no recommended slip" in _try87(
+        lambda: ff_betlog.grade_slip_rec_leg("nope", 0, "WIN"))[1]
+    and "no leg 9" in _try87(
+        lambda: ff_betlog.grade_slip_rec_leg(_ra["id"], 9, "WIN"))[1])
+_rx, _ = _try87(lambda: ff_betlog.log_slip_rec(
+    "betmgm", [_rl87("Stefon Diggs", "OVER", -160, 0.595, line=3.5)],
+    event_id=53178))
+_ry, _ = _try87(lambda: ff_betlog.log_slip_rec(
+    "betmgm", [_rl87("Stefon Diggs", "OVER", -160, 0.595, line=3.5)],
+    event_id=53178))
+_try87(lambda: ff_betlog.grade_slip_rec_leg(_ry["id"], 0, "WIN", actual=5,
+                                            closing_odds=-175))
+_xy87, _ = _try87(lambda: ff_betlog.recommended_legs(
+    [r for r in ff_betlog.slip_recs() if r["id"] in (_rx["id"], _ry["id"])]))
+chk("the GRADED copy is the one kept, even when it was logged second",
+    _xy87 is not None and len(_xy87) == 1 and _xy87[0].get("result") == "WIN"
+    and _xy87[0].get("closing_odds") == -175, str(_xy87)[:200])
+_tx87, _et87 = _try87(lambda: ff_betlog.recommended_summary(_mine87))
+chk("the summary counts distinct legs and splits them by side and source",
+    _tx87 is not None and "3; 2 of them on slips Dustin placed" in _tx87
+    and "BY SIDE" in _tx87 and "recommended legs" in _tx87
+    and "UNDER" in _tx87 and "kalshi" in _tx87
+    and "won 1 of 2 where the fairs predicted 1.3" in _tx87,
+    _et87 or str(_tx87)[:400])
+chk("recommended slips do not leak into the placed-bet or verdict records",
+    all(r.get("kind") not in ff_betlog.SLIP_REC_KINDS
+        for r in ff_betlog._bets() + ff_betlog._recs()))
+
 _summary()
 raise SystemExit(1 if fails else 0)

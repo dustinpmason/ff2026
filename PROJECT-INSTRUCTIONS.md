@@ -375,6 +375,24 @@ line used to show the call without them, which is how a documented example
 quietly disables a protection. With both, `grade_leg` REFUSES a grade whose
 closing fair line came from the book the bet was placed at.
 
+**Log every slip you RECOMMEND, not only the ones Dustin places.** On every
+boost run, after the tables, call `ff_betlog.log_slip_rec(book, legs,
+event_id=..., quote=..., boost_pct=..., p_cash=..., ev=..., tier=...,
+call=...)` once for each slip in the closing "Top slip per boost" table and
+each Tier A / Tier B qualifier (a straight bet is a one-leg slip). Each leg
+is a dict with `player`, `market`, `line`, `side`, `odds` (the price at the
+boost's book), `fair_p` and `fair_source` — the BOOK NAME ONLY ("pinnacle",
+"kalshi"); put pull times and liquidity in `note`. When Dustin places one,
+log it with `log_bet` as usual AND pass `placed=True, bet_id=...` on its
+slip record. This is a record only and feeds nothing; it exists because
+placed bets alone give about eight legs a game. Upload the log to Drive
+after logging, as for bets. When grading a game, grade every recommended
+leg too: `grade_slip_rec_leg(rec_id, leg_index, result, actual=...,
+closing_odds=...)` with the closing price at the slip's book. A leg that
+sits in several slips needs grading once. `bet_summary()` then prints a
+RECOMMENDED LEGS section, by side and by fair source, over every distinct
+recommended leg; report it with the placed-legs tables.
+
 **Log every leg with its `side`, `fair_p` and `fair_source`, and grade every
 leg with `closing_odds`.** `bet_summary()` then prints placed legs split BY
 SIDE and BY FAIR SOURCE: CLV, and wins against the wins the fairs predicted.

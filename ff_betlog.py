@@ -1077,6 +1077,10 @@ def bet_summary() -> str:
     if _sides:
         L.append("")
         L.append(_sides)
+    _recd = recommended_summary()
+    if _recd:
+        L.append("")
+        L.append(_recd)
     return "\n".join(x for x in L if x != "")
 
 
@@ -1179,6 +1183,168 @@ def side_summary(bets: list[dict] | None = None) -> str:
                        f"{', '.join(small)}. Legs from one game move "
                        f"together, so the real sample is smaller still.")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Recommended slips (B196) — every slip the engine put in front of Dustin
+# ---------------------------------------------------------------------------
+#
+# Placed bets give about eight legs a game. At that rate the question B188
+# asks (are the UNDERs and the thin-anchor legs an edge or noise?) takes a
+# month to reach 30 legs a group. The engine recommends several times as
+# many legs as Dustin bets, and each of them has a closing line. Logging
+# them costs nothing and is purely a record: nothing here feeds pricing.
+
+SLIP_REC_KINDS = {"slip_rec", "slip_rec_leg_grade"}
+_REC_SIDES = ("OVER", "UNDER", "YES", "NO")
+
+
+def log_slip_rec(book: str, legs: list[dict], *, event_id=_MUST_PASS,
+                 quote: float | None = None, boost_pct: float | None = None,
+                 p_cash: float | None = None, ev: float | None = None,
+                 tier: str = "", call: str = "", placed: bool = False,
+                 bet_id: str | None = None, note: str = "",
+                 is_test: bool = False) -> dict:
+    """Record one slip the engine recommended, bet or not.
+
+    `legs` are dicts with player, market, line, side, odds, fair_p and
+    fair_source (the BOOK name only, e.g. "pinnacle" — detail goes in
+    `note`). Log every slip in the closing table and every Tier A / Tier B
+    qualifier, at the time it is shown. Set `placed=True` and `bet_id` for a
+    slip Dustin bet, so its legs are not counted twice beside `log_bet`'s.
+    """
+    if not legs:
+        raise ValueError("log_slip_rec() needs at least one leg")
+    clean = []
+    for i, l in enumerate(legs):
+        if not isinstance(l, dict):
+            raise ValueError(f"leg {i} is not a dict")
+        side = str(l.get("side") or "").strip().upper()
+        if side not in _REC_SIDES:
+            raise ValueError(f"leg {i} side must be one of {_REC_SIDES}, "
+                             f"got {l.get('side')!r}")
+        if not l.get("player") or not l.get("market"):
+            raise ValueError(f"leg {i} needs player and market")
+        if _num(l.get("odds")) is None:
+            raise ValueError(f"leg {i} needs the price taken at the book "
+                             f"(odds); without it there is no CLV")
+        fp = l.get("fair_p")
+        clean.append({
+            "player": l["player"], "market": l["market"],
+            "line": _num(l.get("line")), "side": side,
+            "odds": float(l["odds"]),
+            "fair_p": None if fp is None else _check_prob(fp, "fair_p"),
+            "fair_source": str(l.get("fair_source") or ""),
+            "result": None, "actual": None, "closing_odds": None})
+    return _append({
+        "id": uuid.uuid4().hex[:12], "kind": "slip_rec",
+        "logged_at": _now(), "book": book,
+        "event_id": _resolve_event_id(event_id, "log_slip_rec"),
+        "quote": None if quote is None else float(quote),
+        "boost_pct": None if boost_pct is None else float(boost_pct),
+        "p_cash": None if p_cash is None else _check_prob(p_cash, "p_cash"),
+        "ev": None if ev is None else float(ev),
+        "tier": tier, "call": call, "placed": bool(placed),
+        "bet_id": bet_id, "note": note,
+        **({TEST_FLAG: True} if is_test else {}),
+        "legs": clean})
+
+
+def grade_slip_rec_leg(rec_id: str, leg_index: int, result: str,
+                       actual: float | None = None,
+                       closing_odds: float | None = None) -> dict:
+    """Append a grade for one leg of a recommended slip."""
+    if result not in ("WIN", "LOSS", "PUSH", "VOID"):
+        raise ValueError(f"result must be WIN/LOSS/PUSH/VOID, got {result!r}")
+    hit = next((r for r in _read_all() if r.get("kind") == "slip_rec"
+                and r.get("id") == rec_id), None)
+    if hit is None:
+        raise ValueError(f"no recommended slip with id {rec_id!r}")
+    if not 0 <= int(leg_index) < len(_legs(hit)):
+        raise ValueError(f"slip {rec_id} has {len(_legs(hit))} leg(s); "
+                         f"no leg {leg_index}")
+    return _append({
+        "id": uuid.uuid4().hex[:12], "kind": "slip_rec_leg_grade",
+        "logged_at": _now(), "rec_id": rec_id, "leg_index": int(leg_index),
+        "result": result, "actual": actual,
+        "closing_odds": None if closing_odds is None else float(closing_odds)})
+
+
+def slip_recs(include_test: bool = False) -> list[dict]:
+    """Recommended slips with their leg grades folded on."""
+    rows = [r for r in _read_all() if r.get("kind") in SLIP_REC_KINDS]
+    by_id = {}
+    for r in rows:
+        if r.get("kind") == "slip_rec" and (include_test
+                                            or not r.get(TEST_FLAG)):
+            c = dict(r)
+            c["legs"] = [dict(l) for l in _legs(r)]
+            by_id[r["id"]] = c
+    for r in rows:
+        if r.get("kind") == "slip_rec_leg_grade" and r.get("rec_id") in by_id:
+            legs = by_id[r["rec_id"]]["legs"]
+            i = r.get("leg_index")
+            if isinstance(i, int) and 0 <= i < len(legs):
+                legs[i]["result"] = r.get("result")
+                if r.get("actual") is not None:
+                    legs[i]["actual"] = r["actual"]
+                if r.get("closing_odds") is not None:
+                    legs[i]["closing_odds"] = r["closing_odds"]
+    return list(by_id.values())
+
+
+def _leg_identity(event_id, book, l) -> tuple:
+    """One bet on one outcome at one book. The same leg sits in many
+    recommended slips and is ONE observation, not one per slip."""
+    from ff_props import norm_player as _np
+    return (_norm_event(event_id), norm_book(book),
+            _np(str(l.get("player") or "")), str(l.get("market") or ""),
+            _num(l.get("line")), _side_key(l.get("side")))
+
+
+def recommended_legs(recs: list[dict] | None = None) -> list[dict]:
+    """Every DISTINCT leg the engine recommended, graded where it has been.
+
+    A leg in eight slips counts once. Where the copies disagree, the first
+    one that carries a closing price (then a result) is kept, so a grade
+    entered on any one slip serves all of them.
+    """
+    if recs is None:
+        recs = slip_recs()
+    best: dict[tuple, dict] = {}
+    for r in recs:
+        for l in _legs(r):
+            k = _leg_identity(r.get("event_id"), r.get("book"), l)
+            cur = best.get(k)
+            score = ((_num(l.get("closing_odds")) is not None)
+                     + (l.get("result") in ("WIN", "LOSS", "PUSH", "VOID")))
+            if cur is None or score > cur["_score"]:
+                d = dict(l)
+                d["_score"] = score
+                d["placed"] = bool(r.get("placed")) or (
+                    cur is not None and cur.get("placed", False))
+                best[k] = d
+            elif r.get("placed"):
+                cur["placed"] = True
+    return [best[k] for k in sorted(best, key=str)]
+
+
+def recommended_summary(recs: list[dict] | None = None) -> str:
+    """BY SIDE and BY FAIR SOURCE over every distinct recommended leg; ""
+    when no recommended leg has a closing price or a result yet."""
+    legs = recommended_legs(recs)
+    if not legs:
+        return ""
+    fake = [{"id": "recommended", "kind": "bet", "legs": legs}]
+    body = side_summary(fake)
+    if not body:
+        return (f"  RECOMMENDED LEGS: {len(legs)} distinct leg(s) logged, "
+                f"none graded yet. Grade them with grade_slip_rec_leg().")
+    n_placed = sum(1 for l in legs if l.get("placed"))
+    return (f"  RECOMMENDED LEGS — every distinct leg the engine put forward "
+            f"({len(legs)}; {n_placed} of them on slips Dustin placed). "
+            f"Same reading as the placed-legs tables.\n"
+            + body.replace("placed legs only", "recommended legs"))
 
 
 def _check_prob(p, name: str) -> float | None:
