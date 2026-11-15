@@ -2248,6 +2248,18 @@ agreement. A percentage is refused at construction — pass 0.72, not 72.
 **Read `NOTHING FOUND AGAINST IT` literally.** It is deliberately not
 "good". It means every check that could run, ran, and none fired.
 
+## A boost at a book PropLine does not carry (Bet365) — `ff_boost.needed_odds`
+
+Build the slip from another book's lines (DraftKings by default) and say
+that the prices are stand-ins. The deliverable is the price the slip
+needs, not an EV: `needed_odds(p_cash, boost_pct)` is the shortest price
+at which it breaks even after the boost, and
+`needed_odds(p_cash, boost_pct, 0.10)` the price for +10%. Use the slip's
+floor or adjusted estimate for `p_cash`. Dustin reads the real price off
+the bet slip and compares. Always give several slips that share no leg,
+and say that a different line at that book voids the P(cash). Once he
+reports the real price, compute the EV and give the call.
+
 ## Bonus bets (profit only) — `ff_boost.bonus_bet_ev`
 
 A bonus bet pays the profit and keeps the stake, so it cannot lose money;

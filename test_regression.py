@@ -9850,5 +9850,38 @@ _sl88 = ff_boost.Shortlist(candidates=[_tg, _ok88], mode="cross-game",
 chk("the shortlist counts its too-good slips",
     _sl88.too_good_slips == (1, 2), str(_sl88.too_good_slips))
 
+# ===========================================================================
+# 89. The price a slip needs, for a book the engine cannot quote
+# ===========================================================================
+
+section("89. needed_odds")
+
+
+def _no(p, b, t=0.0):
+    try:
+        return ff_boost.needed_odds(p, b, t)
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def _ev89(p, am, b):
+    d = ff_boost.to_decimal(am)
+    return p * (d - 1) * (1 + b) - (1 - p)
+
+
+chk("at the needed price the boosted EV is exactly zero",
+    all(abs(_ev89(p, _no(p, b), b)) < 1e-9
+        for p, b in ((.35, .5), (.2, .25), (.6, .5), (.1, .1))))
+chk("and exactly the target when one is asked for",
+    abs(_ev89(.35, _no(.35, .5, .10), .5) - .10) < 1e-9)
+chk("a 35% slip at a 50% boost needs about +124; unboosted it needs +186",
+    abs(_no(.35, .5) - 123.8) < 0.2 and abs(_no(.35, 0) - 185.7) < 0.2,
+    f"{_no(.35, .5)} {_no(.35, 0)}")
+chk("a likelier slip needs a shorter price, a target needs a longer one",
+    _no(.5, .5) < _no(.35, .5) < _no(.35, .5, .10))
+chk("a probability outside (0, 1) and a negative boost are refused",
+    isinstance(_no(1.0, .5), str) and isinstance(_no(0, .5), str)
+    and isinstance(_no(.3, -.1), str))
+
 _summary()
 raise SystemExit(1 if fails else 0)

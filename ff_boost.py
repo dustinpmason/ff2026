@@ -4253,6 +4253,30 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
                            ("optimistic", 0.71))}
 
 
+def needed_odds(p_cash: float, boost_pct: float, target_ev: float = 0.0
+                ) -> float:
+    """The shortest American price at which a slip with this chance of
+    cashing returns `target_ev` after a profit boost.
+
+        p * (d - 1) * (1 + b) - (1 - p) = t   =>   d = 1 + ((1 + t)/p - 1)/(1 + b)
+
+    For a book the engine cannot quote (Bet365 is not on PropLine): the
+    slip is built from another book's lines, Dustin reads the real price
+    off the bet slip, and this is the number he compares it with. Pass the
+    slip's P(cash) FLOOR where that is what it has; the price is then safe
+    rather than exact. Filed 2026-11-14.
+    """
+    p = float(p_cash)
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"p_cash must be inside (0, 1), got {p_cash!r}")
+    if float(boost_pct) < 0:
+        raise ValueError(f"boost_pct must not be negative, got {boost_pct!r}")
+    if float(target_ev) <= -1.0:
+        raise ValueError(f"target_ev must be above -100%, got {target_ev!r}")
+    d = 1.0 + ((1.0 + float(target_ev)) / p - 1.0) / (1.0 + float(boost_pct))
+    return american(d)
+
+
 def bonus_bet_ev(fair_prob: float, odds: float, *, stake: float) -> dict:
     """What spending a BONUS BET (profit only, stake not returned) on one
     bet is worth, in cash.
