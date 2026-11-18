@@ -2249,8 +2249,13 @@ chk("a moved price at the opening limit is NOT anchor_opening",
 chk("but it IS anchor_untested, which is the B86 gap",
     _moved.anchor_untested)
 chk("so it still cannot carry an EV", _moved.anchor_immature)
-chk("and its note says the move is price discovery, not a tested price",
-    "price discovery" in (_moved.anchor_note or ""),
+# B240, 2026-11-18. This check used to pin "price discovery, not a tested
+# price". Measured on 17 games, the limit carries no information at a fixed
+# hour, so the note now reports the limit and says it is not evidence.
+chk("and its note reports the limit without calling the line untested",
+    "against a tier of" in (_moved.anchor_note or "")
+    and "NOT evidence the number is untested" in (_moved.anchor_note or "")
+    and "price discovery" not in (_moved.anchor_note or ""),
     str(_moved.anchor_note)[:90])
 chk("the two states are distinguishable, not collapsed",
     opening.anchor_opening and not opening.anchor_untested
@@ -10714,6 +10719,196 @@ chk("it accepts the JSON text and refuses something that is not a search",
                      ValueError))
 chk("write=False writes nothing",
     not (ff_betlog.LOG_DIR / "ff-betlog-20990101T000000Z.jsonl").exists())
+
+section("94. what the 2026-11-18 dry run found "
+        "(B240, B241, B242, B243, B244)")
+
+# --- B241. score_slip passes aliases, quotes and the boost's minimum -------
+import inspect as _insp94
+_sig94 = _insp94.signature(ff_boost.score_slip).parameters
+chk("score_slip accepts aliases, quotes and floor",
+    all(k in _sig94 for k in ("aliases", "quotes", "floor")))
+_seen94 = {}
+_real_mc94 = ff_boost.make_candidate
+
+
+def _spy_mc94(legs, meta=None, **kw):
+    _seen94.update(kw)
+    return _real_mc94(legs, meta, **kw)
+
+
+ff_boost.make_candidate = _spy_mc94
+try:
+    _q94 = [{"book": "x"}]
+    _al94 = {"A": "B"}
+    _ss94 = ff_boost.score_slip(
+        [_l93("K One", -110, 0.5238, ev="A", model_p=0.5),
+         _l93("K Two", -110, 0.5238, ev="B", model_p=0.5)],
+        boost_pct=0.30, book_odds=150.0, aliases=_al94, quotes=_q94,
+        floor=100)
+finally:
+    ff_boost.make_candidate = _real_mc94
+chk("and hands all three to make_candidate unchanged",
+    _seen94.get("aliases") is _al94 and _seen94.get("quotes") is _q94
+    and _seen94.get("floor") == 100, {k: type(v).__name__
+                                      for k, v in _seen94.items()})
+chk("so a +150 slip on a +100 boost clears through the slip checker too",
+    _ss94.candidate.min_odds == 100.0 and _ss94.candidate.clears_floor)
+_ss94b = ff_boost.score_slip(
+    [_l93("K One", -110, 0.5238, ev="A", model_p=0.5),
+     _l93("K Two", -110, 0.5238, ev="B", model_p=0.5)],
+    boost_pct=0.30, book_odds=150.0)
+chk("without floor it is still judged against the default, as before",
+    _ss94b.candidate.min_odds is None and not _ss94b.candidate.clears_floor)
+
+# --- B242. the chance to cash a needed price should be worked from ---------
+_ind94 = ff_boost.make_candidate(
+    [_l93("P One", -110, 0.5238, ev="A"), _l93("P Two", -110, 0.5238, ev="B")],
+    boost_pct=0.30)
+chk("an independent slip prices from its own P(cash)",
+    _ind94.p_cash is not None
+    and _ind94.p_cash_for_pricing == _ind94.p_cash)
+
+
+class _J94:
+    def __init__(self, rel):
+        self.rel = rel
+
+
+class _C94(ff_boost.Candidate):
+    _rel = 0.0
+    p_cash = property(lambda self: None)
+    p_cash_floor = property(lambda self: 0.20)
+    joint = property(lambda self: _J94(self._rel))
+
+
+def _c94(rel):
+    c = _C94.__new__(_C94)
+    c._rel = rel
+    return c
+
+
+chk("a product that OVERSTATES the joint is cut by the overstatement",
+    abs(_c94(-0.05).p_cash_for_pricing - 0.19) < 1e-12)
+chk("a true floor is used as it stands, never raised",
+    _c94(0.04).p_cash_for_pricing == 0.20
+    and _c94(0.0).p_cash_for_pricing == 0.20)
+chk("and the needed price is longer on the adjusted figure",
+    ff_boost.needed_odds(_c94(-0.05).p_cash_for_pricing, 0.30)
+    > ff_boost.needed_odds(0.20, 0.30))
+
+# --- B243. the fair's SOURCE is its first word ------------------------------
+chk("a sentence that only mentions Pinnacle is not a Pinnacle fair",
+    ff_boost.leg_verified(_l93("X One", -115, 0.52,
+                               src="bovada (pinnacle dropped by the feed)"),
+                          4.0)[0] is False)
+chk("the thread's own wording for a hand de-vigged Pinnacle price passes",
+    ff_boost.leg_verified(_l93(
+        "X Two", -115, 0.52,
+        src="pinnacle (two-sided get_odds price, de-vigged here; EV "
+            "endpoint dropped Pinnacle)"), 4.0) == (True, ""))
+chk("capitals and punctuation on the source do not matter",
+    ff_boost.leg_verified(_l93("X Three", -115, 0.52, src="Pinnacle;"),
+                          4.0)[0] is True)
+
+# --- B240. the limit note stops calling a line untested ---------------------
+_ln94 = _l93("N One", -115, 0.52, anchor_liquidity=250.0,
+             opening_liquidity_tier=250.0)
+chk("a line at the board's limit still raises the flag it always did",
+    _ln94.anchor_untested and _ln94.anchor_immature)
+chk("but the note no longer says it is untested, and points at the test",
+    "OPENING limit" not in _ln94.anchor_note
+    and "not a market-tested" not in _ln94.anchor_note
+    and "NOT evidence the number is untested" in _ln94.anchor_note
+    and "leg_verified" in _ln94.anchor_note, _ln94.anchor_note)
+_lk94 = _l93("N Two", -115, 0.4556, src="kalshi (via get_event_ev)",
+             anchor_liquidity=110.55)
+chk("an exchange is described as resting dollars, not as a limit or a tier",
+    _lk94.anchor_untested and "an exchange" in _lk94.anchor_note
+    and "$110.55" in _lk94.anchor_note
+    and "fallback" not in _lk94.anchor_note
+    and "OPENING" not in _lk94.anchor_note, _lk94.anchor_note)
+_lh94 = _l93("N Three", 100, 0.5, anchor_liquidity=250.0,
+             opening_liquidity_tier=250.0)
+_lt94 = _l93("N Four", -115, 0.52, src="kalshi", anchor_liquidity=3.0)
+_rp94 = ff_boost.report([ff_boost.make_candidate(
+    [_ln94, _l93("N Five", -115, 0.52, ev="B", anchor_liquidity=250.0,
+                 opening_liquidity_tier=250.0)], boost_pct=0.3)])
+chk("the report prints a limit as a plain note, not ** OPENING ANCHOR **",
+    "anchor limit: N One" in _rp94 and "** OPENING ANCHOR **" not in _rp94,
+    _rp94[-700:])
+_rp94b = ff_boost.report([ff_boost.make_candidate(
+    [_lh94, _l93("N Six", -115, 0.52, ev="B")], boost_pct=0.3)])
+_rp94c = ff_boost.report([ff_boost.make_candidate(
+    [_lt94, _l93("N Seven", -115, 0.52, ev="B")], boost_pct=0.3)])
+chk("an exact 0.5000 and a thin anchor keep the ** OPENING ANCHOR ** label",
+    "** OPENING ANCHOR ** N Three" in _rp94b
+    and "** OPENING ANCHOR ** N Four" in _rp94c)
+
+# --- B244. how long ago his last snap was -----------------------------------
+_sn94 = pd.DataFrame(
+    [dict(season=2099, game_type="REG", week=w, player="Gone Back",
+          pfr_player_id="GoneBa00", position="RB", team="ZZZ",
+          offense_snaps=30, offense_pct=p, game_id=f"g{w}")
+     for w, p in ((1, 0.55), (2, 0.60), (3, 0.58), (4, 0.57))]
+    + [dict(season=2099, game_type="REG", week=w, player="Here Mate",
+            pfr_player_id="HereMa00", position="WR", team="ZZZ",
+            offense_snaps=40, offense_pct=0.8, game_id=f"g{w}")
+       for w in (1, 2, 3, 4, 5, 6, 8, 9)])
+_ro94 = pd.DataFrame([dict(gsis_id="00-G", pfr_id="GoneBa00", position="RB",
+                           full_name="Gone Back"),
+                      dict(gsis_id="00-H", pfr_id="HereMa00", position="WR",
+                           full_name="Here Mate")])
+_wk94 = pd.DataFrame(
+    [dict(season=2099, season_type="REG", week=4, player_id="00-G",
+          player_display_name="Gone Back", position="RB", team="ZZZ"),
+     dict(season=2099, season_type="REG", week=9, player_id="00-H",
+          player_display_name="Here Mate", position="WR", team="ZZZ")])
+_tg94 = ff_props.snap_trend(_sn94, _ro94, _wk94, "Gone Back", season=2099)
+_th94 = ff_props.snap_trend(_sn94, _ro94, _wk94, "Here Mate", season=2099)
+chk("games his TEAM played since his last snap are counted, a bye is not",
+    _tg94.verdict == "STABLE" and _tg94.missed_games == 4
+    and _tg94.last_week == 4 and _tg94.last_team == "ZZZ" and _tg94.absent,
+    f"{_tg94.verdict} missed={_tg94.missed_games} reason={_tg94.reason}")
+chk("a player who played his team's last game has missed none",
+    _th94.missed_games == 0 and not _th94.absent
+    and _th94.absence_text() == "")
+chk("STABLE is unchanged by an absence, and so is the flag",
+    not _tg94.flagged)
+chk("describe() and the summary both say how long ago it was",
+    "NO SNAP SINCE WEEK 4: ZZZ has played 4 games since" in _tg94.describe()
+    and "ABSENT Gone Back: NO SNAP SINCE WEEK 4" in ff_props.snap_summary(
+        {"Gone Back": _tg94, "Here Mate": _th94})
+    and "ABSENT Here Mate" not in ff_props.snap_summary(
+        {"Gone Back": _tg94, "Here Mate": _th94}))
+_one94 = ff_props.SnapTrend(player="One Miss", verdict="STABLE",
+                            games=[(8, 0.7, 40), (9, 0.7, 40)],
+                            missed_games=1, last_team="ZZZ")
+chk("one missed game is reported but is not an absence",
+    not _one94.absent and "has played 1 game since" in _one94.absence_text())
+_ua94 = {(r.leg.player, r.leg.side): r for r in ff_boost.usable_legs(
+    [_l93("Gone Back", -115, 0.52), _l93("Gone Back", -115, 0.52,
+                                         side="UNDER"),
+     _l93("Here Mate", -115, 0.52)],
+    boost_pct=0.30, hours=4.0, snaps={"Gone Back": _tg94,
+                                      "Here Mate": _th94})}
+chk("an absent player is marked on BOTH sides of the usable table",
+    "no snap since Week 4 (4 team games)"
+    in _ua94[("Gone Back", "OVER")].snap_note
+    and "no snap since Week 4" in _ua94[("Gone Back", "UNDER")].snap_note
+    and _ua94[("Gone Back", "UNDER")].caution
+    and _ua94[("Here Mate", "OVER")].snap_note == "")
+_low94 = ff_props.SnapTrend(
+    player="Low Gone", verdict="LOW", missed_games=4, last_team="ZZZ",
+    games=[(2, 0.52, 30), (3, 0.63, 40), (4, 0.56, 35), (5, 0.14, 8)])
+chk("the caution names the week of 'his last game' and the absence",
+    "in his last game (Week 5)" in _low94.caution_text()
+    and "NO SNAP SINCE WEEK 5" in _low94.caution_text())
+_ul94 = ff_boost.usable_legs([_l93("Low Gone", -115, 0.52)], boost_pct=0.3,
+                             hours=4.0, snaps={"Low Gone": _low94})[0]
+chk("a flagged AND absent player's OVER carries both notes",
+    _ul94.snap_note == "snap share LOW; no snap since Week 5 (4 team games)",
+    _ul94.snap_note)
 
 _summary()
 raise SystemExit(1 if fails else 0)

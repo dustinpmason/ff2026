@@ -834,8 +834,10 @@ legs now carry their anchor's depth, so the report can say when a rung's
 level is an opening prior rather than a price. On the second live run 121
 of 306 rungs were pinned to a Pinnacle level at exactly 0.5000 on
 opening-limit money, and the slips built from them showed +3.6% to +15.9%
-EV with no warning. If the report prints `** OPENING ANCHOR **` or lists
-immature anchors on a rung slip, say so before quoting its EV.
+EV with no warning. If the report prints `** OPENING ANCHOR **` (an exact
+0.5000 or a thin anchor) on a rung slip, say so before quoting its EV. A
+line printed as `anchor limit:` is not a warning; see "How settled is an
+anchor".
 
 **A board pull has a 15-minute working life.** `screen_quotes` drops any
 quote older than 15 minutes, and a leg whose quotes were all dropped comes
@@ -2068,7 +2070,8 @@ measured, **only Pinnacle and Kalshi report liquidity at all** — DraftKings
   and taking that as the tier would flag every exact-0.5000 line as
   "opening" regardless of depth — on the very pull you bet from.
   **Report `Shortlist.tier_fallbacks` whenever an EV rests on
-  `anchor_opening`.** It counts leg-slots running on the hardcoded
+  `anchor_opening`** (an exact 0.5000; this is the one place the tier
+  still decides a flag). It counts leg-slots running on the hardcoded
   constant instead of a derived tier, and on a live run that was 48 of 48,
   because every anchor was Bovada or Kalshi and neither quotes a tier.
   "Derived and agreed with the constant" and "no tier was available"
@@ -2112,8 +2115,10 @@ The report prints `** OPENING ANCHOR **` for any of the three. Do not read
 a non-0.5000 anchor as settled without checking its liquidity — an early
 version of the flag tested fair_prob first and was structurally unable to
 see the thin case. **And check `Shortlist.immature_anchors` before quoting
-any slip EV**; if it names every leg, the EV is a statement about the
-anchors rather than about the bet.
+any slip EV**, reading it for THIN anchors and exact-0.5000 lines only.
+Since 2026-11-18 a leg listed there only because its limit equals the
+board's common limit is not a soft leg; whether its fair can carry an EV
+is `leg_verified(leg, hours)`.
 
 **Do not switch the anchor to Kalshi** on the strength of it varying more.
 Kalshi is an order-driven exchange and most alternate contracts carry under
@@ -2393,7 +2398,9 @@ What does move the answer is time to kickoff:
 |---|---|---|---|---|
 | 72 h | 40% | 1.32 pts | 4.85 pts | 36% |
 | 48 h | 32% | 1.00 | 4.52 | 45% |
+| 36 h | 24% | 0.88 | 4.43 | 53% |
 | 24 h | 23% | 0.87 | 4.20 | 53% |
+| 18 h | 23% | 0.68 | 4.18 | 56% |
 | 12 h | 11% | 0.66 | 4.03 | 64% |
 | 6 h | 7% | 0.42 | 3.43 | 72% |
 | 3 h | 4% | 0.22 | 3.11 | 78% |
@@ -2407,15 +2414,23 @@ print(ff_boost.anchor_drift(h).describe())              # say this to Dustin
 ok, why = ff_boost.leg_verified(leg, h)
 ```
 
+- **Start every `fair_source` with the anchor's name** ("pinnacle",
+  "kalshi (via get_event_ev)"). `leg_verified` reads the FIRST WORD as the
+  source, and the circular-fair check reads the whole string for the book
+  being bet, so never put Dustin's book or a second book's name in it.
+  When the EV feed drops Pinnacle and you de-vig Pinnacle's own two-sided
+  price, the source is still "pinnacle (...)".
 - **VERIFIED** = a Pinnacle two-sided MAIN line, not at exactly 0.5000,
   read within 6 hours of kickoff (`SETTLED_WITHIN_HOURS`). A rung, a
   Kalshi or Bovada fair, and anything read earlier are not verified, and
   `why` says which.
 - **Before 6 hours out nothing is verified, and that is the answer, not a
   failure.** Say how early the read is, give the row above, and say when to
-  re-pull. A Saturday-night run for a Sunday 1:00pm game is a 17-hour read:
-  about one line in nine will change its number, and the rest carry a
-  1-in-10 error of 4 points.
+  re-pull. A Saturday-night run for a Sunday 1:00pm game is a 17-hour read,
+  which the 18-hour row describes: about one line in four will change its
+  number, and the rest carry a 1-in-10 error of 4.2 points. Always quote
+  `anchor_drift(h).describe()` rather than reading this table by eye: it
+  uses the next measured row FURTHER out.
 - **The old limit flags are superseded for this purpose.** `anchor_untested`
   and "immature anchors" still print, and `book_liquidity_tiers` is still
   passed on intake, but do NOT call a leg tested or untested from them. Do
@@ -2478,9 +2493,22 @@ score = ff_boost.score_slip(
     meta,
     boost_pct=0.50,
     book_odds=600,
-    recommended=engine_legs)     # the engine's own legs, when there are any
+    recommended=engine_legs,     # the engine's own legs, when there are any
+    aliases=ALIASES, quotes=q,   # the same two a shortlist gets (B241)
+    floor=100)                   # the BOOST'S minimum odds, when it has one
 print(score.report())
 ```
+
+Pass `aliases`, `quotes` and `floor` every time. Without `quotes` the
+slip's noise falls back to a fixed figure instead of the one measured on
+this board; without `floor` the slip is judged against +300 whatever the
+boost says.
+
+**A First TD leg in a slip (B245).** First TD is outside the correlation
+table and the engine has no screen for it. With one in the slip the
+headline is NOT SCREENED, and the structure finding names only the pairs
+it measured: it does NOT say the First TD leg's pairs are unmeasured. Say
+that yourself, and do not quote a chance to cash for the slip.
 
 **Start from the free text, not from hand-built legs.** When Dustin types
 "JSN over 5 receptions, CMC over 50 rush", resolve it against a real board
@@ -2570,6 +2598,13 @@ the bet slip and compares. Always give several slips that share no leg,
 and say that a different line at that book voids the P(cash). Once he
 reports the real price, compute the EV and give the call.
 
+**Use `c.p_cash_for_pricing` as the chance to cash (B242).** It is the
+slip's P(cash) when the legs are independent, its floor when the product
+is a true floor, and the product cut by the overstatement on an ESTIMATE
+ONLY slip. Do not pass `c.p_cash_floor or c.p_cash`: on an ESTIMATE ONLY
+slip that is the optimistic figure and the needed price comes out too
+short (+627 where the adjusted figure gave +638 on 2026-11-18).
+
 **Pass the boost's own minimum (B223):**
 `ff_boost.needed_odds_detail(p_cash, boost_pct, target_ev, minimum=100)`
 returns the price to compare the slip with, which of the two numbers
@@ -2591,8 +2626,8 @@ the question is which bet turns the most of its face into cash.
 (fair x decimal) x (1 - 1/decimal): it wants a LONG price on a leg with
 LITTLE hold. Always show conversion and chance to cash together, and give
 Dustin two options: the highest conversion, and the highest conversion
-among bets with at least a 35% chance to cash. Use only legs with a fair
-from a tested anchor for the first; say so when none exists. A bonus bet
+among bets with at least a 35% chance to cash. Use only VERIFIED legs
+(`leg_verified`) for the first; say so when none exists. A bonus bet
 is not a boost and never goes through `enumerate_candidates`.
 
 ### Cross-game parlay tokens: narrow the pool before enumerating
@@ -2796,8 +2831,9 @@ DraftKings' opinion of DraftKings, which is circular.
 
 **4. Check the anchor is real — `anchor_coverage()`.** `fair_source` naming a
 book is not the same as that book having taken money. Report
-`anchor_thin` / `anchor_opening` / `anchor_untested` when they fire, and B60
-when the chain is silently absent. **An exact 0.5000 is the book's prior, not
+`anchor_thin` and `anchor_opening` when they fire, and B60 when the chain
+is silently absent. `anchor_untested` is no longer evidence of anything
+(see "How settled is an anchor"); do not report it as a warning. **An exact 0.5000 is the book's prior, not
 its price.**
 
 **5. Price the side he ASKED about — `prop_edge(..., side=...)` (B126).**
@@ -3384,8 +3420,15 @@ print(ff_props.snap_summary(st))                  # flagged and NOT CHECKED
 verdict, why = ff_props.boost_verdict(est, edge, screen, snap=st.get(player))
 ```
 
-Read `snap_summary` out: it names every flagged player with his shares and
-every player it could not check. Pass `snaps=st` to `usable_legs` as well,
+Read `snap_summary` out: it names every flagged player with his shares,
+every player it could not check, and every player who is **ABSENT** (his
+team has played since his last snap). The window is "his last 4 games with
+a snap", so for a player back from a month out it describes a role from a
+month ago, and so does the model. On 2026-11-18 David Montgomery's
+"last game" was Week 5 and nothing said so. An absence of two or more
+team games is marked on BOTH sides of the `usable_legs` table. Treat any
+leg on an ABSENT player as resting on the market's number alone, say so,
+and check why he was out and what role he returns to. Pass `snaps=st` to `usable_legs` as well,
 so a flagged player's OVER is marked there even if a verdict missed it.
 
 **For one player, on a single-leg question:**

@@ -540,6 +540,29 @@ class SnapTrend:
     gsis_id: str | None = None
     pfr_id: str | None = None
     joined_by: str = ""
+    # B244. How many games his team has played since his last snap. The
+    # window is "his last 4 games with a snap", which for a player back
+    # from a month out describes a role from a month ago.
+    missed_games: int = 0
+    last_team: str | None = None
+
+    @property
+    def last_week(self) -> int | None:
+        return int(self.games[-1][0]) if self.games else None
+
+    @property
+    def absent(self) -> bool:
+        """His team has played two or more games since his last snap."""
+        return self.missed_games >= 2
+
+    def absence_text(self) -> str:
+        if not self.missed_games or self.last_week is None:
+            return ""
+        g = "game" if self.missed_games == 1 else "games"
+        return (f"NO SNAP SINCE WEEK {self.last_week}: "
+                f"{self.last_team or 'his team'} has played "
+                f"{self.missed_games} {g} since. Everything here describes "
+                f"the role he had before that, and so does the model.")
 
     @property
     def had_role(self) -> bool:
@@ -579,7 +602,9 @@ class SnapTrend:
             tag = "LOW, after a real role earlier in the window"
         return (f"  snap share  : {self._list()}  [{tag}]"
                 + (f"  (joined by {self.joined_by})"
-                   if self.joined_by and self.joined_by != "pfr id" else ""))
+                   if self.joined_by and self.joined_by != "pfr id" else "")
+                + (f"  ** {self.absence_text()} **"
+                   if self.missed_games else ""))
 
     def caution_text(self, side: str | None = None) -> str:
         rate = SNAP_NEXT_LOW_RATE["LOW_LOST_ROLE" if self.verdict == "LOW"
@@ -596,11 +621,15 @@ class SnapTrend:
                     f"last {n} games with a snap: {self._list()}. He had a "
                     f"real role last game and lost it at least once in that "
                     f"window.")
+        if self.missed_games:
+            lead = lead.replace("in his last game", f"in his last game "
+                                f"(Week {self.last_week})")
         return (f"{lead} Measured on 2024-26 (snap_volatility.py): after a "
                 f"window like this his next game is at or under 15% of snaps "
                 f"{rate:.0%} of the time, against {base:.1%} for a steady "
                 f"role. An OVER needs him on the field, and the usage check "
-                f"reads targets and carries, so it cannot see this.")
+                f"reads targets and carries, so it cannot see this."
+                + (f" {self.absence_text()}" if self.missed_games else ""))
 
 
 def snap_trend(snaps: pd.DataFrame, roster: pd.DataFrame,
@@ -696,7 +725,13 @@ def snap_trend(snaps: pd.DataFrame, roster: pd.DataFrame,
         v = "UNSTABLE"
     else:
         v = "STABLE"
-    return SnapTrend(player=name, verdict=v, games=games, **kw)
+    team = (str(g.team.iloc[-1]) if "team" in g.columns and len(g) else None)
+    missed = 0
+    if team is not None:
+        missed = int(s[(s.team == team) & (s.week > games[-1][0])]
+                     .week.nunique())
+    return SnapTrend(player=name, verdict=v, games=games,
+                     missed_games=missed, last_team=team, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +779,9 @@ def snap_summary(trends: dict) -> str:
     for t in flagged:
         shares = ", ".join(f"wk{w} {s:.0%}" for w, s, _ in t.games)
         out.append(f"  FLAGGED {t.player}: {t.verdict} — {shares}")
+    for t in trends.values():
+        if t.missed_games:
+            out.append(f"  ABSENT {t.player}: {t.absence_text()}")
     for t in unknown:
         out.append(f"  NOT CHECKED {t.player}: {t.reason}")
     return "\n".join(out)

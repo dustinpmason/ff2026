@@ -550,6 +550,11 @@ def book_liquidity_tiers(odds_response: dict,
 # observed (0.94, 0.98, 1.00, 1.06), so it separates the two populations
 # that exist today and errs toward flagging.
 THIN_ANCHOR_LIQUIDITY = 25
+# Books that rest dollars at a price rather than posting a limit. A limit
+# tier means nothing for them.
+EXCHANGE_BOOKS = frozenset({"kalshi", "polymarket", "polymarket_us",
+                            "prophetx", "novig", "matchbook", "smarkets",
+                            "sxbet"})
 
 # F15. How far the model must sit BELOW the fair line before it is REPORTED
 # as reading the leg lower than the market. Since B237 (2026-11-17) that
@@ -1107,15 +1112,23 @@ class BoostLeg:
             # a note that can raise turns a flag into an outage.
             lqs = ("not reported" if self.anchor_liquidity is None
                    else f"{self.anchor_liquidity:g}")
-            return (f"{self.player}: fair_prob {self.fair_prob:.4f} has moved "
-                    f"off 0.5000, but it sits on liquidity "
-                    f"{lqs} against a tier of {tier:g} "
-                    f"({derived}) — the book is still at its OPENING limit, "
-                    f"so the move is a few hundred dollars of price "
-                    f"discovery, not a market-tested number. This is the "
-                    f"line a slip gets built from, because moving off the "
-                    f"prior is exactly what makes one look informative. "
-                    f"Re-pull closer to kickoff and re-price.")
+            src = str(self.fair_source or "").lower().split()
+            if src and src[0].strip("(),;:") in EXCHANGE_BOOKS:
+                # An exchange rests dollars; it has no limit, and the
+                # fallback tier was Pinnacle's. Reported as what it is.
+                return (f"{self.player}: fair_prob {self.fair_prob:.4f} "
+                        f"rests on ${lqs} at {src[0].strip('(),;:')}, an "
+                        f"exchange. That is above the thin threshold of "
+                        f"${THIN_ANCHOR_LIQUIDITY:g} and that is all it says; an "
+                        f"exchange has no limit to compare it with. It is "
+                        f"not a Pinnacle line, so it is not VERIFIED.")
+            return (f"{self.player}: fair_prob {self.fair_prob:.4f} sits on "
+                    f"liquidity {lqs} against a tier of {tier:g} "
+                    f"({derived}). Measured 2026-11-18, the limit behind a "
+                    f"line says nothing about how settled it is at a given "
+                    f"hour, so this is NOT evidence the number is untested. "
+                    f"`leg_verified(leg, hours)` is the test, and the hours "
+                    f"to kickoff decide it.")
         if self.anchor_opening:
             lq = (f"liquidity {self.anchor_liquidity:g}"
                   if self.anchor_liquidity is not None
@@ -2417,6 +2430,25 @@ class Candidate:
     def p_cash_floor(self) -> float | None:
         """A LOWER BOUND on P(cash) for a correlated slip, or None."""
         return fair_joint(self.legs) if self.floor[0] else None
+
+    @property
+    def p_cash_for_pricing(self) -> float | None:
+        """The chance to cash to hand `needed_odds`. B242.
+
+        An independent slip: its P(cash). A correlated slip whose product is
+        a true floor: that floor. A correlated slip the gate let through
+        with a small NEGATIVE joint error (ESTIMATE ONLY): the product cut
+        by that error, because there the product overstates the chance and
+        a needed price worked from it is too short. None when the slip has
+        neither.
+        """
+        if self.p_cash is not None:
+            return self.p_cash
+        p = self.p_cash_floor
+        if p is None:
+            return None
+        rel = getattr(self.joint, "rel", None)
+        return p * (1.0 + rel) if (rel is not None and rel < 0) else p
 
     @property
     def ev_floor_pct(self) -> float | None:
@@ -4815,7 +4847,13 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
                        f"({type(e).__name__}: {e})")
         for l in c.legs:
             if l.anchor_note:
-                out.append(f"  ** OPENING ANCHOR ** {l.anchor_note}")
+                # B240. Only an exact 0.5000 or a thin anchor is called an
+                # opening anchor. A limit at the board's common limit is
+                # printed as a plain note: it is not evidence either way.
+                tag = ("** OPENING ANCHOR **"
+                       if (l.anchor_opening or l.anchor_thin)
+                       else "anchor limit:")
+                out.append(f"  {tag} {l.anchor_note}")
         for n in c.notes:
             out.append(f"  note: {n}")
         out.append("  The model's number is a GAP against a de-vigged line, "
@@ -4960,7 +4998,8 @@ def _slip_key(leg) -> tuple:
 
 def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                book_odds: float | None = None, stake: float = 10.0,
-               recommended=None) -> SlipScore:
+               recommended=None, aliases=None, quotes=None,
+               floor: float | None = None) -> SlipScore:
     """Score a slip that already exists, and say what is wrong with it.
 
     `legs` are the legs ON THE SLIP, in the sides actually taken.
@@ -4983,7 +5022,13 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
             findings=[SlipFinding("STOP", "", "the slip has no legs in it",
                                   kind="empty")])
 
-    cand = make_candidate(legs, meta, boost_pct=boost_pct, stake=stake)
+    # B241. `aliases`, `quotes` and `floor` go to `make_candidate` exactly as
+    # a shortlist passes them. Without them a slip was classified without
+    # its aliases, its noise fell back to the fixed figure instead of the
+    # board's measured one, and it was judged against +300 whatever the
+    # boost's own minimum was.
+    cand = make_candidate(legs, meta, boost_pct=boost_pct, stake=stake,
+                          aliases=aliases, quotes=quotes, floor=floor)
     if book_odds is not None:
         cand = price_candidate(cand, book_odds=float(book_odds))
     out = SlipScore(candidate=cand, compared=recommended is not None)
@@ -5495,8 +5540,12 @@ def leg_verified(leg, hours) -> tuple[bool, str]:
         who = "Pinnacle's" if "pinnacle" in (lvl or src) else "another book's"
         return False, (f"a rung: its level is {who} but its shape comes from "
                        f"a ladder, so it is an estimate, not a quoted line")
-    if "pinnacle" not in src:
-        return False, f"fair is from {src or 'an unnamed source'}, not Pinnacle"
+    # B243. The source is the first word. A sentence that merely mentions
+    # Pinnacle ("bovada; pinnacle dropped by the EV feed") is not a
+    # Pinnacle fair.
+    first = src.split()[0].strip("(),;:") if src.split() else ""
+    if first != "pinnacle":
+        return False, f"fair is from {first or 'an unnamed source'}, not Pinnacle"
     if getattr(leg, "anchor_thin", False):
         return False, "almost no money is resting on the anchor"
     if abs(float(leg.fair_prob) - 0.5) < 1e-9:
@@ -5654,6 +5703,12 @@ def usable_legs(legs, *, boost_pct: float, hours, floor: float | None = None,
         if (st is not None and getattr(st, "flagged", False)
                 and str(l.side).upper() in ("OVER", "YES")):
             note = f"snap share {st.verdict}"
+        if st is not None and getattr(st, "absent", False):
+            # B244. Either side: the fair may be fine, but every role check
+            # and the model are reading a role from before the absence.
+            gone = (f"no snap since Week {st.last_week} "
+                    f"({st.missed_games} team games)")
+            note = f"{note}; {gone}" if note else gone
         rows.append(UsableLeg(l, float(boost_pct), h, anchor_drift(h), ok,
                               why, float(stake), note))
     rows.sort(key=lambda r: (_READ_ORDER[r.read], -r.cushion_share))
