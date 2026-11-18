@@ -622,17 +622,29 @@ chk("stale and unresolved are reported separately",
     ff_guillotine.stale_names(_fakeroster, _sfb) == {"T": ["Returning Player"]}
     and ff_guillotine.unresolved(_fakeroster, _sfb)
         == {"T": ["Absent Player"]})
-# Whoever is stale TODAY, not a named player. This was Zach Charbonnet
-# until 2026-11-17, when his third 2026 game took him out of the stale set
-# and the check failed with nothing wrong in the engine (the same lesson
-# as the three checks above, and as B192). The fallback pool always holds
-# prior-season-only players; take one with enough games and real spread.
-_stale_who = next((n for n in sorted(_pfb.stale)
-                   if len(_pfb[n]) >= 8 and _pfb[n].std(ddof=0) > 3.0), None)
-chk("the fallback pool has a stale player to test the draw on",
-    _stale_who is not None, f"{len(_pfb.stale)} stale")
-_raw = _pfb[_stale_who]
-_drawn = ff_guillotine._draw(_pfb, _stale_who, 40000)
+# B207. SYNTHETIC as well. The three checks above were moved off Zach
+# Charbonnet on 2026-11-03; this one was left naming him, and failed on a
+# fresh clone on 2026-11-17 for the same reason (he has 2026 rows, so he is
+# not stale and nothing widens). It needs a stale player whose scores VARY,
+# which a copied template row cannot give, so it borrows a real 2025 game
+# log under an invented name and id. The source is chosen FROM the data.
+_agg17 = (_wk2[_wk2.season == 2025].groupby("player_display_name")
+          .receiving_yards.agg(["size", "sum"]))
+_src17 = _agg17[_agg17["size"] >= 12].sort_values("sum", ascending=False).index[0]
+_vr17 = _wk2[(_wk2.season == 2025)
+             & (_wk2.player_display_name == _src17)].copy()
+_vr17["player_display_name"] = "Returning Starter"
+for _c17 in ("player_id", "player_name"):
+    if _c17 in _vr17.columns:
+        _vr17[_c17] = "SYN-RETURNING-STARTER"
+_pvar = ff_guillotine.build_pool(pd.concat([_wk2, _vr17], ignore_index=True),
+                                 LEAGUES["guillotine"], season=2026)
+_kv17 = ff_guillotine.resolve("Returning Starter", _pvar)
+chk("the borrowed game log is stale and has a spread to widen",
+    _kv17 is not None and _kv17 in _pvar.stale
+    and _pvar[_kv17].std(ddof=0) > 1.0, str(_kv17))
+_raw = _pvar[_kv17]
+_drawn = ff_guillotine._draw(_pvar, "Returning Starter", 40000)
 chk("stale draw widens the spread but keeps the level",
     _drawn.std() > _raw.std(ddof=0) * 1.2
     and abs(_drawn.mean() - _raw.mean()) < 1.0,
@@ -6148,22 +6160,45 @@ _slip64 = [_l64("Tez Johnson", "UNDER", 15.5, -110, 0.44, model_p=0.37,
 _s64 = ff_boost.score_slip(_slip64, boost_pct=0.0, book_odds=-110,
                            recommended=_eng64)
 
-# --- the side conflict: the thing CLEAR cannot tell you --------------------
-chk("a leg the model wants the other side of is a STOP",
-    any(f.level == "STOP" and "prefers the OVER" in f.text
-        for f in _s64.findings),
-    "; ".join(f.describe() for f in _s64.stops)[:140] or "no STOP")
-chk("and the finding says plainly that a CLEAR verdict does not cover it",
-    any("nothing was found against this side" in f.text
-        for f in _s64.findings))
-chk("the slip verdict is DO NOT PLACE",
-    _s64.verdict == "DO NOT PLACE", _s64.verdict)
+# --- the model reading a side lower than the market: a NOTE since B237 ------
+# This was a STOP until 2026-11-17. On the graded log the model's
+# disagreement with the market did not predict results, and the STOP had
+# printed DO NOT PLACE on a leg that won and was placed regardless.
+_sc64 = [f for f in _s64.findings if "game-log model reads" in f.text]
+chk("a leg the model reads lower than the market is reported",
+    len(_sc64) == 1 and "37.0%" in _sc64[0].text and "44.0%" in _sc64[0].text
+    and "7.0 pts lower" in _sc64[0].text,
+    "; ".join(f.describe() for f in _s64.findings)[:200])
+chk("as a NOTE that says it is not a lean, never as a STOP",
+    len(_sc64) == 1 and _sc64[0].level == "NOTE"
+    and "NOT a lean" in _sc64[0].text
+    and not any(f.level == "STOP" for f in _s64.findings),
+    "; ".join(f.describe() for f in _s64.stops)[:140])
+chk("and it says the verdict is what was found against the side",
+    len(_sc64) == 1 and "what was found against" in _sc64[0].text)
+chk("so it does not make the slip DO NOT PLACE on its own",
+    _s64.verdict != "DO NOT PLACE", _s64.verdict)
+_only64 = ff_boost.score_slip(
+    [_l64("Tez Johnson", "UNDER", 15.5, -110, 0.44, model_p=0.37,
+          pid="espn:3", event="87238", team="TB", pos="WR")],
+    boost_pct=0.0, book_odds=-110)
+chk("with nothing else against it, such a slip reads as nothing found",
+    _only64.verdict == "NOTHING FOUND AGAINST IT"
+    and any("game-log model reads" in f.text for f in _only64.findings),
+    _only64.verdict + " | " + "; ".join(f.describe() for f in _only64.findings)[:200])
+_vag64 = ff_boost.score_slip(
+    [_l64("P", "OVER", 50.5, -110, 0.50, verdict="VETO", model_p=0.40,
+          pid="v9", reasons=("role collapsed",))], boost_pct=0.0)
+chk("a VETO on the same leg still stops the slip",
+    _vag64.verdict == "DO NOT PLACE"
+    and any(f.level == "STOP" and "role collapsed" in f.text
+            for f in _vag64.findings))
 # The gate exists so a fair line and a model estimate differing by a point
 # does not flag half a slip.
 _near = [_l64("P", "OVER", 50.5, -110, 0.50, model_p=0.49, pid="x")]
 chk("a gap inside the gate is NOT called a side conflict",
     ff_boost.score_slip(_near, boost_pct=0.0).candidate is not None
-    and not any("prefers the" in f.text
+    and not any("game-log model reads" in f.text
                 for f in ff_boost.score_slip(_near, boost_pct=0.0).findings),
     f"gap {_near[0].model_gap:+.3f} under {ff_boost.MODEL_SIDE_GATE}")
 chk("and the gate is the named constant",
@@ -6253,9 +6288,11 @@ chk("an empty slip is refused rather than scored",
 
 # --- the report ------------------------------------------------------------
 _rep64 = _s64.report()
+# CHECK FIRST, not DO NOT PLACE: the only thing against this slip now is
+# that the engine had the same player on the other side (B237).
 chk("the report leads with the verdict",
-    _rep64.splitlines()[0] == "SLIP VERDICT: DO NOT PLACE",
-    _rep64.splitlines()[0])
+    _rep64.splitlines()[0] == "SLIP VERDICT: CHECK FIRST"
+    and _s64.verdict == "CHECK FIRST", _rep64.splitlines()[0])
 # `independent_odds` returns AMERICAN. Converting it again turned a -110
 # single into "+1" — a second conversion producing a plausible price rather
 # than an error.
@@ -9893,73 +9930,326 @@ chk("a probability outside (0, 1) and a negative boost are refused",
     and isinstance(_no(.3, -.1), str))
 
 # ===========================================================================
-# 90. B205 — who else wants a free agent, and the bounds on a FAAB bid
+# 90. B206 — snap share as a role check
 # ===========================================================================
 
-section("90. waiver demand and FAAB bounds")
+section("90. snap share role check (B206)")
+import pandas as _pd90
+from ff_props import (snap_trend, SnapTrend, resolve_player_id,
+                      SNAP_ROLE_SHARE, SNAP_LOW_SHARE, SNAP_MIN_GAMES)
 
-_p90 = dict(_p69)
-_p90.update({n: np.array(v, dtype=float) for n, v in {
+
+def _snaprows(pfr, name, pos, shares, season=2026, team="LAC", start=1):
+    return [{"pfr_player_id": pfr, "player": name, "position": pos,
+             "team": team, "season": season, "week": start + i,
+             "game_type": "REG", "offense_pct": sh,
+             "offense_snaps": int(round(sh * 60)), "defense_snaps": 0,
+             "st_snaps": 5} for i, sh in enumerate(shares)]
+
+
+_snaps90 = _pd90.DataFrame(
+    _snaprows("StedSt00", "Steady Role", "WR", [0.80, 0.78, 0.83, 0.81])
+    + _snaprows("SwinSw00", "Swing Role", "WR", [0.00, 0.87, 0.03, 0.56])
+    + _snaprows("LowxLo00", "Low Role", "TE", [0.70, 0.66, 0.61, 0.02])
+    + _snaprows("ThinTh00", "Thin Sample", "RB", [0.60, 0.10])
+    + _snaprows("QbxxQb00", "Some Passer", "QB", [1.0, 1.0, 0.0, 1.0])
+    # a DIFFERENT man with the same name as the steady receiver: a name
+    # join would pour his 2% games into the wrong player
+    + _snaprows("StedSt99", "Steady Role", "WR", [0.02, 0.01, 0.03, 0.02],
+                team="NYJ")
+    + _snaprows("RookRo00", "No Pfr Rookie", "WR", [0.75, 0.10, 0.72, 0.70])
+    + _snaprows("PartPa00", "Part Timer", "TE", [0.12, 0.10, 0.15, 0.11])
+    + _snaprows("TwinTw00", "Twin Name", "WR", [0.70, 0.70, 0.70])
+    + _snaprows("TwinTw01", "Twin Name", "WR", [0.05, 0.05, 0.05], team="NYJ"))
+_roster90 = _pd90.DataFrame([
+    {"gsis_id": "G-STEADY", "pfr_id": "StedSt00", "position": "WR"},
+    {"gsis_id": "G-SWING", "pfr_id": "SwinSw00", "position": "WR"},
+    {"gsis_id": "G-LOW", "pfr_id": "LowxLo00", "position": "TE"},
+    {"gsis_id": "G-THIN", "pfr_id": "ThinTh00", "position": "RB"},
+    {"gsis_id": "G-QB", "pfr_id": "QbxxQb00", "position": "QB"},
+    {"gsis_id": "G-PART", "pfr_id": "PartPa00", "position": "TE"},
+    {"gsis_id": "G-ROOK", "pfr_id": None, "position": "WR"},
+    {"gsis_id": "G-TWIN", "pfr_id": None, "position": "WR"}])
+_wk90 = _pd90.DataFrame([
+    {"player_display_name": n, "player_id": g, "season": 2026, "week": 1}
+    for n, g in (("Steady Role", "G-STEADY"), ("Swing Role", "G-SWING"),
+                 ("Low Role", "G-LOW"), ("Thin Sample", "G-THIN"),
+                 ("Some Passer", "G-QB"), ("No Pfr Rookie", "G-ROOK"),
+                 ("Part Timer", "G-PART"),
+                 ("Twin Name", "G-TWIN"), ("Not In Roster", "G-NOWHERE"))])
+
+
+def _st90(who, **kw):
+    try:
+        return snap_trend(_snaps90, _roster90, _wk90, who, **kw)
+    except Exception as e:                      # must never raise
+        return f"{type(e).__name__}: {e}"
+
+
+_a90, _b90, _c90 = _st90("Steady Role"), _st90("Swing Role"), _st90("Low Role")
+chk("a steady role reads STABLE and is not flagged",
+    isinstance(_a90, SnapTrend) and _a90.verdict == "STABLE"
+    and not _a90.flagged, str(_a90))
+chk("a role that vanished inside the window reads UNSTABLE",
+    isinstance(_b90, SnapTrend) and _b90.verdict == "UNSTABLE"
+    and _b90.flagged, str(_b90))
+chk("a last game under the role share reads LOW",
+    isinstance(_c90, SnapTrend) and _c90.verdict == "LOW" and _c90.flagged,
+    str(_c90))
+# Added on review. LOW is 46% of all player-games and seven in ten of those
+# are steady part-timers; flagging them would put a CAUTION on a third of
+# every board for a player whose line is already set for his role.
+_pt90 = _st90("Part Timer")
+chk("a steady part-timer reads LOW but is NOT flagged",
+    isinstance(_pt90, SnapTrend) and _pt90.verdict == "LOW"
+    and _pt90.part_time and not _pt90.flagged and _pt90.checked, str(_pt90))
+chk("a player who HAD a role and was low last game is LOW and flagged",
+    _c90.verdict == "LOW" and _c90.had_role and not _c90.part_time
+    and _c90.flagged)
+chk("the two are worded differently where a person reads them",
+    "steady part-time role: not a caution" in _pt90.describe()
+    and "after a real role earlier" in _c90.describe()
+    and "part-time" not in _c90.describe())
+chk("the join is by id: a namesake's 2% games do not reach him",
+    _a90.pfr_id == "StedSt00" and min(x[1] for x in _a90.games) > 0.7
+    and _a90.joined_by == "pfr id", str(_a90))
+_d90 = _st90("Thin Sample")
+chk("too few games is UNKNOWN, not STABLE, and says how many it needs",
+    isinstance(_d90, SnapTrend) and _d90.verdict == "UNKNOWN"
+    and not _d90.flagged and not _d90.checked
+    and str(SNAP_MIN_GAMES) in _d90.reason, str(_d90))
+chk("UNKNOWN is reported as NOT CHECKED, never as a clean read",
+    "NOT CHECKED" in _d90.describe() and "not a clean read" in _d90.describe())
+_q90 = _st90("Some Passer")
+chk("a position that was not measured is UNKNOWN",
+    isinstance(_q90, SnapTrend) and _q90.verdict == "UNKNOWN"
+    and "QB" in _q90.reason, str(_q90))
+_r90 = _st90("No Pfr Rookie")
+chk("no PFR id in the roster: a unique name + position still joins, and "
+    "says that is how", isinstance(_r90, SnapTrend)
+    and _r90.verdict == "UNSTABLE" and "name + position" in _r90.joined_by,
+    str(_r90))
+_t90 = _st90("Twin Name")
+chk("no PFR id and two men of that name and position: refused",
+    isinstance(_t90, SnapTrend) and _t90.verdict == "UNKNOWN"
+    and "2 player" in _t90.reason, str(_t90))
+_n90, _m90 = _st90("Nobody At All"), _st90("Not In Roster")
+chk("an unknown name and a player missing from the roster return UNKNOWN "
+    "rather than raising",
+    all(isinstance(x, SnapTrend) and x.verdict == "UNKNOWN"
+        for x in (_n90, _m90)), f"{_n90} | {_m90}")
+_bw90 = _st90("Low Role", before_week=4)
+chk("before_week drops that game and later: the 2% game is not seen",
+    isinstance(_bw90, SnapTrend) and _bw90.verdict == "STABLE"
+    and [x[0] for x in _bw90.games] == [1, 2, 3], str(_bw90))
+chk("the thresholds are the ones snap_volatility.py measured",
+    (SNAP_ROLE_SHARE, SNAP_LOW_SHARE) == (0.40, 0.25))
+_dup90 = _wk90.copy()
+_dup90.loc[len(_dup90)] = {"player_display_name": "Steady Role",
+                           "player_id": "G-OTHER", "season": 2026, "week": 2}
+
+
+def _rid90(frame, who):
+    try:
+        return resolve_player_id(frame, who)
+    except LookupError as e:
+        return f"LookupError: {e}"
+
+
+chk("one display name over two GSIS ids is refused, not picked",
+    _rid90(_wk90, "Steady Role") == ("Steady Role", "G-STEADY")
+    and str(_rid90(_dup90, "Steady Role")).startswith("LookupError")
+    and "2 GSIS ids" in str(_rid90(_dup90, "Steady Role")))
+
+# ---- the veto: directional, and it never lifts a VETO
+# Own fixtures, built here: `_e2`, `_cleanq` and friends are reused as names
+# further up this file, so a late section must not lean on them.
+import datetime as _dt90
+from ff_props import (Edge as _Edge90, Estimate as _Est90,
+                      boost_verdict as _bv90, boost_leg_report as _blr90,
+                      screen_quotes as _sq90)
+_now90 = (_dt90.datetime.now(_dt90.timezone.utc)
+          - _dt90.timedelta(seconds=20)).isoformat()
+_cq90 = [{"book": "FanDuel", "over": -115, "under": -105,
+          "last_update": _now90}]
+_sus90 = [{"book": b, "over": -115, "under": -105, "suspended_at": _now90}
+          for b in ("FanDuel", "DraftKings", "BetMGM")]
+_est90 = _Est90(stat="receiving_yards", line=40.5, n=16, empirical=.50,
+                parametric=.50, recency=.50, blended=.52, ci_low=.38,
+                ci_high=.66, mean=42.0, sd=20.0, hits=8, usage=None)
+_ov90 = _Edge90(side="OVER", model_p=.52, fair_p=.50, edge=.02,
+             ev_per_dollar=0.0, hold=.045, kelly=0.0, tier="PASS",
+             reasoning="clean read", fair_source="pinnacle")
+_un90 = _Edge90(side="UNDER", model_p=.52, fair_p=.50, edge=.02,
+             ev_per_dollar=0.0, hold=.045, kelly=0.0, tier="PASS",
+             reasoning="clean read", fair_source="pinnacle")
+_base90 = _bv90(_est90, _ov90, _sq90(_cq90))
+_ovs90 = _bv90(_est90, _ov90, _sq90(_cq90), snap=_b90)
+chk("the fixture leg is CLEAR with nothing against it before the snap check",
+    _base90 == ("CLEAR", []), str(_base90))
+chk("an UNSTABLE snap share is a CAUTION on an OVER, and names the shares",
+    _ovs90[0] == "CAUTION"
+    and any("SNAP SHARE UNSTABLE" in r and "87%" in r and "3%" in r
+            for r in _ovs90[1]), str(_ovs90))
+chk("it adds exactly one reason to what the leg already had",
+    len(_ovs90[1]) == len(_base90[1]) + 1, f"{_base90[1]} -> {_ovs90[1]}")
+chk("it says nothing against an UNDER",
+    _bv90(_est90, _un90, _sq90(_cq90), snap=_b90)
+    == _bv90(_est90, _un90, _sq90(_cq90)))
+chk("a STABLE or UNKNOWN snap share changes nothing",
+    _bv90(_est90, _ov90, _sq90(_cq90), snap=_a90) == _base90
+    and _bv90(_est90, _ov90, _sq90(_cq90), snap=_d90) == _base90)
+chk("and neither does a steady part-timer's, on an OVER",
+    _bv90(_est90, _ov90, _sq90(_cq90), snap=_pt90) == _base90)
+chk("but his shares are still printed in the leg report",
+    "steady part-time role" in _blr90(_est90, _ov90, "x", _sq90(_cq90),
+                                      snap=_pt90))
+chk("with no side given the caution still fires",
+    any("SNAP SHARE" in r
+        for r in _bv90(_est90, None, _sq90(_cq90),
+                               snap=_c90)[1]))
+_vs90 = _bv90(_est90, _ov90, _sq90(_sus90), snap=_b90)
+chk("it never lifts a VETO", _vs90[0] == "VETO"
+    and "PROBABLE SCRATCH" in _vs90[1][0], str(_vs90[0]))
+_rep90 = _blr90(_est90, _ov90, "snap leg", _sq90(_cq90),
+                          snap=_b90)
+chk("the leg report prints the shares it was judged on",
+    "snap share  :" in _rep90 and "[UNSTABLE]" in _rep90, _rep90[-500:])
+chk("and reports an unchecked snap share as NOT CHECKED",
+    "NOT CHECKED" in _blr90(_est90, _ov90, "x",
+                                      _sq90(_cq90), snap=_d90))
+chk("the caution text carries the measured rates",
+    "10%" in _b90.caution_text("OVER") and "1.4%" in _b90.caution_text("OVER")
+    and "19%" in _c90.caution_text("OVER")
+    and "44%" not in _c90.caution_text("OVER"))
+
+# ---- the real table. Past weeks only, so the data cannot move under it.
+try:
+    _rs90 = ff_data.load_snaps(2026)
+    _ks90 = snap_trend(_rs90, ff_data.load_roster(2026), wk,
+                       "KeAndre Lambert-Smith", season=2026, before_week=10)
+except Exception as _e90:
+    _rs90, _ks90 = None, f"{type(_e90).__name__}: {_e90}"
+chk("load_snaps returns the 2026 table with the join key",
+    _rs90 is not None and {"pfr_player_id", "offense_pct", "week"}
+    .issubset(_rs90.columns) and len(_rs90) > 1000)
+chk("the case that prompted it: Lambert-Smith read UNSTABLE before Week 10",
+    isinstance(_ks90, SnapTrend) and _ks90.verdict == "UNSTABLE"
+    and _ks90.joined_by == "pfr id", str(_ks90))
+
+# ===========================================================================
+# 91. B205 — the model's number is printed as a gap, never as a rating
+# ===========================================================================
+
+section("91. no model tier or stake in the output (B205)")
+from ff_props import edge_report, model_gap_note, MODEL_GAP_WARN, STAKES
+from ff_props import report as _report91
+
+
+def _edge91(model_p, tier="STRONG", side="OVER"):
+    return _Edge90(side=side, model_p=model_p, fair_p=.50,
+                edge=model_p - .50, ev_per_dollar=.2, hold=.045, kelly=.1,
+                tier=tier, reasoning="clean read", fair_source="pinnacle")
+
+
+_big91, _small91, _neg91 = _edge91(.66), _edge91(.55, "MODERATE"), _edge91(.36, "PASS")
+_er91 = edge_report(_big91, "leg")
+chk("edge_report prints no tier name and no stake",
+    "$" not in _er91 and "VERDICT" not in _er91
+    and not any(t in _er91 for t in ("STRONG", "MODERATE", "COIN-FLIP")),
+    _er91)
+chk("it leads with the market's number and calls the model's a gap",
+    _er91.index("market fair") < _er91.index("model says")
+    and "gap +16.0 pts" in _er91 and "NOT a lean" in _er91, _er91)
+chk("it states that no rating is given", "model rating: none" in _er91)
+chk("the tier is still on the Edge, for the log",
+    _big91.tier in STAKES and _small91.tier in STAKES)
+_gn91, _gb91 = (model_gap_note(_big91) or ""), (model_gap_note(_neg91) or "")
+chk("a gap of 10+ points carries the warning, in both directions",
+    "ABOVE" in _gn91 and "BELOW" in _gb91 and "MARKET DISAGREES" in _er91)
+chk("a smaller gap carries none",
+    model_gap_note(_small91) is None
+    and "MARKET DISAGREES" not in edge_report(_small91, "leg")
+    and MODEL_GAP_WARN == 0.10)
+chk("the warning never calls the gap a lean or an edge",
+    "NOT a lean" in _gn91 and "edge" not in _gn91.lower())
+_blr91 = _blr90(_est90, _big91, "leg", _sq90(_cq90))
+chk("the boost leg report carries the same warning and still no stake",
+    "MARKET DISAGREES" in _blr91 and "$" not in _blr91
+    and "edge" not in _blr91.lower().replace("not an edge", ""), _blr91[-600:])
+chk("the warning is a note: it does not change the verdict",
+    _bv90(_est90, _big91, _sq90(_cq90))[0]
+    == _bv90(_est90, _small91, _sq90(_cq90))[0])
+chk("report() no longer labels the model's number USE",
+    "USE " not in _report91(_est90) and "not a lean" in _report91(_est90))
+
+# 92. B221 — who else wants a free agent, and the bounds on a FAAB bid
+# ===========================================================================
+
+section("92. waiver demand and FAAB bounds (B221)")
+
+_p92 = dict(_p69)
+_p92.update({n: np.array(v, dtype=float) for n, v in {
     "MID": [13.5, 11.5],                       # beats a WR3/RB3, not a WR1
     "DEEP_RB": [15.0, 13.0], "DEEP_WR": [16.0, 14.0],
     "DEEP_RB2": [14.5, 12.5], "DEEP_WR2": [15.5, 13.5]}.items()})
-_meta90 = dict(_meta69)
-_meta90.update({"MID": ("AAA", "WR"), "DEEP_RB": ("AAA", "RB"),
+_meta92 = dict(_meta69)
+_meta92.update({"MID": ("AAA", "WR"), "DEEP_RB": ("AAA", "RB"),
                 "DEEP_WR": ("AAA", "WR"), "DEEP_RB2": ("AAA", "RB"),
                 "DEEP_WR2": ("AAA", "WR")})
-_base90 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
+_base92 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
            "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}
-_t90 = [{"team_id": str(i), "team_name": f"team{i}",
-         "roster": {k: list(v) for k, v in _base90.items()}} for i in range(4)]
+_t92 = [{"team_id": str(i), "team_name": f"team{i}",
+         "roster": {k: list(v) for k, v in _base92.items()}} for i in range(4)]
 # team3 already holds better than MID at every spot he could take.
-_t90[3]["roster"]["RB"] = ["RB1", "DEEP_RB", "DEEP_RB2"]
-_t90[3]["roster"]["WR"] = ["WR1", "DEEP_WR", "DEEP_WR2"]
+_t92[3]["roster"]["RB"] = ["RB1", "DEEP_RB", "DEEP_RB2"]
+_t92[3]["roster"]["WR"] = ["WR1", "DEEP_WR", "DEEP_WR2"]
 # team4 has been eliminated: an empty roster.
-_t90.append({"team_id": "4", "team_name": "gone", "roster": {}})
-_bud90 = {"0": 500, "1": 300, "2": 800, "3": 900}
+_t92.append({"team_id": "4", "team_name": "gone", "roster": {}})
+_bud92 = {"0": 500, "1": 300, "2": 800, "3": 900}
 
 
-def _dm90(cand="MID", budgets=_bud90, teams=_t90):
+def _dm92(cand="MID", budgets=_bud92, teams=_t92):
     try:
         return ff_guillotine.waiver_demand(
-            teams, _p90, candidate=cand, n_sims=4000, meta=_meta90,
+            teams, _p92, candidate=cand, n_sims=4000, meta=_meta92,
             budgets=budgets), ""
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
 
-_d90, _ed90 = _dm90()
-_by90 = {d.team_id: d for d in (_d90 or [])}
+_d92, _ed92 = _dm92()
+_by92 = {d.team_id: d for d in (_d92 or [])}
 chk("every LIVE team is valued and the eliminated one is skipped",
-    _d90 is not None and sorted(_by90) == ["0", "1", "2", "3"], _ed90)
+    _d92 is not None and sorted(_by92) == ["0", "1", "2", "3"], _ed92)
 chk("he helps the teams whose depth he beats",
-    all(_by90[k].gain_pp > 0.25 for k in ("0", "1", "2") if k in _by90)
-    and len(_by90) == 4,
-    str({k: round(v.gain_pp, 3) for k, v in _by90.items()}))
+    all(_by92[k].gain_pp > 0.25 for k in ("0", "1", "2") if k in _by92)
+    and len(_by92) == 4,
+    str({k: round(v.gain_pp, 3) for k, v in _by92.items()}))
 chk("and not the team that already holds better",
-    "3" in _by90 and _by90["3"].gain_pp == 0.0
-    and not _by90["3"].value.in_best_lineup,
-    str(_by90.get("3") and _by90["3"].value.describe()))
+    "3" in _by92 and _by92["3"].gain_pp == 0.0
+    and not _by92["3"].value.in_best_lineup,
+    str(_by92.get("3") and _by92["3"].value.describe()))
 chk("a gain is never negative and never a negative zero",
-    all(d.gain_pp >= 0 and str(d.gain_pp)[0] != "-" for d in (_d90 or [0]))
-    if _d90 else False)
+    all(d.gain_pp >= 0 and str(d.gain_pp)[0] != "-" for d in (_d92 or [0]))
+    if _d92 else False)
 chk("each team carries the budget it was given",
-    _d90 is not None and [_by90[k].budget for k in "0123"]
+    _d92 is not None and [_by92[k].budget for k in "0123"]
     == [500.0, 300.0, 800.0, 900.0])
 chk("a player already on a roster is refused: he is not on the wire",
-    "not a waiver candidate" in _dm90("WR1")[1], _dm90("WR1")[1])
+    "not a waiver candidate" in _dm92("WR1")[1], _dm92("WR1")[1])
 
 
-def _fr90(me="0", budget=500, weeks=7, d=None, floor=0.25):
+def _fr92(me="0", budget=500, weeks=7, d=None, floor=0.25):
     try:
-        return ff_guillotine.faab_read(d if d is not None else _d90,
+        return ff_guillotine.faab_read(d if d is not None else _d92,
                                        my_team_id=me, my_budget=budget,
                                        weeks_left=weeks, floor=floor), ""
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
 
-_f0, _ef0 = _fr90()
+_f0, _ef0 = _fr92()
 chk("the certain price is the largest RIVAL budget plus one",
     _f0 is not None and _f0.lock_all == 901.0, _ef0)
 chk("and it says so when that is more than I hold, naming who can outbid me",
@@ -9970,7 +10260,7 @@ chk("the contested price ignores a rich team he does not help",
     _f0 is not None and [d.team_id for d in _f0.contested] in
     (["1", "2"], ["2", "1"]) and _f0.lock_contested == 801.0,
     f"{_f0 and _f0.lock_contested}")
-_f3, _ = _fr90("3", 900)
+_f3, _ = _fr92("3", 900)
 chk("the richest team can lock him, at one over the next budget",
     _f3 is not None and _f3.lock_all == 801.0 and not _f3.can_outbid_me
     and "MORE THAN I HOLD" not in _f3.report())
@@ -9978,54 +10268,54 @@ chk("and is told he does not help it this week",
     _f3 is not None and _f3.my_gain_pp == 0.0
     and "does not measurably help me THIS week" in _f3.report())
 chk("my own budget is the argument, never the table's entry for me",
-    _fr90("0", 950)[0].lock_all == 901.0
-    and not _fr90("0", 950)[0].can_outbid_me)
+    _fr92("0", 950)[0].lock_all == 901.0
+    and not _fr92("0", 950)[0].can_outbid_me)
 chk("pace is the budget over the weeks left",
     _f0 is not None and abs(_f0.pace - 500 / 7) < 1e-9)
-_dmiss, _ = _dm90(budgets={"0": 500, "1": 300, "3": 900})
-_fm, _efm = _fr90(d=_dmiss)
+_dmiss, _ = _dm92(budgets={"0": 500, "1": 300, "3": 900})
+_fm, _efm = _fr92(d=_dmiss)
 chk("a missing rival budget withholds BOTH lock prices and names the team",
     _fm is not None and _fm.lock_all is None and _fm.lock_contested is None
     and _fm.missing_budgets == ["team2"] and "no budget for: team2"
     in _fm.report() and "certain to win" not in _fm.report(),
     _fm.report() if _fm else _efm)
-_dnone, _ = _dm90("SCRUB")
-_fn, _ = _fr90(d=_dnone)
+_dnone, _ = _dm92("SCRUB")
+_fn, _ = _fr92(d=_dnone)
 chk("a player who helps nobody is contested by nobody, at the minimum bid",
     _fn is not None and _fn.contested == [] and _fn.lock_contested == 1.0
     and "contest is for later weeks" in _fn.report())
 chk("the report says it is bounds, not a predicted winning bid",
     _f0 is not None and "NOT a predicted winning bid" in _f0.report())
 chk("a team not in the list, a negative budget and zero weeks are refused",
-    _fr90("9")[0] is None and _fr90("0", -1)[0] is None
-    and _fr90("0", 500, 0)[0] is None)
+    _fr92("9")[0] is None and _fr92("0", -1)[0] is None
+    and _fr92("0", 500, 0)[0] is None)
 
 # A rival whose only quarterback is on a bye has no legal lineup. Running the
 # instructions' own example on real data crashed here with "roster has no
 # QB" before this shipped.
-_d90q, _eq = None, ""
+_d92q, _eq = None, ""
 try:
-    _t90q = [dict(t, roster={k: list(v) for k, v in t["roster"].items()})
-             for t in _t90]
-    _t90q[2]["roster"]["QB"] = []
-    _d90q = ff_guillotine.waiver_demand(
-        _t90q, _p90, candidate="MID", n_sims=3000, meta=_meta90,
-        budgets=_bud90)
+    _t92q = [dict(t, roster={k: list(v) for k, v in t["roster"].items()})
+             for t in _t92]
+    _t92q[2]["roster"]["QB"] = []
+    _d92q = ff_guillotine.waiver_demand(
+        _t92q, _p92, candidate="MID", n_sims=3000, meta=_meta92,
+        budgets=_bud92)
 except Exception as e:
-    _d90q, _eq = None, f"{type(e).__name__}: {e}"
-_q2 = next((d for d in (_d90q or []) if d.team_id == "2"), None)
+    _d92q, _eq = None, f"{type(e).__name__}: {e}"
+_q2 = next((d for d in (_d92q or []) if d.team_id == "2"), None)
 chk("a rival with no legal lineup does not crash the demand run",
-    _d90q is not None and len(_d90q) == 4, _eq)
+    _d92q is not None and len(_d92q) == 4, _eq)
 chk("it is marked as not valued, with the reason",
     _q2 is not None and "no QB" in _q2.unvalued and _q2.gain_pp == 0.0)
-_fq, _efq = _fr90(d=_d90q) if _d90q else (None, _eq)
+_fq, _efq = _fr92(d=_d92q) if _d92q else (None, _eq)
 chk("and is counted as CONTESTING, not as a team he does not help",
     _fq is not None and "2" in [d.team_id for d in _fq.contested]
     and _fq.lock_contested == 801.0
     and "COULD NOT BE VALUED" in _fq.report(), _fq.report() if _fq else _efq)
 chk("my own team with no legal lineup is refused, with the reason",
-    _d90q is not None and "no legal lineup" in _fr90("2", 800, d=_d90q)[1],
-    _fr90("2", 800, d=_d90q)[1] if _d90q else "")
+    _d92q is not None and "no legal lineup" in _fr92("2", 800, d=_d92q)[1],
+    _fr92("2", 800, d=_d92q)[1] if _d92q else "")
 
 _summary()
 raise SystemExit(1 if fails else 0)

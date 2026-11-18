@@ -1525,7 +1525,7 @@ def drop_board(teams: list[dict], pool: dict[str, np.ndarray], *,
 
 
 # ---------------------------------------------------------------------------
-# Who else wants him, and what it takes to outbid them (B205)
+# Who else wants him, and what it takes to outbid them (B221)
 # ---------------------------------------------------------------------------
 #
 # `waiver_value` says what a free agent is worth to ONE team. A FAAB bid is

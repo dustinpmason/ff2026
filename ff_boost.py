@@ -551,8 +551,9 @@ def book_liquidity_tiers(odds_response: dict,
 # that exist today and errs toward flagging.
 THIN_ANCHOR_LIQUIDITY = 25
 
-# F15. How far the model must sit BELOW the fair line before it counts as
-# preferring the other side of a leg. A fair line and a model estimate differ
+# F15. How far the model must sit BELOW the fair line before it is REPORTED
+# as reading the leg lower than the market. Since B237 (2026-11-17) that
+# report is a NOTE and stops nothing; see `score_slip`. A fair line and a model estimate differ
 # by a point or two on almost every leg, so a bare sign test would flag half
 # a slip and mean nothing.
 #
@@ -4777,7 +4778,8 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
 #   SUBSTITUTION  — a leg the engine never recommended. Needs `recommended=`
 #                   to detect, because "the engine did not pick this" is only
 #                   meaningful against a set the engine actually picked.
-#   SIDE CONFLICT — a leg where the model prefers the other side. Needs
+#   SIDE CONFLICT — a leg where the model reads the side lower than the
+#                   market does. A NOTE since B237, no longer a STOP. Needs
 #                   `model_p` on the leg. `verdict == "CLEAR"` does NOT cover
 #                   this: boost_verdict answers "does anything argue against
 #                   this side", and CLEAR means nothing was found against it.
@@ -4948,17 +4950,29 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                 f"the engine wants the {l.side} or the other side of it. A "
                 f"CLEAR verdict does not answer that question."))
         elif against:
-            # The Tez Johnson shape. Loud, because it is the one that reads
-            # as a screened leg.
-            other = "UNDER" if str(l.side).upper() == "OVER" else "OVER"
+            # B237. This was a STOP ("the model prefers the OVER"), built for
+            # the Week 9 Tez Johnson slip when the engine still picked sides.
+            # It no longer does, and on the graded log (B205, 2026-11-17) the
+            # model's disagreement with the market carried no information:
+            # the eleven graded verdicts where the model sat 3+ points
+            # AGAINST the side won 8 where the fair lines predicted 6.0. On
+            # 2026-11-15 this finding printed DO NOT PLACE on a slip for the
+            # LaPorta under, which won; the thread advised trusting the
+            # market and the slip was placed anyway. A refusal that is
+            # routinely talked around teaches a reader to ignore refusals.
+            # It is reported, in full, as a NOTE, and changes no verdict. A
+            # role change against the side is still a VETO or a CAUTION from
+            # `boost_verdict`, which is where the model's real evidence is.
             out.findings.append(SlipFinding(
-                "STOP", who,
-                f"the model prefers the {other}. You are on the {l.side} at "
-                f"a fair {l.fair_prob:.1%}, and the model puts that side at "
-                f"{l.model_p:.1%} — {abs(l.model_gap):.1%} the wrong way, "
-                f"past the {MODEL_SIDE_GATE:.0%} gate. This is NOT what a "
-                f"verdict measures: {l.verdict} means nothing was found "
-                f"against this side, not that the model wants it."))
+                "NOTE", who,
+                f"the game-log model reads the {l.side} at {l.model_p:.1%} "
+                f"against a market fair of {l.fair_prob:.1%}, "
+                f"{abs(l.model_gap) * 100:.1f} pts lower. This is a note, "
+                f"NOT a lean and not a reason to pull the leg: on the "
+                f"graded log the market's number was the more accurate one "
+                f"and the model's disagreement did not predict results. "
+                f"The verdict above ({l.verdict}) is what was found against "
+                f"this side."))
 
         if l.anchor_thin:
             out.findings.append(SlipFinding(

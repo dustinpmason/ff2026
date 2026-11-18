@@ -353,6 +353,64 @@ def attach_injury(trend: UsageTrend, player: str,
     return trend, f"{note} — may be limiting snaps; the drop could reverse on full health"
 
 
+def _display_name(weekly: pd.DataFrame, player: str,
+                  aliases: dict | None = None) -> str | None:
+    """The nflverse display name for a name as a book or Dustin spells it.
+
+    ONE resolution, used by `player_series` and `resolve_player_id`, so the
+    game log and anything joined beside it (B206's snap check) cannot land on
+    different players. Three steps, each tried only if the one before found
+    nothing; returns None when none does.
+    """
+    names = weekly.player_display_name
+    if (names == player).any():
+        return player
+    # Punctuation and spacing: FanDuel writes "J.J McCarthy", nflverse
+    # "J.J. McCarthy". `_meta_lookup` closed this gap and this join did
+    # not, so the game-day run raised on it. Matched on the normalised
+    # key, and only when that key names exactly ONE nflverse player.
+    want = norm_player(str(player))
+    cands = [n for n in names.dropna().unique()
+             if norm_player(str(n)) == want]
+    if len(cands) == 1:
+        return cands[0]
+    if aliases:
+        # B163. The same map `ff_boost.classify` and `rung_legs` take: any
+        # spelling -> the nflverse display name, matched on the normalised
+        # name on the alias side. This was the one join in the single-leg
+        # and boost flows the map did not reach, so "Cameron Skattebo" got
+        # a team from `classify` and a LookupError from here.
+        for k, v in aliases.items():
+            if norm_player(str(k)) == want and (names == v).any():
+                return v
+    return None
+
+
+def resolve_player_id(weekly: pd.DataFrame, player: str,
+                      aliases: dict | None = None) -> tuple[str, str]:
+    """(nflverse display name, GSIS id) for one player. Raises LookupError.
+
+    Refuses a display name that carries more than one GSIS id: two men who
+    share a name are two players, and picking one silently is the join this
+    project does not make.
+    """
+    name = _display_name(weekly, player, aliases)
+    if name is None:
+        raise LookupError(
+            f"no rows for player {player!r}"
+            + ("" if aliases else
+               " — if this is a book spelling, pass aliases={book name: "
+               "nflverse name}"))
+    ids = sorted({str(i) for i in
+                  weekly.loc[weekly.player_display_name == name,
+                             "player_id"].dropna().unique()})
+    if len(ids) != 1:
+        raise LookupError(
+            f"{name!r} carries {len(ids)} GSIS ids ({', '.join(ids) or 'none'})"
+            f" — cannot tell which player is meant")
+    return name, ids[0]
+
+
 def player_series(weekly: pd.DataFrame,
                   player: str,
                   stat: str,
@@ -367,38 +425,16 @@ def player_series(weekly: pd.DataFrame,
     zero is almost always an absence, not a performance, and leaving them in
     biases every threshold estimate downward.
     """
-    df = weekly[weekly.player_display_name == player]
-    if df.empty:
-        # Punctuation and spacing: FanDuel writes "J.J McCarthy", nflverse
-        # "J.J. McCarthy". `_meta_lookup` closed this gap and this join did
-        # not, so the game-day run raised on it. Matched on the normalised
-        # key, and only when that key names exactly ONE nflverse player.
-        want = norm_player(str(player))
-        names = [n for n in weekly.player_display_name.dropna().unique()
-                 if norm_player(str(n)) == want]
-        if len(names) == 1:
-            df = weekly[weekly.player_display_name == names[0]]
-            player = names[0]
-    if df.empty and aliases:
-        # B163. The same map `ff_boost.classify` and `rung_legs` take: any
-        # spelling -> the nflverse display name, matched on the normalised
-        # name on the alias side. This was the one join in the single-leg
-        # and boost flows the map did not reach, so "Cameron Skattebo" got
-        # a team from `classify` and a LookupError from here.
-        want = norm_player(str(player))
-        for k, v in aliases.items():
-            if norm_player(str(k)) == want:
-                df = weekly[weekly.player_display_name == v]
-                if not df.empty:
-                    player = v
-                    break
-    if df.empty:
+    _name = _display_name(weekly, player, aliases)
+    if _name is None:
         raise LookupError(
             f"no rows for player {player!r}"
             + ("" if aliases else
                " — if this is a book spelling, pass aliases={book name: "
                "nflverse name} (propline_search_players' known_names lists "
                "both)"))
+    player = _name
+    df = weekly[weekly.player_display_name == player]
     if "season_type" in df.columns:
         df = df[df.season_type == "REG"]
     if seasons:
@@ -432,6 +468,235 @@ def player_series(weekly: pd.DataFrame,
     out.attrs["stat"] = stat
     out.attrs["opportunity"] = opp
     return out
+
+
+# ---------------------------------------------------------------------------
+# B206 — was he on the field? Offensive snap share as a role check
+#
+# `usage_trend` reads targets and carries. It cannot see a player who was
+# barely on the field, because a game with one snap and a game he was the
+# third read on both show a small target count. On 2026-11-16 KeAndre
+# Lambert-Smith was bet OVER 17.5 receiving yards and played ONE offensive
+# snap; his share over his earlier games read 0%, 87%, 3%, 56%. Nothing
+# fired, because nothing looked.
+#
+# Measured, not assumed (`snap_volatility.py`, 2024-26, 11,217 WR/TE/RB
+# player-games, run 2026-11-17). The outcome is his share in the NEXT game he
+# appears in:
+#
+#     group      n      next game <= 15% of snaps   <= 25%   median next
+#     STABLE     5,269           1.4%                3.5%       0.69
+#     UNSTABLE     817          10.0%               19.2%       0.45
+#     LOW        5,131          44.1%               62.4%       0.19
+#
+# UNSTABLE holds at 9.6% / 10.4% / 10.1% in 2024 / 2025 / 2026 against
+# 1.0% / 1.5% / 2.1%, and at 7-12% for each of WR, TE and RB, so it is not
+# one season or one position. The script voids its own run if any season
+# falls under a 3x split.
+#
+# What it is NOT: it conditions on the player appearing, so it is not an
+# injury rate; and it says nothing about whether a book already shades the
+# line. It is a reason for CAUTION on an OVER, not a price.
+#
+# LOW IS TWO DIFFERENT PLAYERS (added on review, 2026-11-17). LOW is 46% of
+# all player-games, and seven in ten of those are steady part-timers who
+# never reached a 40% share anywhere in the window: median share 12% last
+# game and 13% the next. Nothing has changed for that player, his line is
+# set for the role he has, and a CAUTION that fires on a third of all
+# skill-position player-games tells a reader nothing (CAUTION already fires
+# on most legs of a board for another reason, B212). The other three in ten
+# HAD a role inside the window and were under 40% last game:
+#
+#     LOW, no role in the window    3,570   55.0% next game <= 15%   (steady)
+#     LOW, a role earlier in it     1,561   19.2% next game <= 15%   (lost it)
+#
+# 21.8% / 16.8% / 18.5% by season for the second group, against 1.0% to 2.1%
+# for a steady role. Only that second group is FLAGGED. The first is
+# reported as part-time, in words, and changes no verdict.
+# ---------------------------------------------------------------------------
+
+SNAP_WINDOW = 4            # his last four games WITH a snap (an inactive
+                           # game leaves no row)
+SNAP_MIN_GAMES = 3         # fewer than this and nothing is said
+SNAP_ROLE_SHARE = 0.40     # "had a real role last game"
+SNAP_LOW_SHARE = 0.25      # a game at or under this inside the window
+SNAP_POSITIONS = ("WR", "TE", "RB")     # the only positions measured
+# Share of NEXT games at or under 15% of offensive snaps, by group. Quoted in
+# the caution text so the number travels with its source. Re-run
+# snap_volatility.py before changing either threshold above.
+SNAP_NEXT_LOW_RATE = {"STABLE": 0.014, "UNSTABLE": 0.100, "LOW": 0.441,
+                      "LOW_LOST_ROLE": 0.192, "LOW_PART_TIME": 0.550}
+
+
+@dataclass
+class SnapTrend:
+    """A player's recent offensive snap share, and what it says about an OVER."""
+    player: str
+    verdict: str                      # STABLE / UNSTABLE / LOW / UNKNOWN
+    reason: str = ""
+    games: list = field(default_factory=list)   # [(week, share, snaps)], oldest first
+    season: int | None = None
+    position: str | None = None
+    gsis_id: str | None = None
+    pfr_id: str | None = None
+    joined_by: str = ""
+
+    @property
+    def had_role(self) -> bool:
+        """Did he reach a real role in ANY game of the window."""
+        return any(s >= SNAP_ROLE_SHARE for _w, s, _n in self.games)
+
+    @property
+    def part_time(self) -> bool:
+        """LOW, and never above the role share in the window: a steady
+        part-time player, not a role that has gone anywhere."""
+        return self.verdict == "LOW" and not self.had_role
+
+    @property
+    def flagged(self) -> bool:
+        """UNSTABLE, or LOW after having had a role in the window. A steady
+        part-timer is NOT flagged: his line is set for the role he has."""
+        return (self.verdict == "UNSTABLE"
+                or (self.verdict == "LOW" and self.had_role))
+
+    @property
+    def checked(self) -> bool:
+        """False when nothing could be measured. UNKNOWN is not STABLE."""
+        return self.verdict != "UNKNOWN"
+
+    def _list(self) -> str:
+        return ", ".join(f"wk{int(w)} {s:.0%}" for w, s, _n in self.games)
+
+    def describe(self) -> str:
+        if not self.checked:
+            return (f"  snap share  : NOT CHECKED — {self.reason}. This is "
+                    f"not a clean read.")
+        tag = self.verdict
+        if self.part_time:
+            tag = ("LOW, a steady part-time role: not a caution, his line is "
+                   "set for it")
+        elif self.verdict == "LOW":
+            tag = "LOW, after a real role earlier in the window"
+        return (f"  snap share  : {self._list()}  [{tag}]"
+                + (f"  (joined by {self.joined_by})"
+                   if self.joined_by and self.joined_by != "pfr id" else ""))
+
+    def caution_text(self, side: str | None = None) -> str:
+        rate = SNAP_NEXT_LOW_RATE["LOW_LOST_ROLE" if self.verdict == "LOW"
+                                  else self.verdict]
+        base = SNAP_NEXT_LOW_RATE["STABLE"]
+        n = len(self.games)
+        if self.verdict == "LOW":
+            lead = (f"SNAP SHARE LOW AFTER A REAL ROLE — he played "
+                    f"{self.games[-1][1]:.0%} of offensive snaps in his last "
+                    f"game, having had a real role earlier (last {n} games "
+                    f"with a snap: {self._list()}).")
+        else:
+            lead = (f"SNAP SHARE UNSTABLE — offensive snap share over his "
+                    f"last {n} games with a snap: {self._list()}. He had a "
+                    f"real role last game and lost it at least once in that "
+                    f"window.")
+        return (f"{lead} Measured on 2024-26 (snap_volatility.py): after a "
+                f"window like this his next game is at or under 15% of snaps "
+                f"{rate:.0%} of the time, against {base:.1%} for a steady "
+                f"role. An OVER needs him on the field, and the usage check "
+                f"reads targets and carries, so it cannot see this.")
+
+
+def snap_trend(snaps: pd.DataFrame, roster: pd.DataFrame,
+               weekly: pd.DataFrame, player: str, *,
+               aliases: dict | None = None, season: int | None = None,
+               before_week: int | None = None) -> SnapTrend:
+    """Offensive snap share over a player's last games, as a role check.
+
+        snaps  = ff_data.load_snaps(2026)
+        roster = ff_data.load_roster(2026)
+        st = snap_trend(snaps, roster, wk, "KeAndre Lambert-Smith")
+        verdict, why = boost_verdict(est, edge, screen, snap=st)
+
+    The join runs by id: name -> nflverse display name -> GSIS id (the same
+    resolution `player_series` uses) -> the roster's `pfr_id` -> the snap
+    table's `pfr_player_id`. Where the roster carries no PFR id for him (about
+    one skill player in seven, mostly rookies), it falls back to his exact
+    normalised name AND position inside the snap table, and only when that
+    names exactly one PFR id; `joined_by` says which path was taken.
+
+    `before_week` drops that week and everything after it, so a check run for
+    a past game cannot see the game itself.
+
+    Never raises on a player it cannot place: it returns UNKNOWN with the
+    reason, and UNKNOWN is reported as NOT CHECKED, never as stable.
+    """
+    def unknown(why: str, **kw) -> SnapTrend:
+        return SnapTrend(player=player, verdict="UNKNOWN", reason=why, **kw)
+
+    need = {"pfr_player_id", "season", "week", "offense_pct", "offense_snaps",
+            "position", "player"}
+    if snaps is None or not need.issubset(snaps.columns):
+        return unknown("the snap table is missing or lacks "
+                       + ", ".join(sorted(need - set(getattr(snaps, 'columns', [])))))
+    try:
+        name, gid = resolve_player_id(weekly, player, aliases)
+    except LookupError as e:
+        return unknown(str(e))
+    if season is None:
+        season = int(snaps.season.max())
+    s = snaps[snaps.season == season]
+    if "game_type" in s.columns:
+        s = s[s.game_type == "REG"]
+    if before_week is not None:
+        s = s[s.week < before_week]
+
+    pfr, joined = None, ""
+    rr = (roster[roster.gsis_id == gid]
+          if roster is not None and "gsis_id" in roster.columns
+          else pd.DataFrame())
+    if not rr.empty and "pfr_id" in rr.columns:
+        ids = sorted({str(x) for x in rr.pfr_id.dropna().unique()})
+        if len(ids) == 1:
+            pfr, joined = ids[0], "pfr id"
+        elif len(ids) > 1:
+            return unknown(f"the roster lists {len(ids)} PFR ids for {name}",
+                           gsis_id=gid, season=season)
+    if pfr is None:
+        pos = (str(rr.position.dropna().iloc[0])
+               if not rr.empty and "position" in rr.columns
+               and rr.position.notna().any() else None)
+        want = norm_player(name)
+        cand = s[s.player.map(lambda x: norm_player(str(x))) == want]
+        if pos is not None:
+            cand = cand[cand.position == pos]
+        ids = sorted({str(x) for x in cand.pfr_player_id.dropna().unique()})
+        if pos is None or len(ids) != 1:
+            return unknown(
+                f"no PFR id for {name} in the roster, and his name and "
+                f"position match {len(ids)} player(s) in the snap table",
+                gsis_id=gid, season=season)
+        pfr, joined = ids[0], "name + position (the roster has no PFR id for him)"
+
+    g = s[s.pfr_player_id == pfr].sort_values("week")
+    position = str(g.position.iloc[-1]) if len(g) else None
+    kw = dict(gsis_id=gid, pfr_id=pfr, season=season, position=position,
+              joined_by=joined)
+    if position is not None and position not in SNAP_POSITIONS:
+        return unknown(f"snap share was measured for "
+                       f"{', '.join(SNAP_POSITIONS)} only, and he is listed "
+                       f"at {position}", **kw)
+    if len(g) < SNAP_MIN_GAMES:
+        return unknown(f"only {len(g)} game(s) with a snap in {season}"
+                       + (f" before week {before_week}" if before_week else "")
+                       + f"; needs {SNAP_MIN_GAMES}", **kw)
+    w = g.tail(SNAP_WINDOW)
+    games = [(int(a), float(b), int(c)) for a, b, c in
+             zip(w.week, w.offense_pct, w.offense_snaps)]
+    last, low = games[-1][1], min(x[1] for x in games)
+    if last < SNAP_ROLE_SHARE:
+        v = "LOW"
+    elif low <= SNAP_LOW_SHARE:
+        v = "UNSTABLE"
+    else:
+        v = "STABLE"
+    return SnapTrend(player=name, verdict=v, games=games, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -1495,6 +1760,8 @@ def prop_edge(est: Estimate,
 # Flat stake sizing, mirroring the convention from the other copilots. Applies
 # to STANDALONE props only — a boost slip is a fixed $10 by rule, so stake
 # sizing is not a decision there. See boost_verdict() below.
+# B205: kept as the list of tier names the log uses. `edge_report` no longer
+# prints a tier or a stake.
 STAKES = {"STRONG": 13, "MODERATE": 10, "COIN-FLIP": 5, "PASS": 0}
 
 
@@ -1531,7 +1798,8 @@ BOOST_VERDICTS = {
 
 
 def boost_verdict(est: Estimate, edge: Edge | None = None,
-                  screen: QuoteScreen | None = None) -> tuple[str, list[str]]:
+                  screen: QuoteScreen | None = None,
+                  snap: "SnapTrend | None" = None) -> tuple[str, list[str]]:
     """Should this leg go on a boost slip? Returns (verdict, reasons).
 
     This is a VETO function. A CLEAR verdict means nothing was found against
@@ -1542,6 +1810,10 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
       - a multi-book suspension (probable scratch) — the strongest signal here
       - a role change running against the side being bet
       - no usable price, or a sample too thin to say anything
+
+    `snap` (B206) is a `snap_trend()` result. An UNSTABLE or LOW snap share
+    is a CAUTION on an OVER and on a leg with no side given; it says nothing
+    against an UNDER, which a vanishing role helps. It never lifts a VETO.
     """
     reasons: list[str] = []
     verdict = "CLEAR"
@@ -1701,6 +1973,14 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
         caution(f"team volume at {u.team_volume_ratio:.0%} but share held at "
                 f"{u.share_ratio:.0%} — game script, not role loss")
 
+    # B206. Was he on the field. Directional like the role change: a role
+    # that keeps vanishing is a risk to an OVER and no risk to an UNDER.
+    if snap is not None and getattr(snap, "flagged", False):
+        _ss = (str(edge.side).strip().upper()
+               if edge is not None and edge.side else None)
+        if _ss != "UNDER":
+            caution(snap.caution_text(_ss))
+
     # A binary, low-event stat breaks the threshold model. Measured live:
     # Rome Odunze came back at 1.0% against a 25.2% Pinnacle fair line on 7
     # games — a 24-point gap produced by a stat that is 0 or 1 each week with
@@ -1736,10 +2016,54 @@ def boost_verdict(est: Estimate, edge: Edge | None = None,
     return verdict, reasons
 
 
+# ---------------------------------------------------------------------------
+# B205 — the model's number is not a lean, and a big gap is a warning
+#
+# Graded 2026-11-17 on the real log (`model_vs_fair.py`): 175 verdicts that
+# carry both a model probability and a market fair line, 85 players, 11 games
+# with an event id.
+#
+#     accuracy (Brier, lower is better; a coin flip is 0.250)
+#         model 0.312      market fair line 0.248
+#     the model's side, by how far it sat above the fair line
+#         under 3 pts    won 16 of 35     3-10 pts   won 29 of 55
+#         10-20 pts      won 22 of 50     20+ pts    won 11 of 35
+#     one verdict per player/market/side, model 10+ pts above the fair:
+#         won 25 of 68 (37%) where the fair lines said 50%
+#     best-fit weight on (model - fair): -0.78, se 0.33
+#
+# So the more the model disagreed with the market, the more often the
+# MARKET's side won. That is not a licence to bet against the model: it is
+# 11 games, legs from one game move together, and 90 of the 175 verdicts carry
+# no game id at all. What it does settle is that the tier and the stake printed
+# beside it were advertising information the number does not have. The tier
+# is still computed and still LOGGED, because the scorecard is how this gets
+# re-measured; it is no longer printed, and no stake follows from it.
+# ---------------------------------------------------------------------------
+
+MODEL_GAP_WARN = 0.10
+
+
+def model_gap_note(edge: Edge) -> str | None:
+    """A warning when the model and the fair line are far apart, else None."""
+    gap = edge.model_p - edge.fair_p
+    if abs(gap) < MODEL_GAP_WARN:
+        return None
+    where = "ABOVE" if gap > 0 else "BELOW"
+    return (f"MARKET DISAGREES WITH THE GAME LOG — the model reads the "
+            f"{edge.side} {abs(gap)*100:.0f} pts {where} the fair line. On "
+            f"the graded log (2026-11-17, model_vs_fair.py) the model's side "
+            f"won 25 of 68 when it sat 10+ pts above the fair, and the fair "
+            f"line was the more accurate number overall. A gap this size "
+            f"usually means the market knows something the game log does "
+            f"not. It is NOT a lean, in either direction.")
+
+
 def boost_leg_report(est: Estimate, edge: Edge, label: str = "",
-                     screen: QuoteScreen | None = None) -> str:
+                     screen: QuoteScreen | None = None,
+                     snap: "SnapTrend | None" = None) -> str:
     """Report a leg for a boost slip: inclusion verdict, no stake, no "edge"."""
-    verdict, reasons = boost_verdict(est, edge, screen)
+    verdict, reasons = boost_verdict(est, edge, screen, snap)
     gap = (edge.model_p - edge.fair_p) * 100.0   # in points, not a fraction
     L = [label or f"{est.stat} {edge.side} {est.line:g}"]
     L.append(f"  VERDICT     : {verdict} — {BOOST_VERDICTS[verdict]}")
@@ -1748,8 +2072,13 @@ def boost_leg_report(est: Estimate, edge: Edge, label: str = "",
     L.append(f"  model says  : {edge.model_p:.1%}  "
              f"(gap {gap:+.1f} pts — NOT an edge; this model is not a sharp "
              f"reference)")
+    _mg = model_gap_note(edge)
+    if _mg:
+        L.append(f"  ! {_mg}")
     L.append(f"  sample      : {est.n} games, interval "
              f"{est.ci_low*100:.0f}-{est.ci_high*100:.0f}%")
+    if snap is not None:
+        L.append(snap.describe())
     L.append(f"  de-vig      : {edge.devig_method}")
     if reasons:
         for r in reasons:
@@ -1774,7 +2103,8 @@ def report(est: Estimate, label: str = "") -> str:
         f"  empirical   : {est.empirical*100:.0f}%",
         f"  normal fit  : {est.parametric*100:.0f}%",
         f"  recency-wtd : {est.recency*100:.0f}%",
-        f"  USE         : {est.blended*100:.0f}%   (95% CI {band})",
+        f"  model       : {est.blended*100:.0f}%   (95% CI {band}) — a "
+        f"game-log estimate, not a lean",
     ]
     if est.usage is not None:
         lines.append(est.usage.describe())
@@ -1787,19 +2117,30 @@ def report(est: Estimate, label: str = "") -> str:
 
 
 def edge_report(e: Edge, label: str = "") -> str:
-    stake = STAKES[e.tier]
+    """One leg: the market's number first, then the model's gap. No rating.
+
+    B205. This used to end `VERDICT : STRONG -> $13`. The tier is still on
+    the Edge and still logged; it is not printed and no stake follows from
+    it, because on the graded log the model's confidence did not track
+    results (see the block above `model_gap_note`).
+    """
+    gap = (e.model_p - e.fair_p) * 100.0
     lines = [
         f"{label}",
         f"  side        : {e.side}",
-        f"  model       : {e.model_p*100:.0f}%   market (fair): {e.fair_p*100:.0f}%",
-        f"  fair from   : {e.fair_source}",
-        f"  edge        : {e.edge*100:+.1f} pts    EV {e.ev_per_dollar*100:+.1f}%/$",
+        f"  market fair : {e.fair_p*100:.0f}%   ({e.fair_source})",
+        f"  model says  : {e.model_p*100:.0f}%   (gap {gap:+.1f} pts — NOT a "
+        f"lean; the fair line is the number to use)",
     ]
+    _mg = model_gap_note(e)
+    if _mg:
+        lines.append(f"  ! {_mg}")
     if not np.isnan(e.hold):
         lines.append(f"  book hold   : {e.hold*100:.1f}%")
     lines.append(f"  de-vig      : {e.devig_method}")
-    lines.append(f"  VERDICT     : {e.tier}  ->  ${stake}")
-    lines.append(f"  why         : {e.reasoning}")
+    lines.append(f"  model rating: none — no tier or stake is given off this "
+                 f"model")
+    lines.append(f"  notes       : {e.reasoning}")
     return "\n".join(lines)
 
 

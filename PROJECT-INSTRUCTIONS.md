@@ -97,7 +97,7 @@ The sandbox is destroyed between conversations, so the durable copy lives in
 ```python
 # 1. search_files: "parentId = '1d3oQvz5rgHmvv9FTet8Bup65pXlLQgtS'"
 # 2. search_files: "parentId = '...' and trashed = true"     <- REQUIRED
-# then for each live hit: download_file_content(fileId=...) and
+# then get each live file's TEXT as described under this block, and
 import ff_betlog as bl
 bl.write_pulled("ff-betlog-20261030T171557Z.jsonl", text)
 bl.record_pull(live_names, trashed_names)   # even when both are empty
@@ -105,6 +105,48 @@ bl.record_pull(live_names, trashed_names)   # even when both are empty
 #   bl.record_pull(error="what went wrong")
 print(bl.status())
 ```
+
+**Pull the content with `search_files`, not `download_file_content` (B211).**
+A download returns base64 into the chat and the history is far too large
+for that; on 2026-11-16 a session gave up and ran with no history. Instead:
+
+1. `search_files(query="parentId = '1d3oQvz5rgHmvv9FTet8Bup65pXlLQgtS' and
+   createdTime < '<tomorrow, UTC>'", pageSize=100,
+   snippetVerbosity="MAX_ALLOWED")`. With the `createdTime` clause it
+   returns every file in one response, which the harness saves to disk
+   (56 files, 940 KB, on 2026-11-17). Without it the same query returns
+   about 5 files a page.
+2. Each file's `contentSnippet` is the full text, markdown-escaped. Reverse
+   it and check it before writing:
+
+```python
+import json, re
+def text_from_snippet(sn):
+    t = sn.replace("  \n", "\n")
+    t = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|<>~$&=:;'\"^%@/,?])", r"\1", t)
+    if t.endswith("  "):
+        t = t[:-2]
+    return t.rstrip("\n") + "\n"
+
+for f in response["files"]:
+    text = text_from_snippet(f["contentSnippet"])
+    for line in text.splitlines():
+        json.loads(line)                                   # every record parses
+    same_size = len(text.encode()) == int(f["fileSize"])   # byte-exact
+    bl.write_pulled(f["title"], text)
+```
+
+3. Report how many files matched their size exactly. On 2026-11-17 it was
+   55 of 56; `ff-betlog-20261108T070309Z.jsonl` comes back 6 bytes short
+   with all 8 records parsing. Name any OTHER file that does not match. A
+   file whose records do not parse is not loaded, and the history is then
+   incomplete: say so.
+4. A file uploaded in the last few minutes returns an empty snippet until
+   Drive indexes it. That is not an empty file.
+5. The trash query and `record_pull(live_names, trashed_names)` are
+   unchanged and still required.
+
+This is an interim method. The fix is one consolidated log file (B227).
 
 **The trash query is not optional, and this is measured.** Drive's search
 defaults to `trashed = false`, so a `parentId` query returns nothing when
@@ -1732,6 +1774,29 @@ disagreed with a sharp line (Waller, Lloyd) — and both were role changes,
 which is the one thing it genuinely sees. A CLEAR verdict means nothing was
 found against the leg. It is not an endorsement.
 
+**The model's tier is never shown and its number is never a lean (B205,
+graded 2026-11-17 and re-run independently the same night).** On 175 graded
+verdicts that carry both a model probability and a market fair line (85
+players, 11 games with an event id, 90 verdicts with none) the fair line was
+the more accurate number: Brier 0.248 against the model's 0.312, with a coin
+flip at 0.250. When the model sat 10 or more points above the fair line its
+side won 25 of 68, and the best-fit weight on the model's disagreement was
+about -0.8. That is 11 games and it is not a reason to bet against the
+model. It is the reason for these rules:
+
+- Do not write Strong, Moderate or Coin-flip in an answer, and do not give a
+  stake off the model. `edge_report` and `boost_leg_report` no longer print
+  either. The tier is still logged by `log_edge`, so the scorecard keeps
+  measuring it.
+- Do not put the model's percentage in a table. Give the market's fair
+  line, the price, and the veto checks.
+- When the model and the fair line are 10 or more points apart, both reports
+  print `MARKET DISAGREES WITH THE GAME LOG`. Say it in plain words: the
+  market probably knows something the game log does not. It is a warning,
+  it changes no verdict, and it is not a lean in either direction.
+- After each grading run `python3 model_vs_fair.py` and report the Brier
+  pair and the 10+ point row. If they change materially, say so.
+
 **A role change is DIRECTIONAL and no longer vetoes both sides (B80, fixed
 2026-11-05).** Until today `boost_verdict` vetoed every role change and the
 message asserted "it runs against <side>" without checking — which cost a
@@ -2199,10 +2264,16 @@ with nothing to use:
 - **Slip:** the single best slip for that boost, legs exactly as the book
   words them. Best means largest cushion as a share of P(cash) among slips
   that meet the boost's rules.
-- **No leg repeats across rows.** Assign the boost with the highest EV
-  first and work down; a later boost takes its best slip that shares no
-  player-outcome with the rows above it. If that changes a pick, say so in
-  one line under the table.
+- **No player repeats across rows (B208).** Assign the boost with the
+  highest EV first and work down; a later boost takes its best slip that
+  shares no PLAYER with the rows above it, on any market or line. If that
+  changes a pick, say so in one line under the table. On 2026-11-16 three
+  bets on one game all needed Baltimore's run game (Henry rushing, Hill
+  rushing, Henry First TD) and lost together.
+- **Say what sinks each slip.** In the detail above the table, name the one
+  result that would beat it ("needs Henry over 70 on the ground"). If two
+  slips would be sunk by the same thing, say so and offer the next-best
+  slip for one of them.
 - **Quote:** the real quote from this response's own pull, never the
   product and never a quote carried from an earlier pull.
 - **Stake → returns:** at the boost's maximum stake.
@@ -2262,6 +2333,33 @@ of 2026-11-12), say so at the top, de-vig Pinnacle's own two-sided prices
 from the same pull with `devig="shin"`, and label every such fair as
 derived that way.
 
+### Price it, then place it (B209)
+
+Prices at Dustin's books have been better when a slip was priced than at
+kickoff. Recommended legs at the price quoted when they were recommended
+beat the close by 1.0% a leg (75 legs); the legs he placed, mostly minutes
+before kickoff, beat it by 0.1% (33 legs). On 2026-11-16 one FanDuel slip
+quoted +422 at 10:19 AM and +380 for the same legs at 8 PM.
+
+- When every player on a slip has a settled status, tell Dustin plainly
+  that the quote is for now and that waiting has cost price. Give the
+  numbered steps to place it.
+- When a player's status is open, say which player and when it resolves
+  (inactives are out about 90 minutes before kickoff), and hold that slip
+  only.
+- **Before he places anything priced more than 15 minutes ago, ask for the
+  bet slip and re-price exactly what is on it:** every line and the price.
+  If a line differs from the slip that was priced, name the leg and
+  re-score it. On 2026-11-16 a slip priced at Hill over 12.5 was placed at
+  over 13.5, which moved it from +2.8% to -0.8%.
+- **The bet slip is the price, not PropLine's quote (B226).** FanDuel's
+  slip ran 5 to 7% under PropLine's FanDuel quote on three slips in one
+  night (+335 quoted, +303 on the slip). Treat a PropLine FanDuel quote as
+  that much too high until Dustin reads the slip, and give him the price
+  the slip needs (`ff_boost.needed_odds`) beside every FanDuel quote.
+- Morning EV still rests on opening-limit anchors. The price can be better
+  while the EV percentage is overstated; say both.
+
 ## Scoring a slip Dustin already built — `score_slip()` (F15)
 
 When Dustin shows you a slip he has built or is about to place, **run
@@ -2314,23 +2412,27 @@ Johnson. The slip placed swapped Tez for Luther Burden on intuition. Tez went
 76 yards against a 15.5 line with the engine on the OVER, and the slip lost.
 Nothing in the pipeline could have said a word.
 
-**The two things it catches that nothing else does:**
+**The two things it reports that nothing else does:**
 
-1. **A side conflict** — the model prefers the OTHER side of a leg you are
-   betting. This needs `model_p` on the leg, and it is NOT what `verdict`
-   measures. `boost_verdict` answers "does anything argue against this
-   side", so `CLEAR` means nothing was found against it, not that the model
-   wants it. On the Tez leg every verdict read CLEAR and was right to.
-   Threshold is `MODEL_SIDE_GATE` (3pp), because a fair line and a model
-   estimate differ by a point or two on nearly every leg.
+1. **The model reading a side lower than the market** — a NOTE, not a stop
+   (B237, 2026-11-17). When the game-log model puts the side being bet 3 or
+   more points under the market's fair (`MODEL_SIDE_GATE`), the report says
+   so with both numbers. It used to print `DO NOT PLACE`. It no longer
+   changes the verdict, because on the graded log the model's disagreement
+   did not predict results: the eleven graded verdicts where it sat 3+
+   points against the side won 8 where the fair lines predicted 6.0, and on
+   2026-11-15 it objected to an under that won. Read it out as a note and
+   say it is not a lean. What still stops a slip is a VETO from
+   `boost_verdict` (a role change against the side, a probable scratch), a
+   leg that was never screened, and an empty slip.
 2. **A substitution** — a leg the engine never proposed, or the same player
    moved to a different side or line. This needs `recommended=`. Without it
    the check cannot run, and **the report says so** rather than reading as a
    clean bill. Pass the engine's legs whenever they exist.
 
-**Always pass `model_p` on every leg** — the model's probability FOR THE SIDE
-ON THAT LEG. Without it the report returns a CHECK saying nothing can tell
-you which side the engine wants, which is accurate and useless. `model_p` is
+**Pass `model_p` on every leg that has one** — the model's probability FOR
+THE SIDE ON THAT LEG. Without it the report returns a CHECK saying the
+model's read is missing. `model_p` is
 `est.blended` from the `prop_edge` call you already made for that side.
 
 `None` means NOT SUPPLIED and is reported as unknown; it never reads as
@@ -2603,7 +2705,9 @@ Five things, in this order, every time:
 
 1. **The market's number** — the de-vigged fair, and which book anchored it.
 2. **The price** — his book's, and whether it beats the fair.
-3. **The model** — the tier and the gap, or an explicit abstention.
+3. **The model** — the gap in points, stated as not a lean, with the
+   10-point warning when it fires; or an explicit abstention. Never a tier
+   and never a stake.
 4. **The role check** — CLEAR / CAUTION / VETO for THAT side, with the reason.
 5. **What would change the answer** — the one thing most likely to move it.
 
@@ -2790,6 +2894,24 @@ quoted. And if he holds a stake-back token, this is the market it belongs
 on: see the stake-back section, and note the gradient across the board is
 worth ~$0.86 against ~$1.2 for the `v` assumption.
 
+**A First TD token needs a price, not a pick (B210).** Dustin's four placed
+First TD legs were 4.5% worse than the close on average, the weakest group
+in the log, and a 10% boost cannot cover a 30 to 55% overround (a 25% boost
+breaks even at about a 25% field margin). For every name offered, give the
+price it needs: `ff_boost.needed_odds(fair_prob, boost_pct)` is break-even
+after the boost. If the book's price is shorter than that, the call is
+Skip, and say so before he asks. If he places it anyway, log it with the
+Skip call on the slip record.
+
+**Which fair to use for a First TD (B225, measured 2026-11-15).** A Shin
+de-vig of a COMPLETE field, which in practice is DraftKings' (BetMGM's
+omits "no scorer"; FanDuel's is not on PropLine). Do not use a proportional
+de-vig: it overstates long shots, made 0 of 55 legs positive where Shin made
+11, and ranked "No TD scorer" best. Use Kalshi's first-TD price only as a
+cross-check and only above about 7%: it sits on a half-cent grid, so a 1.5%
+player moves a third of his value per step. On 2026-11-15 the Shin fair for
+Hubbard was 15.6% against a Kalshi close of 15.9%.
+
 ## Backtesting — `ff_backtest.py`, and what it can and cannot answer
 
 **It cannot tell you whether the strategy is profitable. Do not ask it to.**
@@ -2903,7 +3025,8 @@ credit it had earned. **Settle it with snap counts, not the roster status
 field**: ACT means dressed, not that he took a snap. One row away sat Bryan
 Thomas Jr., a Jacksonville DE with 0 offensive snaps — the same name trap,
 separated only by distinct PropLine ids, which is why the join never runs on
-names.
+names. The snap counts are `ff_data.load_snaps(season)`, keyed by PFR id;
+join through the roster's `pfr_id`.
 
 ### Run `audit()` before quoting any backtest number
 
@@ -3115,6 +3238,46 @@ preference. A 3-game window was tested and made every true role loss invisible
 (Waller 51% -> 82%, Barkley 35% -> 105%) while inventing a false one. It widens
 to 3 automatically at nine games.
 
+### Snap share: was he on the field (B206)
+
+`usage_trend` reads targets and carries, so it cannot see a player who was
+barely on the field. On 2026-11-16 KeAndre Lambert-Smith was bet OVER 17.5
+receiving yards and played one offensive snap; his share over his earlier
+games read 0%, 87%, 3%, 56%.
+
+**Run this for every WR, TE and RB on a shortlisted slip, and on every
+single-leg question:**
+
+```python
+snaps  = ff_data.load_snaps(2026)        # pulled by refresh.py
+roster = ff_data.load_roster(2026)
+st = ff_props.snap_trend(snaps, roster, wk, player, aliases=ALIASES)
+verdict, why = ff_props.boost_verdict(est, edge, screen, snap=st)
+print(ff_props.boost_leg_report(est, edge, label, screen, snap=st))
+```
+
+- **UNSTABLE** (a real role last game, but a game at or under 25% of snaps
+  in his last four) is a CAUTION on an OVER. So is **LOW after a real
+  role**: under 40% last game, having been at 40% or more earlier in the
+  window. Neither says anything against an UNDER, and neither lifts a VETO.
+  Read the snap shares out to Dustin.
+- **LOW, a steady part-time role** (under 40% in every game of the window)
+  is NOT a caution and changes no verdict. That is about a third of all
+  skill-position player-games; nothing has changed for that player and his
+  line is set for the role he has. The report prints his shares and says so.
+- **UNKNOWN** means not checked: fewer than three games with a snap, a
+  quarterback, or a player the roster cannot place. Say "snap share not
+  checked" and why. It is not a clean read.
+- Measured in `snap_volatility.py` on 2024-26: after an UNSTABLE window the
+  next game is at or under 15% of snaps 10% of the time, against 1.4% for a
+  steady role; after LOW following a real role, 19%. Run the script before
+  quoting the numbers anywhere else.
+- Two limits to state when it matters: it conditions on the player
+  appearing, so it is not an injury rate; and nothing here measures whether
+  the book already shaded his line.
+- For a past game pass `before_week=` so the check cannot see the game
+  itself.
+
 ## Analysis discipline
 
 **0. A story that explains the DIRECTION is not a story that explains the
@@ -3211,7 +3374,16 @@ and isn't relevant.
 
 ## Weekly rhythm
 
-**Tuesday/Wednesday — waivers.** For each league: who's droppable, who's worth a
+**Tuesday — grading pass 2, before waivers (B212).** Re-settle the week's
+legs by GSIS id from nflverse and confirm the box score agreed. For any
+player with no weekly row, check `ff_data.load_snaps()`: a snap means he
+played and the leg is action; no row there either means VOID. Run
+`bl.pending()` and grade whatever it lists, including recommended slips
+(`grade_slip_rec_leg`), then `python3 model_vs_fair.py`. On 2026-11-17
+`pending()` showed 140 verdicts that had sat ungraded since Week 9.
+
+**Tuesday/Wednesday — waivers.** For the guillotine league follow
+"Guillotine waivers and FAAB bids — the weekly procedure". For each league: who's droppable, who's worth a
 claim, how much FAAB. Rank claims across all four leagues so I can see where my
 budget is best spent. Account for the fact that the guillotine league has only 4
 bench spots — a speculative stash costs more there.

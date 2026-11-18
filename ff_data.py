@@ -11,7 +11,7 @@ solved by re-pulling at the start of a session, not by maintaining a store.
 
 Usage
 -----
-    from ff_data import load_weekly, load_pbp, refresh_all, data_status
+    from ff_data import load_weekly, load_pbp, load_snaps, refresh_all, data_status
 
     refresh_all()                 # pull everything fresh, print what landed
     wk = load_weekly([2025, 2026])
@@ -109,6 +109,9 @@ ASSETS = {
     "weekly": "{B}/stats_player/stats_player_week_{yr}.parquet",
     "pbp": "{B}/pbp/play_by_play_{yr}.parquet",
     "roster": "{B}/rosters/roster_{yr}.parquet",
+    # B206. Per-game snap counts (PFR). Confirmed live 2026-11-17. Keyed by
+    # `pfr_player_id`, NOT a GSIS id: join through the roster's `pfr_id`.
+    "snaps": "{B}/snap_counts/snap_counts_{yr}.parquet",
 }
 
 # Max age before a cached file is considered stale and re-pulled.
@@ -189,12 +192,37 @@ def load_roster(year: int = CURRENT_SEASON, force: bool = False) -> pd.DataFrame
     return pd.read_parquet(fetch("roster", year, force))
 
 
+def load_snaps(years: int | list[int] = CURRENT_SEASON,
+               force: bool = False) -> pd.DataFrame:
+    """Per-game snap counts. One row per player per game he took a snap in.
+
+    B206. This is the only source here that says whether a player was ON
+    THE FIELD. The weekly table carries a row only for a player with a
+    recorded stat, so an active receiver who drew no targets and a scratch
+    look the same in it (B109), and a role that swings 59 -> 2 -> 40 -> 1
+    snaps is invisible to a check built on targets and carries.
+
+    Columns include `pfr_player_id`, `player`, `position`, `team`, `week`,
+    `offense_snaps`, `offense_pct`, `st_snaps`. There is NO GSIS id: join
+    through `load_roster()`'s `pfr_id`. A player who was inactive has no row
+    at all for that game.
+    """
+    years = [years] if isinstance(years, int) else list(years)
+    frames = []
+    for y in years:
+        df = pd.read_parquet(fetch("snaps", y, force))
+        if "season" not in df.columns:
+            df["season"] = y
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
 def refresh_all(years: list[int] | None = None, force: bool = True) -> None:
     """Pull every asset fresh. Call this at the start of a working session."""
     years = years or [CURRENT_SEASON - 1, CURRENT_SEASON]
     print(f"Refreshing nflverse data -> {CACHE}")
     for y in years:
-        for kind in ("weekly", "pbp", "roster"):
+        for kind in ("weekly", "pbp", "roster", "snaps"):
             try:
                 p = fetch(kind, y, force=force)
                 mb = p.stat().st_size / 1e6
