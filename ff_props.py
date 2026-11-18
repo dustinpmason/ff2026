@@ -757,29 +757,51 @@ def snap_trends(snaps: pd.DataFrame, roster: pd.DataFrame,
     `players` may be names or anything with a `.player` attribute.
     """
     out: dict = {}
-    for p in players:
-        name = getattr(p, "player", p)
-        if name is None or name in out:
+    by_player: dict = {}
+    given = [getattr(p, "player", p) for p in players]
+    given = [n for n in given if n is not None]
+    # The shortest spelling of each player is the one looked up and shown.
+    canon: dict = {}
+    for n in given:
+        k = norm_player(str(n))
+        if k not in canon or (len(str(n)), str(n)) < (len(str(canon[k])),
+                                                      str(canon[k])):
+            canon[k] = n
+    for name in given:
+        if name in out:
             continue
-        out[name] = snap_trend(snaps, roster, weekly, str(name),
-                               aliases=aliases, season=season,
-                               before_week=before_week)
+        # B249. A multi-book board spells one player several ways (Bovada
+        # appends the team: "David Montgomery (HOU)"). Each spelling is a
+        # key, so `st.get(leg.player)` works for any of them, but they all
+        # point at ONE SnapTrend and `snap_summary` counts him once.
+        key = norm_player(str(name))
+        if key not in by_player:
+            by_player[key] = snap_trend(snaps, roster, weekly,
+                                        str(canon[key]), aliases=aliases,
+                                        season=season,
+                                        before_week=before_week)
+        out[name] = by_player[key]
     return out
 
 
 def snap_summary(trends: dict) -> str:
     """One line per flagged or unchecked player, and the counts."""
     from collections import Counter as _C
-    c = _C(t.verdict for t in trends.values())
-    flagged = [t for t in trends.values() if t.flagged]
-    unknown = [t for t in trends.values() if t.verdict == "UNKNOWN"]
-    out = [f"snap share: {len(trends)} players checked — "
+    # B249. One line per PLAYER, however many spellings point at him.
+    uniq: dict = {}
+    for name, t in trends.items():
+        uniq.setdefault((t.gsis_id or norm_player(str(name))), t)
+    people = sorted(uniq.values(), key=lambda t: norm_player(str(t.player)))
+    c = _C(t.verdict for t in people)
+    flagged = [t for t in people if t.flagged]
+    unknown = [t for t in people if t.verdict == "UNKNOWN"]
+    out = [f"snap share: {len(people)} players checked — "
            + ", ".join(f"{n} {v}" for v, n in sorted(c.items()))
            + f"; {len(flagged)} flagged (a caution on an OVER)"]
     for t in flagged:
         shares = ", ".join(f"wk{w} {s:.0%}" for w, s, _ in t.games)
         out.append(f"  FLAGGED {t.player}: {t.verdict} — {shares}")
-    for t in trends.values():
+    for t in people:
         if t.missed_games:
             out.append(f"  ABSENT {t.player}: {t.absence_text()}")
     for t in unknown:

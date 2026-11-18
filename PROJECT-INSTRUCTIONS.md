@@ -2111,7 +2111,9 @@ before kickoff; `ff_boost.leg_verified(leg, hours)` is the test (see
 other two only as what the report printed, never as evidence a leg is
 tested or untested.
 
-The report prints `** OPENING ANCHOR **` for any of the three. Do not read
+The report prints `** OPENING ANCHOR **` for an exact 0.5000 or a thin
+anchor, and a plain `anchor limit:` line for a limit that merely equals
+the board's common limit (not a warning). Do not read
 a non-0.5000 anchor as settled without checking its liquidity — an early
 version of the flag tested fair_prob first and was structurally unable to
 see the thin case. **And check `Shortlist.immature_anchors` before quoting
@@ -2377,6 +2379,9 @@ quoted +422 at 10:19 AM and +380 for the same legs at 8 PM.
   night (+335 quoted, +303 on the slip). Treat a PropLine FanDuel quote as
   that much too high until Dustin reads the slip, and give him the price
   the slip needs (`ff_boost.needed_odds`) beside every FanDuel quote.
+- If `propline_price_sgp` answers 503 `book_unavailable`, retry once
+  before calling the book unavailable. On 2026-11-18 FanDuel's first call
+  failed that way and the retry quoted.
 - A morning fair is an early read. The price at Dustin's book can be
   better in the morning while the fair it is judged against is less
   settled; print `ff_boost.anchor_drift(hours).describe()` and say both.
@@ -2498,6 +2503,12 @@ score = ff_boost.score_slip(
     floor=100)                   # the BOOST'S minimum odds, when it has one
 print(score.report())
 ```
+
+A correlated slip's structure finding is a `[STOP]` and the headline is
+NOT PRICED AS A PARLAY, but the finding now ends with what the engine can
+still say: the chance to cash as a floor or an estimate, and the EV at the
+quote when one was passed (B250). That figure and `report()`'s agree. Read
+it out; do not present the `[STOP]` as a refusal.
 
 Pass `aliases`, `quotes` and `floor` every time. Without `quotes` the
 slip's noise falls back to a fixed figure instead of the one measured on
@@ -3419,6 +3430,10 @@ st = ff_props.snap_trends(snaps, roster, wk, {l.player for l in pool},
 print(ff_props.snap_summary(st))                  # flagged and NOT CHECKED
 verdict, why = ff_props.boost_verdict(est, edge, screen, snap=st.get(player))
 ```
+
+Pass every spelling on the board: a multi-book pull spells one player
+several ways (Bovada appends the team), and each spelling is a key that
+points at one record, counted once (B249).
 
 Read `snap_summary` out: it names every flagged player with his shares,
 every player it could not check, and every player who is **ABSENT** (his

@@ -1726,3 +1726,16 @@ The dry run exercised every new function on the live board with two stand-in boo
 | **B248** | Instructions said a 17-hour read loses "one line in nine" | **DONE** — I read the 12-hour row; `anchor_drift(17)` uses the 18-hour row (23%). Text corrected, the 18- and 36-hour rows added to the table, and the instructions now say to quote `describe()` rather than read the table. |
 
 Also seen and left alone: 29 of the 133 rung legs `rung_legs` keeps carry a VETO, by design (kept means built; `usable_legs` and `enumerate_candidates` drop them). The standing rules (injury check, summary table, `log_slip_rec`) were skipped because the dry-run prompt said so; Thursday's prompt does not.
+
+### 2026-11-18, 11am: the five-minute re-check (commit fd91d12)
+
+Suite 1,793 ALL PASS on the thread's clone. The ABSENT line printed for David Montgomery, `score_slip` took all three arguments and read `min_odds 100.0, clears_floor True`, `p_cash_for_pricing` gave 0.1202 against a raw 0.1230, and no `** OPENING ANCHOR **` printed. The engine raised no traceback. Four things came back:
+
+| id | what | status |
+|---|---|---|
+| **B249** | `snap_summary` counted every player twice | **DONE 2026-11-18** — my prompt passed `{q["player"] for q in quotes}` over a multi-book board, and Bovada appends the team to every name, so each player had two keys and two records: "32 players checked, 8 flagged" for 16 and 4. `snap_trends` now computes one record per normalised name (looked up and shown under the shortest spelling) and maps every given spelling to it; `snap_summary` counts and prints each player once, in name order. |
+| **B250** | `score_slip` stopped at "not priceable" with no number while `report()` priced the same slip | **DONE (text only)** — the structure finding now ends with the chance to cash as a floor or an estimate, from `p_cash_for_pricing`, and the EV at the quote when one was passed. Still a `[STOP]`, still NOT PRICED AS A PARLAY. **Open question for Dustin:** every same-game slip has a correlated pair, so every one of his own tickets gets this STOP. Whether it should be a CHECK when the engine does hold an estimate is a behaviour change left for after TNF. |
+| **B251** | The joint-error line said "the EV on the floor is OPTIMISTIC" on an ESTIMATE ONLY slip | **DONE (wording)** — "on the product". `p_cash_floor` still returns the raw product on such a slip, by its existing definition; `p_cash_for_pricing` is the figure to use. |
+| **B252** | A pair whose interval spans zero is listed under "The product is NOT the joint" | **OPEN** — Schultz x Warren, r=+0.0033, 95% CI -0.0029 to +0.0095, opposing receptions x receiving yards. It is listed as a correlated pair and contributes to the joint error. Whether a pair that cannot be told from zero should count is a question for `classify`, after TNF. |
+
+Also noted: `propline_price_sgp` at FanDuel returned a 503 ("fanduel sgp returned 403") on the first call and a quote on the retry; instruction line 2114 still described the old label and is corrected.

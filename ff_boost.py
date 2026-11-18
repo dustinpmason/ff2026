@@ -2172,7 +2172,7 @@ def joint_verdict(legs, pairs, quotes=None, cis=None) -> tuple[bool, str]:
     if ratio <= JOINT_OVERSTATE_RATIO:
         return True, (
             f"{lead} — the bias is inside the noise it sits in, so it is "
-            f"reported rather than refused, but the EV on the floor is "
+            f"reported rather than refused, but the EV on the product is "
             f"OPTIMISTIC "
             f"by about {abs(je.rel):.2%} and that is the direction that "
             f"costs money")
@@ -4996,6 +4996,27 @@ def _slip_key(leg) -> tuple:
             else float(leg.line))
 
 
+def _slip_estimate_text(cand) -> str:
+    """What the engine can still say about a correlated slip's price. B250.
+
+    `score_slip` stopped at "not priceable" while `report()` printed an
+    estimate and an EV for the same slip. The finding now carries the same
+    figure, worked from `p_cash_for_pricing`, so the two do not disagree.
+    """
+    p = cand.p_cash_for_pricing
+    if p is None:
+        return (" The engine has no estimate of the chance to cash for "
+                "this slip.")
+    what = ("a floor" if cand.verdict == "FLOOR ONLY" else "an estimate")
+    s = (f" It can still be read as {what}: about {p:.1%} to cash "
+         f"(1 in {1 / p:.1f})")
+    if cand.priced:
+        d = to_decimal(cand.book_odds)
+        ev = p * (d - 1.0) * (1.0 + cand.boost_pct) - (1.0 - p)
+        s += f", which is {ev:+.1%} at this quote"
+    return s + ". report() shows the working."
+
+
 def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                book_odds: float | None = None, stake: float = 10.0,
                recommended=None, aliases=None, quotes=None,
@@ -5044,7 +5065,8 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                "on what can be priced, not a finding against the bet."
                if _cv == "FLOOR ONLY" else
                " The product OVERSTATES the chance to cash here, so an EV "
-               "on it is too high." if _cv == "ESTIMATE ONLY" else ""),
+               "on it is too high." if _cv == "ESTIMATE ONLY" else "")
+            + _slip_estimate_text(cand),
             kind="structure"))
     for note in cand.structure.zeros or ():
         out.findings.append(SlipFinding("NOTE", "", note))

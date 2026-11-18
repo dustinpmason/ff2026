@@ -10910,5 +10910,80 @@ chk("a flagged AND absent player's OVER carries both notes",
     _ul94.snap_note == "snap share LOW; no snap since Week 5 (4 team games)",
     _ul94.snap_note)
 
+# --- B249. one player, several book spellings -------------------------------
+_two94 = [_names93[0] + " (HOU)", _names93[0], _names93[1],
+          _names93[1] + " (IND)", "Nobody Real 94 (XX)", "Nobody Real 94"]
+_sd94 = ff_props.snap_trends(_snaps93, _roster93, _wk93, _two94)
+chk("every spelling is a key, and both spellings are ONE record",
+    len(_sd94) == 6
+    and _sd94[_names93[0]] is _sd94[_names93[0] + " (HOU)"]
+    and _sd94["Nobody Real 94"] is _sd94["Nobody Real 94 (XX)"])
+chk("the record carries the shortest spelling, whichever came first",
+    _sd94[_names93[0] + " (HOU)"].player == _names93[0]
+    and _sd94["Nobody Real 94 (XX)"].player == "Nobody Real 94")
+_ss2 = ff_props.snap_summary(_sd94)
+chk("the summary counts three players, not six, and repeats no line",
+    "snap share: 3 players checked" in _ss2
+    and _ss2.count("NOT CHECKED Nobody Real 94") == 1
+    and len(_ss2.splitlines()) == len(set(_ss2.splitlines())), _ss2)
+
+# --- B250. the slip checker carries the estimate the report prints ----------
+class _E94(_C94):
+    verdict = "ESTIMATE ONLY"
+    priced = True
+    book_odds = 528.0
+    boost_pct = 0.30
+
+
+def _e94(rel, **kw):
+    c = _E94.__new__(_E94)
+    c._rel = rel
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
+
+
+_et94 = ff_boost._slip_estimate_text(_e94(-0.05))
+_pe94 = 0.19
+_eve94 = _pe94 * 5.28 * 1.30 - (1 - _pe94)
+chk("an ESTIMATE ONLY slip's finding gives the adjusted chance and its EV",
+    "an estimate: about 19.0% to cash (1 in 5.3)" in _et94
+    and f"{_eve94:+.1%} at this quote" in _et94, _et94)
+
+
+class _F94(_E94):
+    verdict = "FLOOR ONLY"
+    priced = False
+
+
+_ft94 = ff_boost._slip_estimate_text(_F94.__new__(_F94))
+chk("a floor is called a floor, and with no quote there is no EV",
+    "a floor: about 20.0% to cash" in _ft94 and "at this quote" not in _ft94,
+    _ft94)
+
+
+class _U94(_E94):
+    p_cash_floor = property(lambda self: None)
+
+
+chk("with no estimate at all it says so rather than printing a number",
+    "no estimate" in ff_boost._slip_estimate_text(_U94.__new__(_U94)))
+# A quarterback and his own receiver: the fixture section 77 uses for a
+# FLOOR ONLY slip.
+_sg94 = ff_boost.score_slip(
+    [_jleg("QB94", .52, market="player_pass_yds", pos="QB", liq=5000),
+     _jleg("WR94", .52, market="player_receptions", pos="WR", liq=250)],
+    boost_pct=0.50, book_odds=300.0, floor=100)
+_sf94 = [f for f in _sg94.findings if f.kind == "structure"]
+chk("a correlated slip's structure finding ends with that text",
+    len(_sf94) == 1 and _sg94.candidate.verdict == "FLOOR ONLY"
+    and _sf94[0].text.endswith(ff_boost._slip_estimate_text(_sg94.candidate))
+    and "a floor: about" in _sf94[0].text
+    and "at this quote. report() shows the working." in _sf94[0].text,
+    (_sg94.candidate.verdict, [f.text[-170:] for f in _sf94]))
+chk("the overstatement is described on the product, not on a floor",
+    "the EV on the floor is" not in _insp94.getsource(ff_boost)
+    and "the EV on the product is" in _insp94.getsource(ff_boost))
+
 _summary()
 raise SystemExit(1 if fails else 0)
