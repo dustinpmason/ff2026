@@ -1522,3 +1522,201 @@ def drop_board(teams: list[dict], pool: dict[str, np.ndarray], *,
                  "removing a player cannot shrink the best lineup's P(elim). "
                  "The pairing has broken; do not act on this board.")
     return "\n".join(L)
+
+
+# ---------------------------------------------------------------------------
+# Who else wants him, and what it takes to outbid them (B205)
+# ---------------------------------------------------------------------------
+#
+# `waiver_value` says what a free agent is worth to ONE team. A FAAB bid is
+# a first-price sealed auction against every other team still alive, so the
+# price is set by what he is worth to THEM and by what they have left to
+# spend, neither of which the board for my own roster can show.
+#
+# Two things here are facts and are reported as facts:
+#   * nobody can bid more than they hold, so (largest opposing budget + 1)
+#     wins outright;
+#   * a team he does not help this week has no survival reason to pay for
+#     him this week.
+# What a team WILL bid is not a fact and nothing here pretends to know it.
+# This returns bounds and the evidence, and leaves the number to be chosen
+# and justified in the open.
+
+
+@dataclass
+class Demand:
+    team_id: str
+    team_name: str
+    value: WaiverValue
+    budget: float | None = None
+    # Set when this team could not be simulated at all this week, which on
+    # a real board means it has NO legal lineup: its only quarterback is on
+    # a bye. That team is the one most likely to need a pickup, so it is
+    # never read as "he does not help them". Found by running the
+    # instructions' own example before shipping it.
+    unvalued: str = ""
+
+    @property
+    def gain_pp(self) -> float:
+        """Points of P(elim) he takes off this team this week (>= 0)."""
+        d = self.value.delta
+        return 0.0 if (not self.value.reachable or d != d) else max(0.0, -d * 100.0)
+
+
+def waiver_demand(teams: list[dict], pool: dict[str, np.ndarray], *,
+                  candidate: str, n_sims: int = 40_000,
+                  meta: dict | None = None, week: int | None = None,
+                  unavailable=None, budgets: dict | None = None,
+                  **kw) -> list[Demand]:
+    """`waiver_value` for `candidate` from EVERY live team's side.
+
+    One paired run per team, so the cost is (live teams) simulations per
+    candidate; keep the candidate list to the players actually worth a bid.
+    Teams with an empty roster are eliminated and are skipped. A candidate
+    already on a roster is refused: he is not on the wire.
+    """
+    who = resolve(candidate, pool)
+    for t in teams:
+        if who is not None and who in {p for v in t["roster"].values()
+                                       for p in v}:
+            raise ValueError(
+                f"{who} is on {t.get('team_name')!r}'s roster, so he is not "
+                f"a waiver candidate")
+    out = []
+    for t in teams:
+        if not any(t["roster"].values()):
+            continue
+        tid = str(t.get("team_id"))
+        why = ""
+        try:
+            v = waiver_value(teams, pool, my_team_id=tid,
+                             candidate=candidate, n_sims=n_sims, meta=meta,
+                             week=week, unavailable=unavailable, **kw)
+        except ValueError as e:
+            why = str(e)
+            v = WaiverValue(who or candidate, float("nan"), float("nan"),
+                            False, n_sims, False, why)
+        b = None
+        if budgets is not None:
+            b = budgets.get(tid, budgets.get(t.get("team_id")))
+        out.append(Demand(tid, str(t.get("team_name")), v,
+                          None if b is None else float(b), why))
+    return out
+
+
+@dataclass
+class FaabRead:
+    candidate: str
+    my_team: str
+    my_budget: float
+    my_gain_pp: float
+    weeks_left: int
+    floor_pp: float
+    rivals: list            # every other live team's Demand
+    missing_budgets: list   # team names with no budget supplied
+
+    @property
+    def contested(self) -> list:
+        """Rivals he measurably helps THIS week, biggest gain first, plus
+        any rival that could not be valued: unknown is not "no help"."""
+        return sorted([d for d in self.rivals
+                       if d.gain_pp > self.floor_pp or d.unvalued],
+                      key=lambda d: -d.gain_pp)
+
+    @property
+    def can_outbid_me(self) -> list:
+        return [d for d in self.rivals
+                if d.budget is not None and d.budget >= self.my_budget]
+
+    def _lock(self, ds):
+        if any(d.budget is None for d in ds):
+            return None
+        return (max(d.budget for d in ds) + 1.0) if ds else 1.0
+
+    @property
+    def lock_all(self) -> float | None:
+        """Beats every rival's whole budget. None when a budget is missing."""
+        return self._lock(self.rivals)
+
+    @property
+    def lock_contested(self) -> float | None:
+        """Beats the whole budget of every rival he helps this week."""
+        return self._lock(self.contested)
+
+    @property
+    def pace(self) -> float:
+        """Budget spread evenly over the weeks left. A reference, not a rule:
+        FAAB is worth nothing once the league ends."""
+        return self.my_budget / max(1, int(self.weeks_left))
+
+    def report(self) -> str:
+        L = [f"FAAB READ — {self.candidate}, for {self.my_team} "
+             f"(${self.my_budget:,.0f} left, {self.weeks_left} week(s) to "
+             f"play)"]
+        L.append(f"  worth to me this week : {self.my_gain_pp:.3f}pp of "
+                 f"P(elim)"
+                 + ("" if self.my_gain_pp > self.floor_pp else
+                    f"  — inside the {self.floor_pp:.3f}pp floor: he does "
+                    f"not measurably help me THIS week, so any bid is for "
+                    f"later weeks or to keep him from a rival"))
+        L.append("  worth to each rival this week, and what they hold:")
+        for d in sorted(self.rivals, key=lambda d: -d.gain_pp):
+            b = "budget NOT SUPPLIED" if d.budget is None else f"${d.budget:,.0f}"
+            tag = ("" if d.gain_pp > self.floor_pp else "  (no measurable help)")
+            if d.unvalued:
+                tag = (f"  (COULD NOT BE VALUED: {d.unvalued[:50]} — this "
+                       f"team has no legal lineup as it stands, so it is "
+                       f"counted as contesting)")
+            elif not d.value.reachable:
+                tag = f"  (not valued: {d.value.why[:60]})"
+            L.append(f"     {d.team_name:<28} {d.gain_pp:6.3f}pp   {b}{tag}")
+        if self.missing_budgets:
+            L.append(f"  !! no budget for: {', '.join(self.missing_budgets)}. "
+                     f"The lock prices below cannot be stated without them.")
+        la, lc = self.lock_all, self.lock_contested
+        if la is not None:
+            L.append(f"  certain to win  : ${la:,.0f}"
+                     + ("" if la <= self.my_budget else
+                        f"  — MORE THAN I HOLD. "
+                        f"{', '.join(d.team_name for d in self.can_outbid_me)} "
+                        f"can outbid anything I offer"))
+        if lc is not None:
+            n = len(self.contested)
+            L.append(f"  beats everyone he helps this week ({n} team(s)): "
+                     f"${lc:,.0f}"
+                     + ("" if lc <= self.my_budget else "  — more than I hold")
+                     + ("  — nobody else is measurably helped, so the "
+                        "contest is for later weeks" if n == 0 else ""))
+        L.append(f"  even pace       : ${self.pace:,.0f} a week. Unspent "
+                 f"FAAB is worth nothing at the end, and each week's "
+                 f"released roster is stronger than the last.")
+        L.append("  These are bounds and evidence, NOT a predicted winning "
+                 "bid: a rival may bid for later weeks, to block, or not at "
+                 "all. Last week's winning bids in this league are the only "
+                 "direct evidence of what teams actually pay.")
+        return "\n".join(L)
+
+
+def faab_read(demand: list[Demand], *, my_team_id: str, my_budget: float,
+              weeks_left: int, floor: float = 0.25) -> FaabRead:
+    """Bounds on a first-price bid, from `waiver_demand`'s output.
+
+    `my_budget` is passed on its own, never read from `budgets`, so a
+    missing or stale entry for my own team cannot quietly set the answer.
+    """
+    me = next((d for d in demand if d.team_id == str(my_team_id)), None)
+    if me is None:
+        raise ValueError(f"team {my_team_id!r} is not in this demand list")
+    if me.unvalued:
+        raise ValueError(
+            f"my own roster could not be simulated this week "
+            f"({me.unvalued}). Fix the lineup problem first; a bid cannot "
+            f"be bounded for a team with no legal lineup")
+    if my_budget is None or float(my_budget) < 0:
+        raise ValueError(f"my_budget must be a dollar amount, got {my_budget!r}")
+    if int(weeks_left) < 1:
+        raise ValueError(f"weeks_left must be at least 1, got {weeks_left!r}")
+    rivals = [d for d in demand if d.team_id != str(my_team_id)]
+    return FaabRead(me.value.player, me.team_name, float(my_budget),
+                    me.gain_pp, int(weeks_left), float(floor), rivals,
+                    [d.team_name for d in rivals if d.budget is None])

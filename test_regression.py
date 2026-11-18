@@ -622,8 +622,17 @@ chk("stale and unresolved are reported separately",
     ff_guillotine.stale_names(_fakeroster, _sfb) == {"T": ["Returning Player"]}
     and ff_guillotine.unresolved(_fakeroster, _sfb)
         == {"T": ["Absent Player"]})
-_raw = _pfb["Zach Charbonnet"]
-_drawn = ff_guillotine._draw(_pfb, "Zach Charbonnet", 40000)
+# Whoever is stale TODAY, not a named player. This was Zach Charbonnet
+# until 2026-11-17, when his third 2026 game took him out of the stale set
+# and the check failed with nothing wrong in the engine (the same lesson
+# as the three checks above, and as B192). The fallback pool always holds
+# prior-season-only players; take one with enough games and real spread.
+_stale_who = next((n for n in sorted(_pfb.stale)
+                   if len(_pfb[n]) >= 8 and _pfb[n].std(ddof=0) > 3.0), None)
+chk("the fallback pool has a stale player to test the draw on",
+    _stale_who is not None, f"{len(_pfb.stale)} stale")
+_raw = _pfb[_stale_who]
+_drawn = ff_guillotine._draw(_pfb, _stale_who, 40000)
 chk("stale draw widens the spread but keeps the level",
     _drawn.std() > _raw.std(ddof=0) * 1.2
     and abs(_drawn.mean() - _raw.mean()) < 1.0,
@@ -9882,6 +9891,141 @@ chk("a likelier slip needs a shorter price, a target needs a longer one",
 chk("a probability outside (0, 1) and a negative boost are refused",
     isinstance(_no(1.0, .5), str) and isinstance(_no(0, .5), str)
     and isinstance(_no(.3, -.1), str))
+
+# ===========================================================================
+# 90. B205 — who else wants a free agent, and the bounds on a FAAB bid
+# ===========================================================================
+
+section("90. waiver demand and FAAB bounds")
+
+_p90 = dict(_p69)
+_p90.update({n: np.array(v, dtype=float) for n, v in {
+    "MID": [13.5, 11.5],                       # beats a WR3/RB3, not a WR1
+    "DEEP_RB": [15.0, 13.0], "DEEP_WR": [16.0, 14.0],
+    "DEEP_RB2": [14.5, 12.5], "DEEP_WR2": [15.5, 13.5]}.items()})
+_meta90 = dict(_meta69)
+_meta90.update({"MID": ("AAA", "WR"), "DEEP_RB": ("AAA", "RB"),
+                "DEEP_WR": ("AAA", "WR"), "DEEP_RB2": ("AAA", "RB"),
+                "DEEP_WR2": ("AAA", "WR")})
+_base90 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
+           "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}
+_t90 = [{"team_id": str(i), "team_name": f"team{i}",
+         "roster": {k: list(v) for k, v in _base90.items()}} for i in range(4)]
+# team3 already holds better than MID at every spot he could take.
+_t90[3]["roster"]["RB"] = ["RB1", "DEEP_RB", "DEEP_RB2"]
+_t90[3]["roster"]["WR"] = ["WR1", "DEEP_WR", "DEEP_WR2"]
+# team4 has been eliminated: an empty roster.
+_t90.append({"team_id": "4", "team_name": "gone", "roster": {}})
+_bud90 = {"0": 500, "1": 300, "2": 800, "3": 900}
+
+
+def _dm90(cand="MID", budgets=_bud90, teams=_t90):
+    try:
+        return ff_guillotine.waiver_demand(
+            teams, _p90, candidate=cand, n_sims=4000, meta=_meta90,
+            budgets=budgets), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+_d90, _ed90 = _dm90()
+_by90 = {d.team_id: d for d in (_d90 or [])}
+chk("every LIVE team is valued and the eliminated one is skipped",
+    _d90 is not None and sorted(_by90) == ["0", "1", "2", "3"], _ed90)
+chk("he helps the teams whose depth he beats",
+    all(_by90[k].gain_pp > 0.25 for k in ("0", "1", "2") if k in _by90)
+    and len(_by90) == 4,
+    str({k: round(v.gain_pp, 3) for k, v in _by90.items()}))
+chk("and not the team that already holds better",
+    "3" in _by90 and _by90["3"].gain_pp == 0.0
+    and not _by90["3"].value.in_best_lineup,
+    str(_by90.get("3") and _by90["3"].value.describe()))
+chk("a gain is never negative and never a negative zero",
+    all(d.gain_pp >= 0 and str(d.gain_pp)[0] != "-" for d in (_d90 or [0]))
+    if _d90 else False)
+chk("each team carries the budget it was given",
+    _d90 is not None and [_by90[k].budget for k in "0123"]
+    == [500.0, 300.0, 800.0, 900.0])
+chk("a player already on a roster is refused: he is not on the wire",
+    "not a waiver candidate" in _dm90("WR1")[1], _dm90("WR1")[1])
+
+
+def _fr90(me="0", budget=500, weeks=7, d=None, floor=0.25):
+    try:
+        return ff_guillotine.faab_read(d if d is not None else _d90,
+                                       my_team_id=me, my_budget=budget,
+                                       weeks_left=weeks, floor=floor), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+_f0, _ef0 = _fr90()
+chk("the certain price is the largest RIVAL budget plus one",
+    _f0 is not None and _f0.lock_all == 901.0, _ef0)
+chk("and it says so when that is more than I hold, naming who can outbid me",
+    _f0 is not None and [d.team_id for d in _f0.can_outbid_me] == ["2", "3"]
+    and "MORE THAN I HOLD" in _f0.report() and "team2, team3" in _f0.report(),
+    _f0.report() if _f0 else _ef0)
+chk("the contested price ignores a rich team he does not help",
+    _f0 is not None and [d.team_id for d in _f0.contested] in
+    (["1", "2"], ["2", "1"]) and _f0.lock_contested == 801.0,
+    f"{_f0 and _f0.lock_contested}")
+_f3, _ = _fr90("3", 900)
+chk("the richest team can lock him, at one over the next budget",
+    _f3 is not None and _f3.lock_all == 801.0 and not _f3.can_outbid_me
+    and "MORE THAN I HOLD" not in _f3.report())
+chk("and is told he does not help it this week",
+    _f3 is not None and _f3.my_gain_pp == 0.0
+    and "does not measurably help me THIS week" in _f3.report())
+chk("my own budget is the argument, never the table's entry for me",
+    _fr90("0", 950)[0].lock_all == 901.0
+    and not _fr90("0", 950)[0].can_outbid_me)
+chk("pace is the budget over the weeks left",
+    _f0 is not None and abs(_f0.pace - 500 / 7) < 1e-9)
+_dmiss, _ = _dm90(budgets={"0": 500, "1": 300, "3": 900})
+_fm, _efm = _fr90(d=_dmiss)
+chk("a missing rival budget withholds BOTH lock prices and names the team",
+    _fm is not None and _fm.lock_all is None and _fm.lock_contested is None
+    and _fm.missing_budgets == ["team2"] and "no budget for: team2"
+    in _fm.report() and "certain to win" not in _fm.report(),
+    _fm.report() if _fm else _efm)
+_dnone, _ = _dm90("SCRUB")
+_fn, _ = _fr90(d=_dnone)
+chk("a player who helps nobody is contested by nobody, at the minimum bid",
+    _fn is not None and _fn.contested == [] and _fn.lock_contested == 1.0
+    and "contest is for later weeks" in _fn.report())
+chk("the report says it is bounds, not a predicted winning bid",
+    _f0 is not None and "NOT a predicted winning bid" in _f0.report())
+chk("a team not in the list, a negative budget and zero weeks are refused",
+    _fr90("9")[0] is None and _fr90("0", -1)[0] is None
+    and _fr90("0", 500, 0)[0] is None)
+
+# A rival whose only quarterback is on a bye has no legal lineup. Running the
+# instructions' own example on real data crashed here with "roster has no
+# QB" before this shipped.
+_d90q, _eq = None, ""
+try:
+    _t90q = [dict(t, roster={k: list(v) for k, v in t["roster"].items()})
+             for t in _t90]
+    _t90q[2]["roster"]["QB"] = []
+    _d90q = ff_guillotine.waiver_demand(
+        _t90q, _p90, candidate="MID", n_sims=3000, meta=_meta90,
+        budgets=_bud90)
+except Exception as e:
+    _d90q, _eq = None, f"{type(e).__name__}: {e}"
+_q2 = next((d for d in (_d90q or []) if d.team_id == "2"), None)
+chk("a rival with no legal lineup does not crash the demand run",
+    _d90q is not None and len(_d90q) == 4, _eq)
+chk("it is marked as not valued, with the reason",
+    _q2 is not None and "no QB" in _q2.unvalued and _q2.gain_pp == 0.0)
+_fq, _efq = _fr90(d=_d90q) if _d90q else (None, _eq)
+chk("and is counted as CONTESTING, not as a team he does not help",
+    _fq is not None and "2" in [d.team_id for d in _fq.contested]
+    and _fq.lock_contested == 801.0
+    and "COULD NOT BE VALUED" in _fq.report(), _fq.report() if _fq else _efq)
+chk("my own team with no legal lineup is refused, with the reason",
+    _d90q is not None and "no legal lineup" in _fr90("2", 800, d=_d90q)[1],
+    _fr90("2", 800, d=_d90q)[1] if _d90q else "")
 
 _summary()
 raise SystemExit(1 if fails else 0)

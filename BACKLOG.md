@@ -1613,3 +1613,39 @@ Build took 0.47 s on a 65-leg pool (B184 confirmed live). No tracebacks. No test
 | **B202** | `build_meta` teams are stale after a trade (Downs, Brissett) | **INSTRUCTIONS 2026-11-13; code OPEN** — harmless cross-game, misclassifies a same-game pair. Needs a current-team source. |
 | **B203** | Anytime-TD role checks | **OPEN** — every TD leg gets the one-sided CAUTION, so it carries no information; the thread added its own rush+receiving TD series; Josh Allen read COLLAPSED on carries 7.2 -> 7.0, which looks wrong and may be the workaround, not the engine. Ask for the inputs before changing anything. |
 | **B204** | A boost at a book PropLine does not carry | **DONE 2026-11-14** — `ff_boost.needed_odds(p_cash, boost_pct, target_ev=0)`; section 89, revert caught. First use: `TEST-PROMPT-LIVE-5.md` (Bet365 50% SGP boost, NE @ DET), which is also the first first-TD-scorer pricing; that one is prompt arithmetic only, with no engine function yet. |
+
+### 2026-11-17: caught up on eight project threads (Fri 11/13 to Mon 11/16), and the guillotine waiver build
+
+Read in full: the Friday cross-game run, Saturday's guillotine flex question, Saturday night's Part 1 / Part 2, Sunday's four-boost run through SNF, two runs of the same Gridiron Grail trade prompt, a Cameron Wood start/sit, and Monday's MNF boosts. Money, as logged by the threads: Sunday net +$30.04 on four slips; log at 9 slips, 4-5, net +$71.85 before the SNF and MNF bets, whose results are not in any thread I was given.
+
+**Built tonight**
+
+| id | what | status |
+|---|---|---|
+| **B205** | Nothing bounded a FAAB bid, and the waiver functions were not in the instructions at all | **DONE 2026-11-17** — `waiver_board` / `drop_board` have existed since 11-10 and `PROJECT-INSTRUCTIONS.md` never mentioned them. New section "Guillotine waivers and FAAB bids — the weekly procedure". New code: `waiver_demand()` (the candidate's paired value to EVERY live team, about 3 s for seven teams at 40,000 sims) and `faab_read()` (certain-to-win = largest rival budget + 1; the same over only the rivals he measurably helps; who can outbid me; even pace). It reports bounds and evidence and does NOT predict a winning bid. Section 90, ten reverts caught. Found by running the instructions' own example on real data before shipping: a rival whose only QB is on a bye has no legal lineup and crashed the run; such a team is now marked COULD NOT BE VALUED and counted as contesting, since unknown is not "no help". Inputs no tool can read, so Dustin supplies them: every team's FAAB, last week's winning bids, the processing time. |
+| **B220** | A regression check named a real player again | **DONE 2026-11-17** — "stale draw widens the spread" used Zach Charbonnet, who left the stale set with his third 2026 game. It now takes whoever is stale today. Third instance of the same lesson (B21/B23, B192). |
+
+**Findings from the threads, betting side. Not built tonight.**
+
+| id | what | status |
+|---|---|---|
+| **B197 (evidence)** | Selecting the best-looking legs selects anchor error | **CONFIRMED TWICE MORE, still OPEN and now the top betting item** — Saturday's 4-leg cross-game list read +35.4% on its own fairs (12 of 12 too-good) while the verified-legs-only list was -3.3% to -6.6%. Sunday's FanDuel PIT@CIN list read +4.1% and its verified-only rebuild -1.5%. On Sunday's straight-bet scan all 20 too-good legs of 558 were the top 20 by EV, and the thread built a "verified and not too-good" table by hand to get a usable answer. That table should be a function, and a fair should be shrunk by how little money is behind it. |
+| **B208** | The opening tier is derived from the board, so it rises with the board | **OPEN** — Pinnacle's limit went 250 -> 500 -> 1,000 over the weekend and the derived tier followed it, so "above the tier" barely moved (12 of 34, then 13 of 34) and Saturday night's NE@DET board had 0 VERIFIED legs after limits had doubled. The tier needs to be the event's FIRST observed limit, or a fixed ladder, not the current mode. |
+| **B210** | PropLine's FanDuel same-game quote ran above the real bet slip three times | **OPEN** — +335 quoted against +303 on the slip; +218 and +259 against +203 and +239. About 5-7% high, which took a "+7%" slip to roughly zero. Every FanDuel factor on file comes from PropLine, so FanDuel EVs are optimistic by about that much until real-slip prices are recorded beside the quotes. |
+| **B209** | First-TD pricing now has a measured method | **OPEN (function not built)** — Shin de-vig of DraftKings' complete field is the usable fair. Proportional de-vig made 0 of 55 legs positive against 11 on Shin and ranked "No TD scorer" best. Kalshi's first-TD prices sit on a half-cent grid (13 of 55 players at exactly 1.5%), which produced a +126% artefact on a +12000 player; it is usable only above about 7%, where it agreed with Shin to 0.1 point. BetMGM's field omits no-scorer; FanDuel's is not on PropLine. Graded: Hubbard's pre-game fair 15.6% against a Kalshi close of 15.9%. A 25% boost breaks even at about a 25% field margin, and fields ran 26% to 34%. |
+| **B206** | `make_candidate` takes no `floor`, so `price_candidate` labels a slip BELOW MINIMUM against the default +300 | **OPEN** — numbers unaffected, label wrong on any boost with a different minimum. |
+| **B207** | `needed_odds` returns a price shorter than the boost's own minimum without saying so | **OPEN** — add a `minimum=` argument and report which number binds. |
+| **B211** | The bet log is 30 to 44 Drive files and Monday's thread could not load it | **OPEN** — "too large to pass through the chat", so that run had no CLV or record tables. Needs a consolidated file. Also: a script run twice logged 60 slip records twice; `log_slip_rec` should refuse an identical record in one session. |
+| **B212** | CAUTION on nearly every leg of a board | **OPEN (extends B203)** — `screen_quotes`' one-sided list names about 100 rows on a board with milestone and anytime markets, which are one-sided by construction. |
+| **B213** | `rung_legs(odds=...)` took a raw API response and died on `float('bengals')`; a `LadderFair` carries no market | **OPEN** — validate the argument's shape; put the market on the record so one loop cannot mislabel every rung. |
+| **B214** | The slip checker prints "DO NOT PLACE" for a leg it never screened (first TD) and for correlated legs whose correlation HELPS | **OPEN** — wording: three different states read as one refusal. |
+| **B202 (more)** | Stale teams after a move | **OPEN** — also Kirk Cousins (MIN) and Keenan Allen (SF). A raw `meta.get("D.J. Moore")` returns None where `meta_lookup` resolves him; the instructions should say to use `meta_lookup`. |
+| **B216** | No wind figure is obtainable | **NOTED** — the weather tool has no wind or hourly field and the web returned prior seasons' pages. The thread reported the gap, which is right. |
+
+**Findings from the threads, fantasy side**
+
+| id | what | status |
+|---|---|---|
+| **B217** | A lineup answer named two players who were on a bye | **DONE 2026-11-17 (instructions)** — "check byes before naming anyone". |
+| **B218** | The same trade prompt in two threads found different markets | **NOTED** — one thread found the Lemon Rock deal (Corum for Stroud plus a kicker swap, accepted); the other said Dustin was "the only buyer" and listed a quarterback on IR as a free-agent option. A trade answer has to scan every roster for partners before it describes the market. |
+| **B219** | The connector cannot see FAAB balances or the trade deadline | **NOTED** — the thread said so. Dustin supplies them; see B205. |

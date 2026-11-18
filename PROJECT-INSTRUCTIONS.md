@@ -1521,6 +1521,97 @@ sides can differ by orders of magnitude ($5,977 over vs $112 under on the
 same 14.5). `None` means the book never reported liquidity, which is NOT
 the same as 0.
 
+## Guillotine waivers and FAAB bids — the weekly procedure
+
+Every week one team is cut and its whole roster goes onto the wire, so the
+waiver run is where this league is won. Use the simulation for every add,
+every cut and every bid. **Do not use FantasyPros' waiver tool or its FAAB
+suggestion for this league**: it prices on a generic scale and knows nothing
+about elimination (on 2026-11-14 it suggested $24 on a budget it could not
+see).
+
+**Ask Dustin for four things first, because no tool can read them.** Ask
+once, in the first reply, then carry on with whatever he gives:
+
+1. Every live team's remaining FAAB, his own included.
+2. Last week's winning bids (player, amount, who won). These are the only
+   direct evidence of what this league pays.
+3. When claims process.
+4. The roster that was just released, if he has it. Without it, sweep every
+   unrostered player whose pool mean is 6 or more; that is a superset.
+
+**Check byes before naming anyone.** Get the byes for the week being played
+from the connector, pass them as `unavailable=`, and never name a starter or
+an add without having looked. On 2026-11-14 a lineup answer recommended two
+players on bye.
+
+```python
+from ff_guillotine import (build_pool, build_meta, players_on_bye,
+                           waiver_board, drop_board, waiver_demand, faab_read)
+wk   = load_weekly([2025, 2026])
+pool = build_pool(wk, LEAGUES["guillotine"], season=2026)
+meta = build_meta(wk[wk.season == 2026])
+out  = players_on_bye(WEEK, meta, BYE_TEAMS) | set(OUT_OR_IR_PLAYERS)
+
+# 1. What each free agent is worth to ME this week (one paired run each).
+print(waiver_board(teams, pool, my_team_id=ME, candidates=cands,
+                   n_sims=80_000, meta=meta, week=WEEK, unavailable=out))
+# 2. What each cut costs me (one run for the whole roster).
+print(drop_board(teams, pool, my_team_id=ME, n_sims=80_000, meta=meta,
+                 week=WEEK, unavailable=out))
+# 3. For the few players worth a real bid: who ELSE he helps, and the bounds.
+d = waiver_demand(teams, pool, candidate=name, meta=meta, week=WEEK,
+                  unavailable=out, budgets={team_id: dollars, ...})
+print(faab_read(d, my_team_id=ME, my_budget=MY_DOLLARS,
+                weeks_left=WEEKS_LEFT).report())
+```
+
+- **`teams`** is `get_roster(all_teams=True)`. A team whose roster comes back
+  empty has been eliminated; say how many are alive. `WEEKS_LEFT` is the
+  number of cuts still to come, including this week's.
+- **Never value an add or a cut by running the simulation twice and
+  subtracting.** `waiver_board` and `drop_board` pair the comparison inside
+  one run; two runs differ by more than most players are worth.
+- **An add needs a cut.** Pair each add with the cheapest row of the drop
+  board and state the net. A cut marked free STRUCTURALLY is free only
+  because he is on a bye this week; say what he costs next week.
+- **Run the boards for NEXT week as well**, with that week's byes. A star on
+  a bye this week reads as worth nothing, and a player who helps for one
+  week only is not worth what one who helps for six is.
+- **What the simulation cannot see, say in words:** a quarterback change, a
+  teammate returning or going out, and any player who has changed teams (his
+  history is from the old offense; compare the connector's depth chart with
+  `meta`). `[STALE]` and `[position ASSUMED]` on a board line mean what they
+  say.
+
+**Reading `faab_read`.** It reports bounds and evidence, not a predicted
+winning bid.
+
+- *Certain to win* is the largest rival budget plus one. Nobody can bid more
+  than they hold, so this is a fact. If it is more than Dustin holds, the
+  report names the teams that can outbid anything he offers.
+- *Beats everyone he helps this week* is the same figure over only the rivals
+  whose own P(elim) he measurably lowers. A rich team he does not help has no
+  survival reason to pay for him this week; it may still bid for later weeks
+  or to block.
+- *Even pace* is the budget over the weeks left. FAAB is worth nothing at the
+  end, and each week's released roster is stronger than the last, so pace is
+  a reference and not a cap.
+- If a rival's budget is missing, the lock prices are withheld. Do not fill
+  the gap with a guess.
+- A rival marked COULD NOT BE VALUED has no legal lineup as its roster
+  stands (usually its only quarterback is on a bye). It is counted as
+  contesting, because a team in that position has to add somebody.
+
+**Then give the bid, under the committed-resource rule below:** the number
+first, the evidence that would move it, and only then Dustin's view. Say
+where the number sits between last week's winning prices and the lock price,
+and what he gives up at the next step down. Give a number for every player
+he might claim and the total if all of them land, because claims process
+player by player at the amount bid and several can win in one run. If he
+wants at most one of two players, say how to arrange the claims so both
+cannot land, and that he should confirm the platform behaves that way.
+
 ## Guillotine lineups — use the simulation, not a projection
 
 **Build the pool with the prior-season fallback, and pass the week.**
