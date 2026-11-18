@@ -2815,11 +2815,15 @@ class Candidate:
 
 def make_candidate(legs, meta=None, *, boost_pct: float,
                    stake: float = 10.0, aliases=None,
-                   quotes=None) -> Candidate:
+                   quotes=None, floor: float | None = None) -> Candidate:
     """One candidate from one set of legs, structure derived.
 
     `aliases` and `quotes` go straight to `classify`; `quotes` is also kept
     on the candidate so its joint gate measures noise the same way.
+
+    `floor` is the BOOST'S OWN minimum odds (B222). Without it a slip built
+    here was judged against the project default of +300 whatever the boost,
+    so a +124 slip on a +100 boost read BELOW MINIMUM.
     """
     legs = list(legs)
     st = classify(legs, meta, aliases, quotes)
@@ -2832,7 +2836,8 @@ def make_candidate(legs, meta=None, *, boost_pct: float,
         notes.append(st.reason)
     return Candidate(legs=legs, structure=st, boost_pct=float(boost_pct),
                      independent_odds=independent_odds(legs), stake=stake,
-                     notes=notes, quotes=quotes)
+                     notes=notes, quotes=quotes,
+                     min_odds=None if floor is None else float(floor))
 
 
 # ---------------------------------------------------------------------------
@@ -3055,14 +3060,43 @@ def rung_legs(fairs, *, book: str, market: str, event_id: str,
     for k, v in (verdicts or {}).items():
         vmap[norm_player(str(k))] = v
     omap = {}
+    if odds is not None and not isinstance(odds, dict):
+        raise TypeError(
+            f"rung_legs(odds=...) takes a dict of (player, threshold) -> "
+            f"American price, got {type(odds).__name__}")
     for k, v in (odds or {}).items():
-        omap[(norm_player(str(k[0])), float(k[1]))] = float(v)
+        # B229. A raw `get_odds` response is also a dict, and iterating it
+        # here read 'home_team' as a (player, threshold) pair and died on
+        # float('o'). Refused by shape, with the shape named.
+        if (not isinstance(k, tuple) or len(k) != 2
+                or isinstance(v, (dict, list))):
+            raise TypeError(
+                f"rung_legs(odds=...) takes a dict of (player, threshold) "
+                f"-> American price. Got a key {k!r}, which looks like a "
+                f"raw API response or a quotes list. A LadderFair already "
+                f"carries its own price, so `odds` is only for rungs whose "
+                f"price is missing; leave it out otherwise.")
+        try:
+            omap[(norm_player(str(k[0])), float(k[1]))] = float(v)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"rung_legs(odds=...): {k!r} -> {v!r} is not "
+                f"(player, threshold) -> price") from None
 
     kept, refused = [], []
     for f in fairs:
         who = getattr(f, "player", None)
         thr = getattr(f, "threshold", None)
         tag = f"{who} {thr:g}+" if thr is not None else str(who)
+        fmk = str(getattr(f, "market", "") or "")
+        if fmk and fmk != str(market):
+            # B229. One loop over several markets with a stale `market=`
+            # labelled every rung with the last market's name.
+            refused.append((tag, f"this fair was built from {fmk} quotes "
+                                 f"but rung_legs was called with "
+                                 f"market={market!r}; a rung must not be "
+                                 f"relabelled"))
+            continue
         if not getattr(f, "priceable", False):
             refused.append((tag, f"ladder_fair refused it: "
                                  f"{getattr(f, 'why', '') or 'no reason given'}"))
@@ -4254,8 +4288,8 @@ def stake_back_band(odds: float, *, stake: float = 10.0,
                            ("optimistic", 0.71))}
 
 
-def needed_odds(p_cash: float, boost_pct: float, target_ev: float = 0.0
-                ) -> float:
+def needed_odds(p_cash: float, boost_pct: float, target_ev: float = 0.0,
+                *, minimum: float | None = None) -> float:
     """The shortest American price at which a slip with this chance of
     cashing returns `target_ev` after a profit boost.
 
@@ -4266,6 +4300,10 @@ def needed_odds(p_cash: float, boost_pct: float, target_ev: float = 0.0
     off the bet slip, and this is the number he compares it with. Pass the
     slip's P(cash) FLOOR where that is what it has; the price is then safe
     rather than exact. Filed 2026-11-14.
+
+    `minimum` is the boost's own minimum odds (B223). When the price the
+    arithmetic needs is SHORTER than that, the minimum is what binds and it
+    is returned instead; `needed_odds_detail` says which of the two it was.
     """
     p = float(p_cash)
     if not 0.0 < p < 1.0:
@@ -4275,7 +4313,34 @@ def needed_odds(p_cash: float, boost_pct: float, target_ev: float = 0.0
     if float(target_ev) <= -1.0:
         raise ValueError(f"target_ev must be above -100%, got {target_ev!r}")
     d = 1.0 + ((1.0 + float(target_ev)) / p - 1.0) / (1.0 + float(boost_pct))
+    if minimum is not None and to_decimal(float(minimum)) > d:
+        return float(minimum)
     return american(d)
+
+
+def needed_odds_detail(p_cash: float, boost_pct: float,
+                       target_ev: float = 0.0, *,
+                       minimum: float | None = None) -> dict:
+    """`needed_odds` with the reason: which number binds, and in words.
+
+    {"needed": the price the arithmetic needs, "minimum": the boost's own,
+     "price": the one to compare the bet slip with, "binding": "price" or
+     "minimum", "note": a sentence}
+    """
+    need = needed_odds(p_cash, boost_pct, target_ev)
+    if minimum is None or to_decimal(float(minimum)) <= to_decimal(need):
+        return {"needed": need, "minimum": minimum, "price": need,
+                "binding": "price",
+                "note": f"needs {need:+.0f} or longer"
+                        + ("" if minimum is None else
+                           f"; the boost's {float(minimum):+.0f} minimum is "
+                           f"shorter than that and does not bind")}
+    return {"needed": need, "minimum": float(minimum),
+            "price": float(minimum), "binding": "minimum",
+            "note": (f"the arithmetic needs only {need:+.0f}, which is "
+                     f"shorter than the boost's {float(minimum):+.0f} "
+                     f"minimum, so the MINIMUM is the number that binds: "
+                     f"any slip the boost accepts clears the target")}
 
 
 def bonus_bet_ev(fair_prob: float, odds: float, *, stake: float) -> dict:
@@ -4613,7 +4678,9 @@ def report(cands, boost_label: str = "", quotes=None) -> str:
         if c.priced:
             out.append(f"  BOOK SGP price  : {c.book_odds:+.0f}"
                        + ("" if c.clears_floor
-                          else f"   ** BELOW THE +{FLOOR:.0f} FLOOR **"))
+                          else f"   ** BELOW THE "
+                               f"{(FLOOR if c.min_odds is None else float(c.min_odds)):+.0f}"
+                               f" {'FLOOR' if c.min_odds is None else 'MINIMUM FOR THIS BOOST'} **"))
         out.append(f"  ${c.stake:.0f} returns  : ${c.payout:.2f} "
                    f"at a {c.boost_pct:.0%} boost")
         out.append(f"  {c.factor_note}")
@@ -4801,6 +4868,9 @@ class SlipFinding:
     level: str
     leg: str                      # the player, or "" for a slip-level finding
     text: str
+    # B230. WHY a STOP is a stop: "veto", "unscreened", "structure" or
+    # "empty". Three different states used to print one refusal.
+    kind: str = ""
 
     def describe(self) -> str:
         where = f"{self.leg}: " if self.leg else ""
@@ -4826,8 +4896,18 @@ class SlipScore:
 
     @property
     def verdict(self) -> str:
-        if self.stops:
+        """B230. DO NOT PLACE is kept for a finding AGAINST the slip (a
+        vetoed leg, an empty slip). A leg nobody screened is NOT SCREENED,
+        and a slip whose legs are correlated is NOT PRICED AS A PARLAY:
+        neither is evidence against the bet, and printing a refusal for
+        them taught the reader to talk past refusals."""
+        kinds = {f.kind for f in self.stops}
+        if kinds - {"unscreened", "structure"}:
             return "DO NOT PLACE"
+        if "unscreened" in kinds:
+            return "NOT SCREENED"
+        if "structure" in kinds:
+            return "NOT PRICED AS A PARLAY"
         if self.checks:
             return "CHECK FIRST"
         return "NOTHING FOUND AGAINST IT"
@@ -4900,7 +4980,8 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
     if not legs:
         return SlipScore(
             candidate=None, compared=recommended is not None,
-            findings=[SlipFinding("STOP", "", "the slip has no legs in it")])
+            findings=[SlipFinding("STOP", "", "the slip has no legs in it",
+                                  kind="empty")])
 
     cand = make_candidate(legs, meta, boost_pct=boost_pct, stake=stake)
     if book_odds is not None:
@@ -4909,9 +4990,17 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
 
     # --- structure ---------------------------------------------------------
     if not cand.structure.priceable:
+        _cv = cand.verdict
         out.findings.append(SlipFinding(
             "STOP", "", f"not priceable as a parlay: "
-                        f"{cand.structure.reason}"))
+                        f"{cand.structure.reason}"
+            + (" The legs' measured correlation HELPS this slip, so the "
+               "product is a FLOOR on the chance to cash. This is a limit "
+               "on what can be priced, not a finding against the bet."
+               if _cv == "FLOOR ONLY" else
+               " The product OVERSTATES the chance to cash here, so an EV "
+               "on it is too high." if _cv == "ESTIMATE ONLY" else ""),
+            kind="structure"))
     for note in cand.structure.zeros or ():
         out.findings.append(SlipFinding("NOTE", "", note))
     for name in getattr(cand.structure, "correlation_unresolved", ()) or ():
@@ -4927,7 +5016,8 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
         if l.verdict == "VETO":
             out.findings.append(SlipFinding(
                 "STOP", who, f"VETO on the {l.side}: "
-                             f"{'; '.join(l.verdict_reasons) or 'unspecified'}"))
+                             f"{'; '.join(l.verdict_reasons) or 'unspecified'}",
+                kind="veto"))
         elif l.verdict == "UNSCREENED":
             # The default, and deliberately loud. A live run once built 32
             # legs that all read CLEAR without boost_verdict ever being
@@ -4936,7 +5026,9 @@ def score_slip(legs, meta=None, *, boost_pct: float = 0.0,
                 "STOP", who,
                 "never screened — boost_verdict() was not run for this leg, "
                 "so nothing has looked at whether anything argues against "
-                f"the {l.side}"))
+                f"the {l.side}. Not a finding against it: a market the "
+                f"engine has no screen for (First TD) lands here too",
+                kind="unscreened"))
         elif l.verdict == "CAUTION":
             out.findings.append(SlipFinding(
                 "CHECK", who, f"CAUTION on the {l.side}: "
@@ -5273,4 +5365,353 @@ def resolve_report(legs: list[ResolvedLeg]) -> str:
         out.append("  Nothing was snapped or guessed. Resolve the refusals "
                    "above before scoring this slip — a slip missing a leg is "
                    "a different slip.")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# B224 / B197. How settled is an anchor's number? Measured against its close.
+# ---------------------------------------------------------------------------
+#
+# `anchor_untested` asks whether a line's limit is above the board's most
+# common limit. Measured 2026-11-18 with `anchor_maturity.py` on 17 finished
+# games (574 Pinnacle main lines, 4,675 samples, 2026-11-06 to 2026-11-16):
+# AT A FIXED HOUR BEFORE KICKOFF THE LIMIT SAYS NOTHING. Twenty-four hours
+# out, lines at 250 and at 500 kept their number 77% and 77% of the time and
+# sat a median 0.87 and 0.84 points from their closing fair. One hour out,
+# 250 / 500 / 1,000 / 2,000 all read 91-92%. What moves the answer is the
+# clock: the share of lines that keep their number AND end within 2 points
+# of the close runs 36% at 72 hours, 53% at 24, 64% at 12, 72% at 6, 78% at
+# 3 and 90% at 1. The limit only ever looked informative because Pinnacle
+# raises it on a schedule, so it was standing in for the hour.
+#
+# Each row: (hours before kickoff, share of lines whose NUMBER moved by the
+# close, median and 90th-percentile gap in points of probability between
+# the fair then and the closing fair on lines whose number held, share that
+# held and ended within 2 points).
+ANCHOR_DRIFT_BY_HOURS = (
+    (1.0, 0.01, 0.00, 1.88, 0.90),
+    (3.0, 0.04, 0.22, 3.11, 0.78),
+    (6.0, 0.07, 0.42, 3.43, 0.72),
+    (12.0, 0.11, 0.66, 4.03, 0.64),
+    (18.0, 0.23, 0.68, 4.18, 0.56),
+    (24.0, 0.23, 0.87, 4.20, 0.53),
+    (36.0, 0.24, 0.88, 4.43, 0.53),
+    (48.0, 0.32, 1.00, 4.52, 0.45),
+    (72.0, 0.40, 1.32, 4.85, 0.36),
+)
+ANCHOR_DRIFT_SAMPLE = ("17 games, 574 Pinnacle main lines, "
+                       "2026-11-06 to 2026-11-16")
+# A fair read inside this many hours of kickoff is the one a slip can lean
+# on: 93% of lines keep their number from here and 72% end within 2 points.
+# At 12 hours it is 89% and 64%; at 24, 77% and 53%.
+SETTLED_WITHIN_HOURS = 6.0
+
+
+@dataclass(frozen=True)
+class AnchorDrift:
+    """How far a Pinnacle fair read this long before kickoff still moves."""
+    hours: float | None          # when the fair was read; None = not given
+    row_hours: float | None      # the measured row used (the next one out)
+    line_moves: float            # P(the yardage/reception number itself moves)
+    gap_median: float            # points of probability, number held
+    gap_p90: float
+    holds_within_2: float
+    beyond_sample: bool = False  # read earlier than anything measured
+
+    @property
+    def band(self) -> str:
+        if self.hours is None:
+            return "UNKNOWN"
+        if self.hours <= 3.0:
+            return "NEAR CLOSE"
+        if self.hours <= SETTLED_WITHIN_HOURS:
+            return "GAME DAY"
+        if self.hours <= 24.0:
+            return "DAY BEFORE"
+        return "EARLY"
+
+    @property
+    def settled(self) -> bool:
+        return self.hours is not None and self.hours <= SETTLED_WITHIN_HOURS
+
+    def describe(self) -> str:
+        if self.hours is None:
+            return ("time to kickoff NOT GIVEN, so nothing can be said about "
+                    "how settled these fairs are; pass hours=")
+        more = "at least " if self.beyond_sample else ""
+        return (f"{self.band}: read {self.hours:.1f}h before kickoff. From "
+                f"here {more}{self.line_moves:.0%} of Pinnacle lines change "
+                f"their number before the close; the rest sit a median "
+                f"{self.gap_median:.2f} and a 1-in-10 {self.gap_p90:.2f} "
+                f"points from their closing fair, and "
+                f"{self.holds_within_2:.0%} hold and end within 2 points "
+                f"({ANCHOR_DRIFT_SAMPLE}).")
+
+
+def hours_to_kickoff(commence_time, now=None) -> float:
+    """Hours from `now` (default: this moment, UTC) to an event's
+    `commence_time` as PropLine gives it. Negative once it has started."""
+    from datetime import datetime, timezone
+
+    def _t(x):
+        if isinstance(x, datetime):
+            return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
+        t = datetime.fromisoformat(str(x).strip().replace("Z", "+00:00"))
+        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+    start = _t(commence_time)
+    at = datetime.now(timezone.utc) if now is None else _t(now)
+    return (start - at).total_seconds() / 3600.0
+
+
+def anchor_drift(hours) -> AnchorDrift:
+    """The measured drift for a fair read `hours` before kickoff.
+
+    Uses the next measured point FURTHER OUT, so a read at 4 hours is
+    described by the 6-hour row: the error stated is never smaller than
+    the one measured. A started game (hours <= 0) gets the 1-hour row.
+    """
+    if hours is None:
+        return AnchorDrift(None, None, float("nan"), float("nan"),
+                           float("nan"), float("nan"))
+    h = float(hours)
+    for row in ANCHOR_DRIFT_BY_HOURS:
+        if h <= row[0]:
+            return AnchorDrift(h, *row)
+    return AnchorDrift(h, *ANCHOR_DRIFT_BY_HOURS[-1], beyond_sample=True)
+
+
+def leg_verified(leg, hours) -> tuple[bool, str]:
+    """Whether a leg's fair is one a slip can lean on, and why not if not.
+
+    VERIFIED = a Pinnacle two-sided MAIN line, not sitting at exactly
+    0.5000, read within `SETTLED_WITHIN_HOURS` of kickoff. The limit behind
+    the line is deliberately not part of it; see the note above
+    `ANCHOR_DRIFT_BY_HOURS`. `hours` is that leg's game's hours to kickoff.
+    """
+    src = str(getattr(leg, "fair_source", "") or "").lower()
+    lvl = str(getattr(leg, "level_source", "") or "").lower()
+    if getattr(leg, "is_rung", False):
+        who = "Pinnacle's" if "pinnacle" in (lvl or src) else "another book's"
+        return False, (f"a rung: its level is {who} but its shape comes from "
+                       f"a ladder, so it is an estimate, not a quoted line")
+    if "pinnacle" not in src:
+        return False, f"fair is from {src or 'an unnamed source'}, not Pinnacle"
+    if getattr(leg, "anchor_thin", False):
+        return False, "almost no money is resting on the anchor"
+    if abs(float(leg.fair_prob) - 0.5) < 1e-9:
+        return False, "fair is exactly 0.5000"
+    if hours is None:
+        return False, "time to kickoff not given"
+    if float(hours) > SETTLED_WITHIN_HOURS:
+        d = anchor_drift(hours)
+        return False, (f"read {float(hours):.0f}h before kickoff; only "
+                       f"{d.holds_within_2:.0%} of lines read this early hold "
+                       f"and end within 2 points of the close")
+    return True, ""
+
+
+@dataclass
+class UsableLeg:
+    """One straight bet under a profit boost, with what its fair rests on."""
+    leg: BoostLeg
+    boost_pct: float
+    hours: float | None
+    drift: AnchorDrift
+    verified: bool
+    why_not: str
+    stake: float = 10.0
+    snap_note: str = ""
+
+    @property
+    def decimal(self) -> float:
+        return to_decimal(self.leg.odds)
+
+    def _ev(self, p: float) -> float:
+        return p * (self.decimal - 1.0) * (1.0 + self.boost_pct) - (1.0 - p)
+
+    @property
+    def ev(self) -> float:
+        return self._ev(float(self.leg.fair_prob))
+
+    @property
+    def breakeven(self) -> float:
+        return 1.0 / (1.0 + (self.decimal - 1.0) * (1.0 + self.boost_pct))
+
+    @property
+    def cushion_pts(self) -> float:
+        return (float(self.leg.fair_prob) - self.breakeven) * 100.0
+
+    @property
+    def cushion_share(self) -> float:
+        return self.cushion_pts / (float(self.leg.fair_prob) * 100.0)
+
+    @property
+    def ev_typical_miss(self) -> float | None:
+        """EV if the fair is off AGAINST the bet by the median drift."""
+        if self.hours is None:
+            return None
+        return self._ev(float(self.leg.fair_prob) - self.drift.gap_median / 100)
+
+    @property
+    def ev_bad_miss(self) -> float | None:
+        """EV if the fair is off against the bet by the 1-in-10 drift."""
+        if self.hours is None:
+            return None
+        return self._ev(float(self.leg.fair_prob) - self.drift.gap_p90 / 100)
+
+    @property
+    def too_good(self) -> bool:
+        """The book pays more than fair on this leg BEFORE the boost."""
+        return float(self.leg.fair_prob) * self.decimal > 1.0
+
+    @property
+    def caution(self) -> bool:
+        return (str(self.leg.verdict).upper() == "CAUTION"
+                or bool(self.snap_note))
+
+    @property
+    def read(self) -> str:
+        if self.ev <= 0:
+            return "NEGATIVE"
+        if not self.verified:
+            return "UNVERIFIED"
+        if self.too_good:
+            return "TOO GOOD"
+        if str(self.leg.verdict).upper() == "UNSCREENED":
+            # Not checked must not read like the best answer on the board.
+            return "UNSCREENED"
+        if self.ev_bad_miss is not None and self.ev_bad_miss > 0:
+            return "CLEARS"
+        return "THIN"
+
+    @property
+    def returns(self) -> float:
+        """Total back on a win at `stake`, boost included."""
+        return self.stake * (1.0 + (self.decimal - 1.0) * (1.0 + self.boost_pct))
+
+
+USABLE_READS = {
+    "CLEARS": "verified, and still positive if Pinnacle's number is off "
+              "against you by its 1-in-10 drift",
+    "THIN": "verified and positive at the fair, but a 1-in-10 drift "
+            "against you takes it negative",
+    "TOO GOOD": "verified, but the book would be paying more than fair "
+                "before the boost; part of that is anchor error",
+    "UNSCREENED": "verified and positive, but boost_verdict() was never "
+                  "run on it, so nothing has looked for a role change",
+    "UNVERIFIED": "positive on a fair that is not a settled Pinnacle line",
+    "NEGATIVE": "not positive even at the fair",
+}
+_READ_ORDER = {"CLEARS": 0, "THIN": 1, "TOO GOOD": 2, "UNSCREENED": 3,
+               "UNVERIFIED": 4, "NEGATIVE": 5}
+
+
+def usable_legs(legs, *, boost_pct: float, hours, floor: float | None = None,
+                ceiling: float | None = None, exclude_players=(),
+                min_p: float | None = None, stake: float = 10.0,
+                snaps=None, aliases=None) -> list[UsableLeg]:
+    """Every leg as a STRAIGHT bet under a profit boost, best-supported first.
+
+    The table a thread kept building by hand (B197): of 558 legs on
+    2026-11-15 the top 20 by EV were all too-good, and the usable answer
+    was the verified legs that were not.
+
+    `hours` is the hours to kickoff: one number for a single game, or a
+    dict of event_id -> hours for a pool that spans games. `floor` and
+    `ceiling` are the boost's own price limits in American odds.
+    `exclude_players` drops players already on a placed bet. `snaps` is the
+    dict `ff_props.snap_trends` returns; a flagged player's OVER is marked.
+
+    Dropped, and never returned: a VETO, a leg whose fair came from the
+    book being bet, a leg outside the boost's price limits, an excluded
+    player. An UNSCREENED leg is kept and can read no better than
+    UNSCREENED. Sorted by read (CLEARS, THIN, TOO GOOD, UNSCREENED,
+    UNVERIFIED, NEGATIVE), then by cushion as a share of the chance.
+    """
+    if float(boost_pct) < 0:
+        raise ValueError(f"boost_pct must not be negative, got {boost_pct!r}")
+    from ff_props import norm_player as _np
+    out_names = {_np(str(p)) for p in (exclude_players or ())}
+    snap_by = {_np(str(k)): v for k, v in (snaps or {}).items()}
+    rows = []
+    for l in legs:
+        if str(l.verdict).upper() == "VETO" or l.circular:
+            continue
+        if _np(str(l.player)) in out_names:
+            continue
+        d = to_decimal(l.odds)
+        if floor is not None and d < to_decimal(floor) - 1e-12:
+            continue
+        if ceiling is not None and d > to_decimal(ceiling) + 1e-12:
+            continue
+        if min_p is not None and float(l.fair_prob) < float(min_p):
+            continue
+        h = hours.get(str(l.event_id)) if isinstance(hours, dict) else hours
+        ok, why = leg_verified(l, h)
+        note = ""
+        st = snap_by.get(_np(str(l.player)))
+        if (st is not None and getattr(st, "flagged", False)
+                and str(l.side).upper() in ("OVER", "YES")):
+            note = f"snap share {st.verdict}"
+        rows.append(UsableLeg(l, float(boost_pct), h, anchor_drift(h), ok,
+                              why, float(stake), note))
+    rows.sort(key=lambda r: (_READ_ORDER[r.read], -r.cushion_share))
+    return rows
+
+
+def usable_report(rows, *, top: int = 10, boost_label: str = "") -> str:
+    """The usable-legs table as text, with the counts that frame it."""
+    rows = list(rows)
+    head = f"STRAIGHT BETS{' — ' + boost_label if boost_label else ''}"
+    if not rows:
+        return (f"{head}\n  no legs: every leg was a VETO, circular, "
+                f"excluded or outside the boost's price limits.")
+    counts = Counter(r.read for r in rows)
+    out = [head,
+           "  " + ", ".join(f"{counts.get(k, 0)} {k}" for k in _READ_ORDER)
+           + f"  ({len(rows)} legs)"]
+    seen = []
+    for r in rows:
+        key = (r.hours, r.drift.row_hours)
+        if key not in seen:
+            seen.append(key)
+            out.append("  " + r.drift.describe())
+    positive = [r for r in rows if r.read != "NEGATIVE"]
+    if not positive:
+        out.append("  Nothing is positive at its own fair. Skip is a "
+                   "complete answer.")
+        return "\n".join(out)
+    if top <= 0:
+        return "\n".join(out)          # the counts and the drift line only
+    shown = positive[:top]
+    for r in shown:
+        l = r.leg
+        ln = f" {l.line:g}" if l.line is not None else ""
+        p = float(l.fair_prob)
+        flags = []
+        if str(l.verdict).upper() == "UNSCREENED":
+            flags.append("UNSCREENED")
+        if str(l.verdict).upper() == "CAUTION":
+            flags.append("CAUTION")
+        if r.snap_note:
+            flags.append(r.snap_note)
+        if r.too_good and r.read != "TOO GOOD":
+            # Said on the row whatever the read: an early or unscreened
+            # leg that the book overpays is the one a scan picks first.
+            flags.append("pays more than fair before the boost")
+        stress = ("" if r.ev_typical_miss is None else
+                  f" | if the fair is off against you: {r.ev_typical_miss:+.1%}"
+                  f" typical, {r.ev_bad_miss:+.1%} 1-in-10")
+        out.append(
+            f"  {r.read:<10} {l.player} {l.market}{ln} {l.side} "
+            f"{l.odds:+.0f} @{l.book} | fair {p:.1%} ({l.fair_source}) "
+            f"1 in {1 / p:.1f} | EV {r.ev:+.1%}{stress} | cushion "
+            f"{r.cushion_pts:.1f} pts ({r.cushion_share:.0%} of the chance) "
+            f"| ${r.stake:g} returns ${r.returns:.2f}"
+            + (f" | {', '.join(flags)}" if flags else "")
+            + (f" | not verified: {r.why_not}" if not r.verified else ""))
+    out.append("  " + "; ".join(f"{k} = {USABLE_READS[k]}"
+                                for k in _READ_ORDER
+                                if counts.get(k) and k != "NEGATIVE"))
     return "\n".join(out)

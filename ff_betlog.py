@@ -459,6 +459,118 @@ def write_pulled(name: str, text: str) -> Path:
     return p
 
 
+_DRIVE_ESCAPED = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|<>~$&=:;'\"^%@/,?])")
+
+
+def text_from_drive_snippet(snippet: str) -> str:
+    """A Drive `contentSnippet` back to the file's own text. B211.
+
+    Drive's search returns a text file markdown-escaped: a backslash before
+    punctuation and two spaces before each newline. Reversing that
+    reproduced 55 of 56 log files to their exact byte size on 2026-11-17.
+    """
+    t = str(snippet).replace("  \n", "\n")
+    t = _DRIVE_ESCAPED.sub(r"\1", t)
+    if t.endswith("  "):
+        t = t[:-2]
+    t = t.rstrip("\n")
+    return t + "\n" if t else ""
+
+
+def load_drive_search(response, *, write: bool = True) -> dict:
+    """Load the whole log from ONE Drive `search_files` response. B211.
+
+        search_files(query="parentId = '<folder>' and createdTime < "
+                           "'<tomorrow, UTC>'", pageSize=100,
+                     snippetVerbosity="MAX_ALLOWED")
+
+    `response` is that call's result: the dict, its JSON text, or the path
+    of the file the harness saved it to. Every `ff-betlog-*.jsonl` file is
+    un-escaped, EVERY line is parsed, and the byte size is compared with
+    Drive's. A file with a line that does not parse is NOT written, because
+    a log loaded with a hole in it reads as a complete one.
+
+    Returns {"live": names found, "written": names loaded, "records": n,
+    "size_exact": n, "size_off": [(name, got, expected)],
+    "unparsed": [(name, why)], "empty": [names], "skipped": [names]}.
+    Still call `record_pull(result["live"], trashed_names)` afterwards; this
+    does not query the trash. Print `drive_pull_report(result)`.
+    """
+    if isinstance(response, (str, Path)):
+        s = str(response)
+        if not s.lstrip().startswith(("{", "[")):
+            s = Path(s).read_text()
+        response = json.loads(s)
+    if isinstance(response, list):          # an MCP text-block wrapper
+        response = json.loads(response[0]["text"])
+    files = response.get("files")
+    if files is None:
+        raise ValueError("no 'files' key: this is not a Drive search_files "
+                         "response")
+    out = {"live": [], "written": [], "records": 0, "size_exact": 0,
+           "size_off": [], "unparsed": [], "empty": [], "skipped": []}
+    for f in files:
+        name = str(f.get("title") or f.get("name") or "")
+        if not (name.startswith("ff-betlog-") and name.endswith(".jsonl")):
+            out["skipped"].append(name)
+            continue
+        if f.get("trashed"):
+            out["skipped"].append(name)
+            continue
+        out["live"].append(name)
+        text = text_from_drive_snippet(f.get("contentSnippet") or "")
+        if not text.strip():
+            # Just uploaded and not yet indexed, or really empty. Either
+            # way nothing was read, and that is said rather than assumed.
+            out["empty"].append(name)
+            continue
+        bad = None
+        n = 0
+        for i, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                json.loads(line)
+                n += 1
+            except ValueError as e:
+                bad = f"line {i}: {e}"
+                break
+        if bad:
+            out["unparsed"].append((name, bad))
+            continue
+        got = len(text.encode())
+        want = _num(f.get("fileSize"))
+        if want is not None and int(want) == got:
+            out["size_exact"] += 1
+        else:
+            out["size_off"].append((name, got, None if want is None
+                                    else int(want)))
+        out["records"] += n
+        out["written"].append(name)
+        if write:
+            write_pulled(name, text)
+    return out
+
+
+def drive_pull_report(result: dict) -> str:
+    r = result
+    out = [f"DRIVE PULL: {len(r['written'])} of {len(r['live'])} log files "
+           f"loaded, {r['records']} records; {r['size_exact']} match Drive's "
+           f"byte size exactly"]
+    for name, got, want in r["size_off"]:
+        out.append(f"  size differs: {name} is {got} bytes here, {want} on "
+                   f"Drive (every record parsed, so it was loaded)")
+    for name, why in r["unparsed"]:
+        out.append(f"  NOT LOADED: {name} — {why}")
+    for name in r["empty"]:
+        out.append(f"  NOT LOADED: {name} — empty snippet (uploaded minutes "
+                   f"ago and not indexed yet, or an empty file)")
+    if r["unparsed"] or r["empty"]:
+        out.append("  THE HISTORY IS INCOMPLETE. Say so before any CLV or "
+                   "record table, and download the named files directly.")
+    return "\n".join(out)
+
+
 PULL_MARKER = LOG_DIR / "_pull.json"
 
 
@@ -1378,7 +1490,59 @@ def recommended_summary(recs: list[dict] | None = None) -> str:
     return (f"  RECOMMENDED LEGS — every distinct leg the engine put forward "
             f"({len(legs)}; {n_placed} of them on slips Dustin placed). "
             f"Same reading as the placed-legs tables.\n"
-            + body.replace("placed legs only", "recommended legs"))
+            + body.replace("placed legs only", "recommended legs")
+            + one_per_player_summary(legs))
+
+
+def one_per_player_rows(legs: list[dict]) -> list[dict]:
+    """Wins against fair-predicted wins with each PLAYER/MARKET/SIDE counted
+    once, by fair source. B213.
+
+    Several rungs of one player's ladder win or lose together, so counting
+    each as its own observation let three backs on bad nights (17 legs,
+    none won) read as "the fair lines run optimistic": 41 of 81 against
+    49.8 predicted. One per player/market/side it was 30 against 29.9. A
+    group's result and its fair are the MEANS over its legs, so a group is
+    one observation whatever its size.
+    """
+    groups: dict[tuple, list[tuple[float, float]]] = {}
+    for l in legs:
+        p = _num(l.get("fair_p"))
+        res = l.get("result")
+        if p is None or res not in ("WIN", "LOSS"):
+            continue
+        k = (_source_key(l.get("fair_source")),
+             _norm_player_local(l.get("player")), str(l.get("market")),
+             _side_key(l.get("side")))
+        groups.setdefault(k, []).append((1.0 if res == "WIN" else 0.0, p))
+    by_src: dict[str, dict] = {}
+    for (src, *_), obs in groups.items():
+        d = by_src.setdefault(src, {"source": src, "groups": 0, "legs": 0,
+                                    "won": 0.0, "predicted": 0.0,
+                                    "raw_won": 0, "raw_predicted": 0.0})
+        d["groups"] += 1
+        d["legs"] += len(obs)
+        d["won"] += sum(w for w, _ in obs) / len(obs)
+        d["predicted"] += sum(p for _, p in obs) / len(obs)
+        d["raw_won"] += int(sum(w for w, _ in obs))
+        d["raw_predicted"] += sum(p for _, p in obs)
+    return [by_src[k] for k in sorted(by_src)]
+
+
+def one_per_player_summary(legs: list[dict]) -> str:
+    rows = one_per_player_rows(legs)
+    if not rows:
+        return ""
+    out = ["", "  ONE PER PLAYER/MARKET/SIDE — rungs of one ladder win or "
+               "lose together, so read THIS line, not the leg count, before "
+               "saying the fairs run hot or cold:"]
+    for r in rows:
+        out.append(
+            f"    {r['source']:<12} {r['groups']:>3} groups ({r['legs']} "
+            f"legs): won {r['won']:.1f} where the fairs predicted "
+            f"{r['predicted']:.1f}   [leg count: {r['raw_won']} of "
+            f"{r['legs']} against {r['raw_predicted']:.1f}]")
+    return "\n".join(out)
 
 
 def _check_prob(p, name: str) -> float | None:

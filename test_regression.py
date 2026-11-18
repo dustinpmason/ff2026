@@ -10317,5 +10317,403 @@ chk("my own team with no legal lineup is refused, with the reason",
     _d92q is not None and "no legal lineup" in _fr92("2", 800, d=_d92q)[1],
     _fr92("2", 800, d=_d92q)[1] if _d92q else "")
 
+section("93. settled anchors, usable legs, pool snap check, labels, log pull "
+        "(B224, B197, B206, B222, B223, B229, B230, B213, B211)")
+
+# Details in this section are numbers, tuples and dicts as often as text.
+_chk_plain = chk
+
+
+def chk(name, ok, detail=""):
+    _chk_plain(name, ok, detail if isinstance(detail, str) else str(detail))
+
+
+# --- B224. The clock, not the limit ---------------------------------------
+_h93 = ff_boost.hours_to_kickoff("2026-11-20T01:15:00Z", "2026-11-19T19:15:00Z")
+chk("hours to kickoff is read off PropLine's commence_time",
+    abs(_h93 - 6.0) < 1e-9
+    and ff_boost.hours_to_kickoff("2026-11-20T01:15:00Z",
+                                  "2026-11-20T02:15:00+00:00") == -1.0, _h93)
+_d4, _d6, _d7 = (ff_boost.anchor_drift(x) for x in (4.0, 6.0, 6.01))
+chk("a read between two measured points uses the one FURTHER out",
+    _d4.row_hours == 6.0 and _d6.row_hours == 6.0 and _d7.row_hours == 12.0,
+    (_d4.row_hours, _d6.row_hours, _d7.row_hours))
+chk("settled means inside six hours, and the edge is inclusive",
+    _d4.settled and _d6.settled and not _d7.settled
+    and ff_boost.SETTLED_WITHIN_HOURS == 6.0)
+_rows93 = ff_boost.ANCHOR_DRIFT_BY_HOURS
+chk("the drift table runs outward in time and gets no better as it does",
+    all(a[0] < b[0] and a[1] <= b[1] and a[2] <= b[2] and a[3] <= b[3]
+        and a[4] >= b[4] for a, b in zip(_rows93, _rows93[1:])))
+_dfar = ff_boost.anchor_drift(120.0)
+chk("a read earlier than anything measured says 'at least', not a number",
+    _dfar.beyond_sample and _dfar.row_hours == 72.0
+    and "at least" in _dfar.describe() and _dfar.band == "EARLY")
+_dn = ff_boost.anchor_drift(None)
+chk("no time given is UNKNOWN and says so, never settled",
+    _dn.band == "UNKNOWN" and not _dn.settled
+    and "NOT GIVEN" in _dn.describe())
+chk("a game already started is described by the last hour, not refused",
+    ff_boost.anchor_drift(-0.5).row_hours == 1.0)
+
+
+def _l93(player, odds, p, *, src="pinnacle", side="OVER", verdict="CLEAR",
+         book="fanduel", ev="1", **kw):
+    return ff_boost.BoostLeg(
+        event_id=ev, book=book, market="player_reception_yds", player=player,
+        side=side, odds=odds, fair_prob=p, fair_source=src,
+        devig_method="shin", line=40.5, verdict=verdict,
+        verdict_side="" if verdict == "UNSCREENED" else side, **kw)
+
+
+_lv = _l93("V One", -115, 0.52)
+chk("a Pinnacle main line off 0.5000 inside six hours is VERIFIED",
+    ff_boost.leg_verified(_lv, 4.0) == (True, ""))
+chk("the same line read the day before is not, and the reason gives the rate",
+    ff_boost.leg_verified(_lv, 24.0)[0] is False
+    and "53%" in ff_boost.leg_verified(_lv, 24.0)[1],
+    ff_boost.leg_verified(_lv, 24.0)[1])
+chk("no time given is not verified",
+    ff_boost.leg_verified(_lv, None) == (False, "time to kickoff not given"))
+chk("an exact 0.5000 is not verified at any hour",
+    ff_boost.leg_verified(_l93("V Two", 100, 0.5), 1.0)[0] is False)
+chk("a Kalshi fair is not verified",
+    "not Pinnacle" in ff_boost.leg_verified(
+        _l93("V Three", -115, 0.52, src="kalshi"), 1.0)[1])
+_lrung = _l93("V Four", 150, 0.42, src="level pinnacle, shape fanduel ladder",
+              line_type="milestone", level_source="pinnacle",
+              shape_source="fanduel")
+chk("a rung is not verified even on a Pinnacle level, and says why",
+    ff_boost.leg_verified(_lrung, 1.0)[0] is False
+    and "rung" in ff_boost.leg_verified(_lrung, 1.0)[1])
+# THE POINT OF B224: the limit behind the line is not part of the test.
+_lo = _l93("V Five", -115, 0.52, anchor_liquidity=250.0,
+           opening_liquidity_tier=1000.0)
+_hi = _l93("V Six", -115, 0.52, anchor_liquidity=5000.0,
+           opening_liquidity_tier=250.0)
+chk("a line AT the board's limit is verified the same as one far above it",
+    _lo.anchor_untested and not _hi.anchor_untested
+    and ff_boost.leg_verified(_lo, 4.0)[0]
+    and ff_boost.leg_verified(_hi, 4.0)[0])
+chk("and a deep line read two days out is still not verified",
+    ff_boost.leg_verified(_hi, 48.0)[0] is False)
+
+# --- B197. The usable-legs table ------------------------------------------
+_pool93 = [
+    _l93("U Clear", -115, 0.52, verdict="CAUTION"),      # CLEARS
+    _l93("U Thin", -110, 0.49),                          # THIN
+    _l93("U Good", 150, 0.47),                           # TOO GOOD
+    _l93("U Kalshi", -150, 0.58, src="kalshi"),          # UNVERIFIED
+    _l93("U Neg", 200, 0.20),                            # NEGATIVE
+    _l93("U Veto", -105, 0.60, verdict="VETO"),          # dropped
+    _l93("U Short", -300, 0.80),                         # under the minimum
+    _l93("U Raw", 100, 0.47, verdict="UNSCREENED"),      # kept, flagged
+]
+_u93 = ff_boost.usable_legs(_pool93, boost_pct=0.30, hours=4.0, floor=-200)
+_by93 = {r.leg.player: r for r in _u93}
+chk("a VETO and a leg under the boost's minimum are dropped, the rest kept",
+    set(_by93) == {"U Clear", "U Thin", "U Good", "U Kalshi", "U Neg",
+                   "U Raw"}, sorted(_by93))
+chk("each leg gets the read its numbers earn",
+    [_by93[k].read for k in ("U Clear", "U Thin", "U Good", "U Kalshi",
+                             "U Neg")]
+    == ["CLEARS", "THIN", "TOO GOOD", "UNVERIFIED", "NEGATIVE"],
+    {k: v.read for k, v in _by93.items()})
+chk("a leg nobody screened reads UNSCREENED, never CLEARS",
+    _by93["U Raw"].read == "UNSCREENED" and _by93["U Raw"].verified
+    and _by93["U Raw"].ev_bad_miss > 0)
+_rc = _by93["U Clear"]
+_dec = 1 + 100 / 115
+chk("EV, breakeven and cushion are the boosted straight-bet arithmetic",
+    abs(_rc.ev - (0.52 * (_dec - 1) * 1.3 - 0.48)) < 1e-12
+    and abs(_rc.breakeven - 1 / (1 + (_dec - 1) * 1.3)) < 1e-12
+    and abs(_rc.cushion_pts - (0.52 - _rc.breakeven) * 100) < 1e-9
+    and abs(_rc.returns - 10 * (1 + (_dec - 1) * 1.3)) < 1e-9)
+chk("the stress EVs take the measured drift OFF the fair, never add it",
+    abs(_rc.ev_typical_miss - ((0.52 - 0.0042) * (_dec - 1) * 1.3
+                               - (1 - 0.52 + 0.0042))) < 1e-12
+    and _rc.ev_bad_miss < _rc.ev_typical_miss < _rc.ev)
+chk("THIN is positive at the fair and negative at the 1-in-10 drift",
+    _by93["U Thin"].ev > 0 > _by93["U Thin"].ev_bad_miss)
+chk("TOO GOOD is the book paying more than fair before the boost",
+    _by93["U Good"].too_good and not _rc.too_good
+    and 0.47 * 2.5 > 1.0)
+chk("order is CLEARS, THIN, TOO GOOD, UNSCREENED, UNVERIFIED, NEGATIVE",
+    [r.read for r in _u93] == sorted(
+        [r.read for r in _u93], key=ff_boost._READ_ORDER.get),
+    [r.read for r in _u93])
+_rep93 = ff_boost.usable_report(_u93, boost_label="FanDuel 30%")
+chk("the report gives the counts, the drift line and every flag",
+    "1 CLEARS, 1 THIN, 1 TOO GOOD, 1 UNSCREENED, 1 UNVERIFIED, 1 NEGATIVE"
+    in _rep93
+    and "GAME DAY: read 4.0h before kickoff" in _rep93
+    and "| CAUTION" in _rep93 and "| UNSCREENED" in _rep93
+    and "not verified: fair is from kalshi" in _rep93, _rep93)
+chk("a NEGATIVE leg is counted but never listed",
+    "U Neg" not in _rep93)
+_rep0 = ff_boost.usable_report(_u93, top=0)
+chk("top=0 gives the counts and the drift line and lists nobody",
+    "1 CLEARS" in _rep0 and "GAME DAY" in _rep0 and "U Clear" not in _rep0
+    and "Skip is a complete answer" not in _rep0
+    and len(_rep0.splitlines()) == 3, _rep0)
+_tg93 = [_l93("T Early", 150, 0.47), _l93("T Raw", 150, 0.47,
+                                          verdict="UNSCREENED")]
+_rt = ff_boost.usable_report(ff_boost.usable_legs(
+    _tg93, boost_pct=0.30, hours=30.0))
+chk("a leg the book overpays says so even when its read is UNVERIFIED",
+    _rt.count("pays more than fair before the boost") == 2
+    and "TOO GOOD " not in _rt, _rt)
+_rt4 = ff_boost.usable_legs(_tg93, boost_pct=0.30, hours=4.0)
+chk("inside six hours TOO GOOD outranks UNSCREENED as the read",
+    [r.read for r in _rt4] == ["TOO GOOD", "TOO GOOD"]
+    and "| UNSCREENED" in ff_boost.usable_report(_rt4))
+_ue = ff_boost.usable_legs(_pool93, boost_pct=0.30, hours=30.0, floor=-200)
+chk("read the day before, nothing is verified and nothing CLEARS",
+    not any(r.verified for r in _ue)
+    and {r.read for r in _ue} <= {"UNVERIFIED", "NEGATIVE"})
+_ux = {r.leg.player for r in ff_boost.usable_legs(
+    _pool93, boost_pct=0.30, hours=4.0, floor=-200,
+    exclude_players=["u clear"])}
+chk("an excluded player is dropped whatever the capitals, and only him",
+    _ux == set(_by93) - {"U Clear"}, sorted(_ux))
+_two93 = [_l93("G One", -115, 0.52, ev="A"), _l93("G Two", -115, 0.52, ev="B")]
+_ug = {r.leg.player: r for r in ff_boost.usable_legs(
+    _two93, boost_pct=0.30, hours={"A": 3.0, "B": 40.0})}
+chk("a pool across games takes each leg's own hours",
+    _ug["G One"].verified and not _ug["G Two"].verified
+    and _ug["G One"].drift.row_hours == 3.0
+    and _ug["G Two"].drift.row_hours == 48.0)
+chk("a leg whose game is missing from the hours dict is not verified",
+    not ff_boost.usable_legs(_two93, boost_pct=0.30,
+                             hours={"A": 3.0})[-1].verified)
+chk("nothing positive says skip is a complete answer",
+    "Skip is a complete answer" in ff_boost.usable_report(
+        ff_boost.usable_legs([_l93("U Neg", 200, 0.20)], boost_pct=0.1,
+                             hours=2.0)))
+chk("an empty pool says why, and a negative boost is refused",
+    "no legs" in ff_boost.usable_report([])
+    and _raises(lambda: ff_boost.usable_legs(_pool93, boost_pct=-0.1,
+                                             hours=1.0), ValueError))
+
+# --- B206. The snap check for a whole pool ---------------------------------
+_snaps93 = ff_data.load_snaps(2026)
+_roster93 = ff_data.load_roster(2026)
+_wk93 = ff_data.load_weekly(2026)
+_sv = _snaps93[(_snaps93.position.isin(["WR", "TE", "RB"]))
+               & (_snaps93.game_type == "REG")]
+_cnt = _sv.groupby("player").week.nunique()
+_names93 = [n for n in _cnt[_cnt >= 5].index[:40]]
+_st93 = ff_props.snap_trends(_snaps93, _roster93, _wk93,
+                             _names93 + _names93[:3] + ["Nobody Real 93"])
+chk("one entry per distinct name, and an unplaceable name does not raise",
+    len(_st93) == len(set(_names93)) + 1
+    and _st93["Nobody Real 93"].verdict == "UNKNOWN", len(_st93))
+chk("each entry is exactly what snap_trend returns for that player",
+    all(_st93[n].verdict == ff_props.snap_trend(
+        _snaps93, _roster93, _wk93, n).verdict for n in _names93[:8]))
+_sum93 = ff_props.snap_summary(_st93)
+chk("the summary counts the pool and names every unchecked player",
+    f"{len(_st93)} players checked" in _sum93
+    and "NOT CHECKED Nobody Real 93" in _sum93, _sum93[:300])
+_flag93 = next((n for n, t in _st93.items() if t.flagged), None)
+_calm93 = next((n for n, t in _st93.items() if t.verdict == "STABLE"), None)
+if _flag93 and _calm93:
+    _us = {(r.leg.player, r.leg.side): r for r in ff_boost.usable_legs(
+        [_l93(_flag93, -115, 0.52), _l93(_flag93, -115, 0.52, side="UNDER"),
+         _l93(_calm93, -115, 0.52)],
+        boost_pct=0.30, hours=4.0, snaps=_st93)}
+    chk("a flagged player's OVER is marked in the usable table",
+        "snap share" in _us[(_flag93, "OVER")].snap_note
+        and _us[(_flag93, "OVER")].caution)
+    chk("his UNDER and a steady player's OVER are not",
+        _us[(_flag93, "UNDER")].snap_note == ""
+        and _us[(_calm93, "OVER")].snap_note == "")
+else:
+    chk("the live pool holds a flagged and a steady player to test with",
+        False, f"flagged={_flag93} steady={_calm93}")
+
+# --- B222. A slip built by hand knows its own boost's minimum ---------------
+_m93 = [_l93("M One", -110, 0.5238, book="fanduel", ev="A"),
+        _l93("M Two", -110, 0.5238, book="fanduel", ev="B")]
+_c0 = ff_boost.price_candidate(
+    ff_boost.make_candidate(_m93, boost_pct=0.30), book_odds=124.0)
+_c1 = ff_boost.price_candidate(
+    ff_boost.make_candidate(_m93, boost_pct=0.30, floor=100), book_odds=124.0)
+chk("without a floor it is still judged against the +300 default",
+    _c0.min_odds is None and not _c0.clears_floor
+    and _c0.verdict == "BELOW MINIMUM")
+chk("with the boost's own minimum a +124 slip on a +100 boost clears",
+    _c1.min_odds == 100.0 and _c1.clears_floor
+    and _c1.verdict != "BELOW MINIMUM", _c1.verdict)
+_c2 = ff_boost.price_candidate(
+    ff_boost.make_candidate(_m93, boost_pct=0.30, floor=200), book_odds=124.0)
+chk("the printed label names the boost's minimum, not +300",
+    "BELOW THE +200 MINIMUM FOR THIS BOOST" in ff_boost.report([_c2])
+    and "BELOW THE +300 FLOOR" in ff_boost.report([_c0]))
+
+# --- B223. Which number binds ----------------------------------------------
+_need = ff_boost.needed_odds(0.60, 0.50)
+chk("a needed price shorter than the minimum returns the minimum",
+    _need < 100 and ff_boost.needed_odds(0.60, 0.50, minimum=100) == 100.0,
+    _need)
+chk("a needed price longer than the minimum is unchanged by it",
+    ff_boost.needed_odds(0.20, 0.25, minimum=100)
+    == ff_boost.needed_odds(0.20, 0.25))
+_nd = ff_boost.needed_odds_detail(0.60, 0.50, minimum=100)
+_nf = ff_boost.needed_odds_detail(0.20, 0.25, minimum=100)
+chk("the detail says which of the two binds, in words",
+    _nd["binding"] == "minimum" and _nd["price"] == 100.0
+    and abs(_nd["needed"] - _need) < 1e-9 and "MINIMUM" in _nd["note"]
+    and _nf["binding"] == "price" and "does not bind" in _nf["note"])
+chk("with no minimum the old answer is untouched",
+    ff_boost.needed_odds_detail(0.25, 0.5)["price"]
+    == ff_boost.needed_odds(0.25, 0.5)
+    and ff_boost.needed_odds(0.25, 0.5) == ff_boost.needed_odds(
+        0.25, 0.5, minimum=None))
+
+# --- B229. rung_legs refuses the wrong shape instead of dying in float() ---
+_e229 = ""
+try:
+    ff_boost.rung_legs(
+        [], book="draftkings", market="player_reception_yds", event_id="1",
+        odds={"home_team": "Cincinnati Bengals", "bookmakers": []})
+except TypeError as e:
+    _e229 = str(e)
+except Exception as e:
+    _e229 = f"WRONG TYPE {type(e).__name__}: {e}"
+chk("a raw API response passed as odds= is refused by shape, by name",
+    "(player, threshold)" in _e229 and "raw API response" in _e229, _e229)
+chk("a list passed as odds= is refused too",
+    _raises(lambda: ff_boost.rung_legs(
+        [], book="draftkings", market="player_reception_yds", event_id="1",
+        odds=[{"player": "x"}]), TypeError))
+chk("a well-formed odds dict is still accepted",
+    ff_boost.rung_legs([], book="draftkings", market="player_reception_yds",
+                       event_id="1", odds={("A B", 50.0): -110}) == ([], []))
+chk("a LadderFair records the market it was built from",
+    "market" in ff_props.LadderFair.__dataclass_fields__
+    and ff_props.LadderFair.__dataclass_fields__["market"].default == "")
+_bm93 = [dict(q, market="player_rush_yds") for q in _board + _pin_row]
+_fm93 = _P.ladder_fair(_bm93, book="dk", margin=_mg)
+chk("ladder_fair stamps every rung with the market its quotes carried",
+    len(_fm93) > 3 and any(r.priceable for r in _fm93)
+    and all(r.market == "player_rush_yds" for r in _fm93),
+    sorted({r.market for r in _fm93}))
+_lf93 = ff_props.LadderFair(
+    book="draftkings", player="A B", threshold=50.0, canonical_line=49.5,
+    price=-110.0, q_raw=0.5238, fair=0.5, uncertainty=0.02, margin=0.05,
+    level_shift=0.0, anchor="pinnacle", anchor_point=49.5, anchor_fair=0.5,
+    fair_source="level pinnacle, shape draftkings ladder",
+    market="player_rush_yds")
+_kept93, _ref93 = ff_boost.rung_legs(
+    [_lf93], book="draftkings", market="player_reception_yds", event_id="1",
+    verdicts={"A B": ("CLEAR", "OVER", ())})
+chk("a rung is refused rather than relabelled with another market's name",
+    _kept93 == [] and len(_ref93) == 1 and "relabelled" in _ref93[0][1],
+    _ref93)
+_kept93b, _ = ff_boost.rung_legs(
+    [_lf93], book="draftkings", market="player_rush_yds", event_id="1",
+    verdicts={"A B": ("CLEAR", "OVER", ())})
+chk("and built when the market matches",
+    len(_kept93b) == 1 and _kept93b[0].market == "player_rush_yds")
+
+# --- B230. Three states, three headlines -----------------------------------
+_v93 = ff_boost.score_slip([_l93("S Veto", -110, 0.52, verdict="VETO",
+                                 model_p=0.5)], boost_pct=0.3)
+_n93 = ff_boost.score_slip([_l93("S Raw", -110, 0.52, verdict="UNSCREENED",
+                                 model_p=0.5)], boost_pct=0.3)
+chk("a vetoed leg is still DO NOT PLACE",
+    _v93.verdict == "DO NOT PLACE" and _v93.stops[0].kind == "veto")
+chk("a leg nobody screened is NOT SCREENED, and is still a STOP",
+    _n93.verdict == "NOT SCREENED" and len(_n93.stops) == 1
+    and _n93.stops[0].kind == "unscreened"
+    and "Not a finding against it" in _n93.report(), _n93.report())
+_b93 = ff_boost.score_slip(
+    [_l93("S Veto", -110, 0.52, verdict="VETO", model_p=0.5, ev="A"),
+     _l93("S Raw", -110, 0.52, verdict="UNSCREENED", model_p=0.5, ev="B")],
+    boost_pct=0.3)
+chk("a veto outranks an unscreened leg on the same slip",
+    _b93.verdict == "DO NOT PLACE")
+chk("an empty slip is still DO NOT PLACE",
+    ff_boost.score_slip([], boost_pct=0.0).verdict == "DO NOT PLACE")
+chk("a STOP of an unknown kind stays a refusal",
+    ff_boost.SlipScore(candidate=None, findings=[
+        ff_boost.SlipFinding("STOP", "", "x")]).verdict == "DO NOT PLACE")
+chk("a structure-only STOP reads as a pricing limit, not a refusal",
+    ff_boost.SlipScore(candidate=None, findings=[
+        ff_boost.SlipFinding("STOP", "", "x", kind="structure")]).verdict
+    == "NOT PRICED AS A PARLAY")
+
+# --- B213. One observation per player/market/side --------------------------
+_lg93 = ([{"player": "R. Back", "market": "player_rush_yds", "side": "OVER",
+           "fair_p": 0.6, "fair_source": "pinnacle +100", "result": "LOSS"}] * 5
+         + [{"player": "W. Out", "market": "player_reception_yds",
+             "side": "OVER", "fair_p": 0.5, "fair_source": "Pinnacle",
+             "result": "WIN"}]
+         + [{"player": "N. Graded", "market": "player_rush_yds",
+             "side": "OVER", "fair_p": 0.5, "fair_source": "pinnacle"}])
+_op = ff_betlog.one_per_player_rows(_lg93)
+chk("five rungs of one back count once, and an ungraded leg not at all",
+    len(_op) == 1 and _op[0]["groups"] == 2 and _op[0]["legs"] == 6
+    and abs(_op[0]["won"] - 1.0) < 1e-9
+    and abs(_op[0]["predicted"] - 1.1) < 1e-9
+    and _op[0]["raw_won"] == 1 and abs(_op[0]["raw_predicted"] - 3.5) < 1e-9,
+    _op)
+chk("the summary prints both counts so the difference can be seen",
+    "2 groups (6 legs): won 1.0 where the fairs predicted 1.1" in
+    ff_betlog.one_per_player_summary(_lg93)
+    and "1 of 6 against 3.5" in ff_betlog.one_per_player_summary(_lg93))
+chk("with nothing graded it prints nothing",
+    ff_betlog.one_per_player_summary([_lg93[-1]]) == "")
+
+# --- B211. The whole log from one Drive search response --------------------
+_raw93 = ('{"id": "a_1", "kind": "bet", "note": "x-y [z] (w) #1 a.b!"}\n'
+          '{"id": "a_2", "kind": "leg_grade", "odds": -110, "p": 0.5}\n')
+def _esc93(t):
+    import re as _re
+    e = _re.sub(r"([\\`*_{}\[\]()#+\-.!|<>~$&=:;'\"^%@/,?])", r"\\\1", t)
+    return e.replace("\n", "  \n")
+chk("un-escaping a Drive snippet gives back the file's exact text",
+    ff_betlog.text_from_drive_snippet(_esc93(_raw93)) == _raw93,
+    ff_betlog.text_from_drive_snippet(_esc93(_raw93)))
+_resp93 = {"files": [
+    {"title": "ff-betlog-20990101T000000Z.jsonl",
+     "fileSize": str(len(_raw93.encode())),
+     "contentSnippet": _esc93(_raw93)},
+    {"title": "ff-betlog-20990102T000000Z.jsonl", "fileSize": "999",
+     "contentSnippet": _esc93(_raw93)},
+    {"title": "ff-betlog-20990103T000000Z.jsonl", "fileSize": "30",
+     "contentSnippet": _esc93('{"id": "ok"}\n{"id": broken\n')},
+    {"title": "ff-betlog-20990104T000000Z.jsonl", "fileSize": "0",
+     "contentSnippet": ""},
+    {"title": "notes.txt", "fileSize": "5", "contentSnippet": "hello"},
+]}
+_r93 = ff_betlog.load_drive_search(_resp93, write=False)
+chk("a clean file loads and matches its byte size",
+    "ff-betlog-20990101T000000Z.jsonl" in _r93["written"]
+    and _r93["size_exact"] == 1)
+chk("a size mismatch is loaded and NAMED, with both sizes",
+    _r93["size_off"] == [("ff-betlog-20990102T000000Z.jsonl",
+                          len(_raw93.encode()), 999)])
+chk("a file with a line that does not parse is NOT loaded",
+    [n for n, _ in _r93["unparsed"]] == ["ff-betlog-20990103T000000Z.jsonl"]
+    and "ff-betlog-20990103T000000Z.jsonl" not in _r93["written"]
+    and "line 2" in _r93["unparsed"][0][1])
+chk("an empty snippet is reported as not loaded, never as an empty file",
+    _r93["empty"] == ["ff-betlog-20990104T000000Z.jsonl"])
+chk("a file that is not a log is skipped, and records are counted",
+    _r93["skipped"] == ["notes.txt"] and _r93["records"] == 4
+    and len(_r93["live"]) == 4)
+_rp93 = ff_betlog.drive_pull_report(_r93)
+chk("the report says the history is incomplete when anything was dropped",
+    "2 of 4 log files loaded" in _rp93 and "THE HISTORY IS INCOMPLETE" in _rp93
+    and _rp93.count("NOT LOADED") == 2, _rp93)
+chk("it accepts the JSON text and refuses something that is not a search",
+    ff_betlog.load_drive_search(json.dumps(_resp93), write=False)["records"]
+    == 4 and _raises(lambda: ff_betlog.load_drive_search({"x": 1}),
+                     ValueError))
+chk("write=False writes nothing",
+    not (ff_betlog.LOG_DIR / "ff-betlog-20990101T000000Z.jsonl").exists())
+
 _summary()
 raise SystemExit(1 if fails else 0)

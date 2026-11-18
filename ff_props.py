@@ -703,6 +703,51 @@ def snap_trend(snaps: pd.DataFrame, roster: pd.DataFrame,
 # Estimation
 # ---------------------------------------------------------------------------
 
+
+def snap_trends(snaps: pd.DataFrame, roster: pd.DataFrame,
+                weekly: pd.DataFrame, players, *,
+                aliases: dict | None = None, season: int | None = None,
+                before_week: int | None = None) -> dict:
+    """`snap_trend` for every player in a pool, in one call.
+
+        st = snap_trends(snaps, roster, wk, {l.player for l in pool},
+                         aliases=ALIASES)
+        verdict, why = boost_verdict(est, edge, screen, snap=st.get(player))
+        rows = ff_boost.usable_legs(pool, boost_pct=0.30, hours=h, snaps=st)
+
+    B206 left the check to be called one player at a time, and a thread
+    that forgets it gets no warning. This returns {player as given:
+    SnapTrend}, one entry per distinct name, never raising: a player who
+    cannot be placed comes back UNKNOWN, which is reported as NOT CHECKED.
+    `players` may be names or anything with a `.player` attribute.
+    """
+    out: dict = {}
+    for p in players:
+        name = getattr(p, "player", p)
+        if name is None or name in out:
+            continue
+        out[name] = snap_trend(snaps, roster, weekly, str(name),
+                               aliases=aliases, season=season,
+                               before_week=before_week)
+    return out
+
+
+def snap_summary(trends: dict) -> str:
+    """One line per flagged or unchecked player, and the counts."""
+    from collections import Counter as _C
+    c = _C(t.verdict for t in trends.values())
+    flagged = [t for t in trends.values() if t.flagged]
+    unknown = [t for t in trends.values() if t.verdict == "UNKNOWN"]
+    out = [f"snap share: {len(trends)} players checked — "
+           + ", ".join(f"{n} {v}" for v, n in sorted(c.items()))
+           + f"; {len(flagged)} flagged (a caution on an OVER)"]
+    for t in flagged:
+        shares = ", ".join(f"wk{w} {s:.0%}" for w, s, _ in t.games)
+        out.append(f"  FLAGGED {t.player}: {t.verdict} — {shares}")
+    for t in unknown:
+        out.append(f"  NOT CHECKED {t.player}: {t.reason}")
+    return "\n".join(out)
+
 @dataclass
 class UsageTrend:
     """Whether a player's OPPORTUNITY has changed inside the sample window."""
@@ -3349,6 +3394,9 @@ class LadderFair:
     fair_source: str = ""
     flags: list[str] = field(default_factory=list)
     why: str = ""
+    # B229. The market the ladder's quotes carried, so a consumer can refuse
+    # to label a rung with another market's name. "" = not recorded.
+    market: str = ""
 
     @property
     def priceable(self) -> bool:
@@ -3800,7 +3848,8 @@ def ladder_fair(quotes: list[dict], *, book: str,
                 margin=mg.margin, level_shift=shift, level_gap=gap,
                 anchor=pick[0] if pick else None,
                 anchor_point=a_pt, anchor_fair=a_fair, player_id=pid,
-                flags=list(base_flags), why=refuse)
+                flags=list(base_flags), why=refuse,
+                market=str(q_row.get("market") or ""))
             if refuse:
                 out.append(rec)
                 continue

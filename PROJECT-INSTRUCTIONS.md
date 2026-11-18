@@ -116,25 +116,20 @@ for that; on 2026-11-16 a session gave up and ran with no history. Instead:
    returns every file in one response, which the harness saves to disk
    (56 files, 940 KB, on 2026-11-17). Without it the same query returns
    about 5 files a page.
-2. Each file's `contentSnippet` is the full text, markdown-escaped. Reverse
-   it and check it before writing:
+2. Hand the saved response to the helper. Do not rewrite the un-escaping
+   by hand:
 
 ```python
-import json, re
-def text_from_snippet(sn):
-    t = sn.replace("  \n", "\n")
-    t = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|<>~$&=:;'\"^%@/,?])", r"\1", t)
-    if t.endswith("  "):
-        t = t[:-2]
-    return t.rstrip("\n") + "\n"
-
-for f in response["files"]:
-    text = text_from_snippet(f["contentSnippet"])
-    for line in text.splitlines():
-        json.loads(line)                                   # every record parses
-    same_size = len(text.encode()) == int(f["fileSize"])   # byte-exact
-    bl.write_pulled(f["title"], text)
+r = bl.load_drive_search("<path the harness saved the response to>")
+print(bl.drive_pull_report(r))     # files loaded, records, size matches
+bl.record_pull(r["live"], trashed_names)
 ```
+
+   It reverses Drive's markdown escaping, parses every line, compares each
+   file's byte size with Drive's and writes the file. A file with a line
+   that does not parse is NOT loaded, and the report then says THE HISTORY
+   IS INCOMPLETE: repeat that before any CLV or record table. Checked
+   2026-11-18 against the 56-file pull: byte-identical to the hand method.
 
 3. Report how many files matched their size exactly. On 2026-11-17 it was
    55 of 56; `ff-betlog-20261108T070309Z.jsonl` comes back 6 bytes short
@@ -429,7 +424,11 @@ boost's book), `fair_p`, `fair_source` and, **on a cross-game slip, its own
 "kalshi"); put pull times and liquidity in `note`. When Dustin places one,
 log it with `log_bet` as usual AND pass `placed=True, bet_id=...` on its
 slip record. This is a record only and feeds nothing; it exists because
-placed bets alone give about eight legs a game. Upload the log to Drive
+placed bets alone give about eight legs a game. `recommended_summary()`
+ends with a ONE PER PLAYER/MARKET/SIDE line: rungs of one ladder win or
+lose together, so quote THAT line, not the leg count, before saying the
+fair lines run hot or cold (B213: 41 of 81 against 49.8 predicted was
+three backs' ladders; one per player it was level). Upload the log to Drive
 after logging, as for bets. When grading a game, grade every recommended
 leg too: `grade_slip_rec_leg(rec_id, leg_index, result, actual=...,
 closing_odds=...)` with the closing price at the slip's book. A leg that
@@ -821,6 +820,14 @@ carries no `player_id`, so that join is name-keyed and is where this bites.
 2026-11-11). Without it a book spelling raises `LookupError`, and the
 message tells you to pass the map. Still wrap the call when looping over a
 board, so one unknown name does not end the loop.
+
+**`rung_legs(odds=...)` is NOT the API response (B229).** It is an
+optional dict of `(player, threshold) -> price` for rungs whose price is
+missing; a `LadderFair` already carries its own price, so leave it out.
+Passing a raw response or a quotes list is now refused by name. Each
+`LadderFair` also records the `market` its quotes carried, and
+`rung_legs(market=...)` refuses a rung built from a different market
+rather than relabelling it, so call it once per market.
 
 **Pass `tiers=ff_boost.book_liquidity_tiers(odds)` to `rung_legs()`.** Rung
 legs now carry their anchor's depth, so the report can say when a rung's
@@ -2094,6 +2101,13 @@ whether it was tested. Moved and unmoved are still DIFFERENT states and
 get different flags — `anchor_untested` is the quieter one — but neither
 can carry an EV on its own.
 
+**Since 2026-11-18 these three flags do not decide whether a leg is
+VERIFIED.** The limit they read carries no information at a fixed hour
+before kickoff; `ff_boost.leg_verified(leg, hours)` is the test (see
+"How settled is an anchor"). Keep reporting a THIN anchor. Report the
+other two only as what the report printed, never as evidence a leg is
+tested or untested.
+
 The report prints `** OPENING ANCHOR **` for any of the three. Do not read
 a non-0.5000 anchor as settled without checking its liquidity — an early
 version of the flag tested fair_prob first and was structurally unable to
@@ -2279,10 +2293,11 @@ with nothing to use:
 - **Stake → returns:** at the boost's maximum stake.
 - **Chance to cash:** a percentage and "1 in N"; add "lower bound" or
   "estimate" when it is one.
-- **Confidence:** **A** when every leg's fair is a Pinnacle line with
-  liquidity above its opening tier,
-  otherwise **B** plus the one thing it rests on in a few words
-  ("B, thin Kalshi line on Jefferson").
+- **Confidence:** **A** when every leg is VERIFIED
+  (`ff_boost.leg_verified`: a Pinnacle two-sided main line, not at exactly
+  0.5000, read within 6 hours of kickoff), otherwise **B** plus the one
+  thing it rests on in a few words ("B, read 30 hours out", "B, thin
+  Kalshi line on Jefferson").
 
 **Two rows for a boost when "best value" and "most likely" differ.** The
 engine ranks on value, and value favours longer prices: the best-value pick
@@ -2357,8 +2372,98 @@ quoted +422 at 10:19 AM and +380 for the same legs at 8 PM.
   night (+335 quoted, +303 on the slip). Treat a PropLine FanDuel quote as
   that much too high until Dustin reads the slip, and give him the price
   the slip needs (`ff_boost.needed_odds`) beside every FanDuel quote.
-- Morning EV still rests on opening-limit anchors. The price can be better
-  while the EV percentage is overstated; say both.
+- A morning fair is an early read. The price at Dustin's book can be
+  better in the morning while the fair it is judged against is less
+  settled; print `ff_boost.anchor_drift(hours).describe()` and say both.
+
+## How settled is an anchor — the clock, not the limit (B224)
+
+**Measured 2026-11-18 on 17 finished games (574 Pinnacle main lines, 4,675
+samples; `anchor_maturity.py`): at a fixed hour before kickoff, the limit
+behind a Pinnacle line says nothing about how close its number is to the
+close.** Twenty-four hours out, lines at a limit of 250 and of 500 kept
+their number 77% and 77% of the time and sat a median 0.87 and 0.84 points
+from their closing fair. One hour out, 250, 500, 1,000 and 2,000 all read
+91 to 92%. Pinnacle raises limits on a schedule, so the limit only ever
+looked informative because it was standing in for the hour.
+
+What does move the answer is time to kickoff:
+
+| Read this long before kickoff | Lines whose number changes before the close | Median gap to the closing fair | 1-in-10 gap | Hold and end within 2 points |
+|---|---|---|---|---|
+| 72 h | 40% | 1.32 pts | 4.85 pts | 36% |
+| 48 h | 32% | 1.00 | 4.52 | 45% |
+| 24 h | 23% | 0.87 | 4.20 | 53% |
+| 12 h | 11% | 0.66 | 4.03 | 64% |
+| 6 h | 7% | 0.42 | 3.43 | 72% |
+| 3 h | 4% | 0.22 | 3.11 | 78% |
+| 1 h | 1% | 0.00 | 1.88 | 90% |
+
+So on every boost run:
+
+```python
+h = ff_boost.hours_to_kickoff(event["commence_time"])   # PropLine's own field
+print(ff_boost.anchor_drift(h).describe())              # say this to Dustin
+ok, why = ff_boost.leg_verified(leg, h)
+```
+
+- **VERIFIED** = a Pinnacle two-sided MAIN line, not at exactly 0.5000,
+  read within 6 hours of kickoff (`SETTLED_WITHIN_HOURS`). A rung, a
+  Kalshi or Bovada fair, and anything read earlier are not verified, and
+  `why` says which.
+- **Before 6 hours out nothing is verified, and that is the answer, not a
+  failure.** Say how early the read is, give the row above, and say when to
+  re-pull. A Saturday-night run for a Sunday 1:00pm game is a 17-hour read:
+  about one line in nine will change its number, and the rest carry a
+  1-in-10 error of 4 points.
+- **The old limit flags are superseded for this purpose.** `anchor_untested`
+  and "immature anchors" still print, and `book_liquidity_tiers` is still
+  passed on intake, but do NOT call a leg tested or untested from them. Do
+  not report "N lines above the tier" as evidence. A THIN anchor (a Kalshi
+  contract with a few dollars resting) still matters and still prints.
+- An exact 0.5000 stays out of VERIFIED. On this sample those lines sat no
+  further from their close than lines that had moved (at 6 hours: 73% held
+  within 2 points against 74%), so that exclusion is a holdover awaiting
+  more games, not a measured rule. Say so if it decides a leg.
+- The table is distance to Pinnacle's own close on yardage and reception
+  markets. It is not accuracy against results, and touchdown markets were
+  not measured.
+
+## Straight bets under a boost — `ff_boost.usable_legs` (B197)
+
+A boost that accepts ANY bet type is a straight-bet question, and the
+answer is one call. Do not build this table by hand.
+
+```python
+st   = ff_props.snap_trends(snaps, roster, wk, {l.player for l in pool},
+                            aliases=ALIASES)
+rows = ff_boost.usable_legs(pool, boost_pct=0.30, hours=h,
+                            floor=-200,                 # the boost's minimum
+                            exclude_players=placed_players, snaps=st)
+print(ff_boost.usable_report(rows, top=10, boost_label="FanDuel 30%"))
+```
+
+- `hours` is one number for one game, or `{event_id: hours}` for a pool
+  across games.
+- Each leg gets a **read**, and the table is sorted by it:
+  **CLEARS** (verified, and still positive if Pinnacle's number is off
+  against the bet by its 1-in-10 drift), **THIN** (verified, positive at
+  the fair, negative at that drift), **TOO GOOD** (verified, but the book
+  would be paying more than fair before the boost), **UNSCREENED**
+  (verified and positive, but `boost_verdict` was never run),
+  **UNVERIFIED**, **NEGATIVE**.
+- Every row prints three EVs: at the fair, at the typical (median) drift
+  against the bet, and at the 1-in-10 drift. Read all three to Dustin. The
+  drift can equally run in the bet's favour; this is a stress test, not a
+  forecast.
+- A 30% boost on a single bet beats a normal book margin, so most legs on
+  a board will be positive at the fair. Positive is therefore not the
+  test: CLEARS is, and among CLEARS the cushion as a share of the chance.
+- **TOO GOOD is Marginal at most**, as for slips. A VETO, a leg outside
+  the boost's price limits and an excluded player never appear.
+- Still give the two tables Dustin asks for (highest value; highest value
+  among legs with a 50% or better chance): take both from `rows`, using
+  `min_p=0.50` for the second.
 
 ## Scoring a slip Dustin already built — `score_slip()` (F15)
 
@@ -2403,9 +2508,21 @@ quotes there. `resolve_slip` refuses rather than guessing:
 Resolve the refusals with Dustin before scoring. A slip missing a leg is a
 different slip.
 
-The output is a verdict — `DO NOT PLACE` / `CHECK FIRST` / `NOTHING FOUND
-AGAINST IT` — and a list of findings at three levels. There is no score. A
-slip with one VETO and four CLEARs does not average out to fine.
+The output is a verdict and a list of findings at three levels. There is
+no score. A slip with one VETO and four CLEARs does not average out to
+fine. The verdicts (B230):
+
+- `DO NOT PLACE`: something was found AGAINST the slip (a vetoed leg), or
+  it is empty.
+- `NOT SCREENED`: a leg was never run through `boost_verdict`. Nothing was
+  found against it because nothing looked. A market the engine has no
+  screen for, such as First TD, lands here. Say "not checked", not "do not
+  place".
+- `NOT PRICED AS A PARLAY`: the legs are correlated, so the product is not
+  the price. When the finding says the correlation HELPS, the product is a
+  floor on the chance to cash and this is a limit on the pricing, not a
+  reason against the bet.
+- `CHECK FIRST` and `NOTHING FOUND AGAINST IT`, as before.
 
 **Why this exists.** Week 9: the engine's slip was Swift / Odunze / Tez
 Johnson. The slip placed swapped Tez for Luther Burden on intuition. Tez went
@@ -2453,6 +2570,18 @@ the bet slip and compares. Always give several slips that share no leg,
 and say that a different line at that book voids the P(cash). Once he
 reports the real price, compute the EV and give the call.
 
+**Pass the boost's own minimum (B223):**
+`ff_boost.needed_odds_detail(p_cash, boost_pct, target_ev, minimum=100)`
+returns the price to compare the slip with, which of the two numbers
+binds, and a sentence to read out. When the arithmetic needs a price
+SHORTER than the boost's minimum, the minimum is the number, and any slip
+the boost accepts clears the target.
+
+**A slip built by hand needs the boost's minimum too (B222):**
+`make_candidate(legs, meta, boost_pct=..., floor=<the boost's minimum>)`.
+Without `floor` it is judged against the project's +300 and a +124 slip on
+a +100 boost reads BELOW MINIMUM.
+
 ## Bonus bets (profit only) — `ff_boost.bonus_bet_ev`
 
 A bonus bet pays the profit and keeps the stake, so it cannot lose money;
@@ -2480,10 +2609,11 @@ liquidity (Bovada) gets no flag at all, and a Kalshi contract with a few
 hundred dollars on it can be unflagged while every Pinnacle line on the
 board is flagged at its opening limit. So do not prefer unflagged legs.
 Rank each game's legs by value, and beside each write what the fair rests
-on in plain terms: the book, the dollars behind it, and whether Pinnacle is
-above its opening tier. A leg counts as VERIFIED only when its fair is a
-Pinnacle two-sided line with liquidity above the derived opening tier and
-not at exactly 0.5000.
+on in plain terms: the book, the dollars behind it, and how long before
+kickoff it was read. A leg counts as VERIFIED only when
+`ff_boost.leg_verified(leg, hours)` says so; see "How settled is an
+anchor" below. The limit behind a Pinnacle line is no longer part of the
+test.
 
 **A cross-game quote is the product of the legs; the bet slip confirms
 it.** `propline_price_parlay` returns no BetMGM entry for a slip with an
@@ -3245,8 +3375,20 @@ barely on the field. On 2026-11-16 KeAndre Lambert-Smith was bet OVER 17.5
 receiving yards and played one offensive snap; his share over his earlier
 games read 0%, 87%, 3%, 56%.
 
-**Run this for every WR, TE and RB on a shortlisted slip, and on every
-single-leg question:**
+**Run it once for the whole pool, before building verdicts (2026-11-18):**
+
+```python
+st = ff_props.snap_trends(snaps, roster, wk, {l.player for l in pool},
+                          aliases=ALIASES)        # {player: SnapTrend}
+print(ff_props.snap_summary(st))                  # flagged and NOT CHECKED
+verdict, why = ff_props.boost_verdict(est, edge, screen, snap=st.get(player))
+```
+
+Read `snap_summary` out: it names every flagged player with his shares and
+every player it could not check. Pass `snaps=st` to `usable_legs` as well,
+so a flagged player's OVER is marked there even if a verdict missed it.
+
+**For one player, on a single-leg question:**
 
 ```python
 snaps  = ff_data.load_snaps(2026)        # pulled by refresh.py
