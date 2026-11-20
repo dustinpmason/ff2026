@@ -1739,3 +1739,15 @@ Suite 1,793 ALL PASS on the thread's clone. The ABSENT line printed for David Mo
 | **B252** | A pair whose interval spans zero is listed under "The product is NOT the joint" | **OPEN** — Schultz x Warren, r=+0.0033, 95% CI -0.0029 to +0.0095, opposing receptions x receiving yards. It is listed as a correlated pair and contributes to the joint error. Whether a pair that cannot be told from zero should count is a question for `classify`, after TNF. |
 
 Also noted: `propline_price_sgp` at FanDuel returned a 503 ("fanduel sgp returned 403") on the first call and a quote on the retry; instruction line 2114 still described the old label and is corrected.
+
+### 2026-11-18, afternoon: the early TNF run and Dustin's rule (commit e32ea17, not yet committed below)
+
+Dustin ran Thursday's MAIN block on Wednesday at 12:14pm (31.8 h out; nothing verified, as designed), then set a standing rule and had every slip rebuilt under it.
+
+| id | what | status |
+|---|---|---|
+| **B253** | **Dustin's rule: no UNDER on any starter** | **OPEN (prompt only)** — starter = a quarterback with a posted line; QB1/RB1/TE1/WR1-3 on the FantasyPros depth chart; 50%+ of snaps over his last three games; or 50%+ in his last game. The thread built it as scratch code and its definition tightened between two replies. Cost on 2026-11-18: BetMGM 50% cross-game +42.6% to +38.3%; BetMGM 25% +38.3% to +11.1%, though that +38.3% rested on a thin Kalshi TD fair and a quote above the product. Needs `drop_starter_unders(legs, trends, depth_starters)` in the engine returning what it removed and why, a line in the instructions, and "what the rule cost" as a standing line under the closing table. By side on the log (leg counts, small): recommended unders 10 of 19 against 10.2 predicted, overs 35 of 68 against 42.2. |
+| **B254** | Anytime TD does not join between a book and Pinnacle | **OPEN** — books post it with no point, Pinnacle as Over/Under 0.5. A join on (player, market, line) sends every Pinnacle TD fair to Kalshi. Caught by hand before pricing. Belongs in the same helper as B247. |
+| **B255** | A TD leg does not inherit the player's role veto | **OPEN** — Laquon Treadwell's anytime TD topped BetMGM's census at +46% while his receiving OVERs were vetoed for a collapsed role. The thread's scratch build made a TD YES inherit the veto. |
+| **B256** | My cross-game pool instruction selected anchor error again | **DONE (prompt)** — "the five highest fair x decimal legs per game" from any anchor came back too good on 12 of 12 slips through one Kalshi leg. The prompt now takes Pinnacle-anchored legs only. This is B197 a fourth time; the code fix is still the shrink. |
+| **B257** | BetMGM's ladders: all 79 rungs refused, margin not measurable | **OPEN** — BetMGM's pool is main lines and TDs only until its ladder margin can be measured or borrowed. |
