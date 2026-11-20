@@ -3690,5 +3690,551 @@ def _():
         "real data", pr.clean, pr.describe()[:120])
 
 
+# ===========================================================================
+# S13 — each player's chance of playing (ff_sim_play.py)
+# ===========================================================================
+fp = None
+
+
+@section("25. chance of playing — it loads")
+def _():
+    global fp
+    import ff_sim_play
+    fp = ff_sim_play
+    chk("it knows five standings on the injury report, least worrying first",
+        fp.STATUSES == ("none", "listed", "questionable", "doubtful", "out"))
+
+
+# The test's own typed copy of what the module sets by hand.
+PRIOR, CHANCE_ROWS, BACK = 20.0, 100, 4
+SAT = {("AAA_WR2", 202304), ("AAA_WR2", 202305), ("BBB_TE", 202306),
+       ("BBB_TE", 202401), ("BBB_TE", 202402), ("BBB_TE", 202403),
+       ("BBB_TE", 202404), ("CCC_RB", 202402), ("DDD_WR1", 202404),
+       ("DDD_WR2", 202303), ("CCC_WR1", 202403), ("AAA_TE", 202302),
+       ("BBB_WR2", 202305), ("BBB_WR2", 202306), ("CCC_WR2", 202401),
+       ("CCC_WR2", 202402), ("CCC_WR2", 202403)}
+REPORTED = [(202304, "AAA_WR2", "out"), (202305, "AAA_WR2", "doubtful"),
+            (202306, "AAA_WR2", "questionable"), (202306, "BBB_TE", "out"),
+            (202401, "BBB_TE", "out"), (202402, "CCC_RB", "doubtful"),
+            (202303, "DDD_WR2", "questionable"), (202403, "CCC_WR1", "questionable"),
+            (202302, "AAA_TE", "listed"), (202304, "AAA_TE", "listed"),
+            (202305, "BBB_WR2", "out"), (202306, "BBB_WR2", "out"),
+            (202403, "AAA_RB", "questionable"), (202305, "CCC_QB", "listed"),
+            (202401, "DDD_RB", "questionable"), (202402, "DDD_RB", "questionable"),
+            # the graded week, and one that has not happened yet
+            (202404, "DDD_WR1", "out"), (202404, "AAA_WR1", "questionable"),
+            (202404, "CCC_TE", "listed"), (203101, "AAA_QB", "out")]
+
+
+def play_league():
+    """(frame, reports): the efficiency league with players sitting games
+    out, one of them for good, and a made-up injury report."""
+    f, _ = eff_league()
+    f = f[[(p_, t_) not in SAT for p_, t_ in zip(f.player_id, f.t)]].reset_index(drop=True)
+    # a trade: AAA_WR2 plays for CCC from 2024 Week 3 on
+    for t_ in (202403, 202404):
+        to = f[(f.t == t_) & (f.team == "CCC")].iloc[0]
+        moved = (f.t == t_) & (f.player_id == "AAA_WR2")
+        f.loc[moved, ["team", "opponent", "game_id"]] = [to.team, to.opponent, to.game_id]
+    rep = pd.DataFrame(REPORTED, columns=["t", "player_id", "status"])
+    return f, rep
+
+
+def hand_listed(F):
+    """{(team, t, player): (missed, played)} with plain loops: who a team
+    would have listed for each of its games, from its four games before."""
+    out = {}
+    for team, g in F.groupby("team"):
+        weeks = sorted(set(g.t))
+        on = {w: set(g.player_id[g.t == w]) for w in weeks}
+        for i, w in enumerate(weeks):
+            before = weeks[max(0, i - BACK):i]
+            for p_ in set().union(*[on[b] for b in before]) if before else ():
+                last = max(j for j, b in enumerate(before) if p_ in on[b])
+                out[(team, w, p_)] = (len(before) - 1 - last, p_ in on[w])
+    return out
+
+
+def hand_chances(F, rep, before):
+    """(cell, by_status, count) the long way, from games before `before`."""
+    status = ({(t_, p_): s_ for t_, p_, s_ in zip(rep.t, rep.player_id, rep.status)
+               if t_ < before} if rep is not None else {})
+    rows = [(status.get((t_, p_), "none"), miss, played)
+            for (team, t_, p_), (miss, played) in hand_listed(F).items()]
+    everyone = sum(r[2] for r in rows) / len(rows)
+    by_status, cell, count = {}, {}, {}
+    for s_ in ("none", "listed", "questionable", "doubtful", "out"):
+        mine = [r for r in rows if r[0] == s_]
+        by_status[s_] = sum(r[2] for r in mine) / len(mine) if mine else everyone
+        for miss in range(BACK):
+            c = [r for r in mine if r[1] == miss]
+            count[(s_, miss)] = len(c)
+            cell[(s_, miss)] = ((sum(r[2] for r in c) + PRIOR * by_status[s_])
+                                / (len(c) + PRIOR))
+    return cell, by_status, count
+
+
+@section("26. chance of playing — counted on the history, by hand")
+def _():
+    f, rep = play_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    L = fp.listed_history(h.frame)
+    want = hand_listed(h.frame)
+    got = {(r.team, r.t, r.player_id): (r.missed, r.played) for r in L.itertuples()}
+    chk("who each team would have listed for each game, how many of its "
+        "last four he had missed, and whether he then played, match a "
+        "long-hand walk through the games",
+        got == want and len(L) == len(want) > CHANCE_ROWS, (len(L), len(want)))
+    chk("(the fixture has what it should: players who sat, came back, and "
+        "one who dropped off the list for good)",
+        want[("AAA", 202305, "AAA_WR2")] == (1, False)
+        and want[("AAA", 202306, "AAA_WR2")] == (2, True)
+        and want[("BBB", 202403, "BBB_TE")] == (3, False)
+        and ("BBB", 202404, "BBB_TE") not in hand_listed(f)
+        and {m_ for m_, _ in want.values()} == {0, 1, 2, 3}
+        and hand_listed(f)[("AAA", 202404, "AAA_WR2")] == (1, False)
+        and hand_listed(f)[("CCC", 202404, "AAA_WR2")] == (0, True))
+    same_as_harness = True
+    for w in sorted(set(f.t))[1:]:
+        hw = History(f[f.t < w], w)
+        mine = {(r.team, r.player_id) for r in fp.listed_history(f[f.t <= w]).itertuples()
+                if r.t == w}
+        same_as_harness &= mine == set(zip(*[fs.slate_candidates(f, hw)[c]
+                                             for c in ("team", "player_id")]))
+    chk("...and for every week it is exactly the list the harness's slate B "
+        "gives", same_as_harness)
+
+    pc = fp.PlayChance(rep)
+    fit = pc.fit(h)
+    cell, by_status, count = hand_chances(h.frame, rep, T)
+    chk("how often each status played matches a long-hand count",
+        fit.ok and set(fit.by_status) == set(by_status)
+        and all(near(fit.by_status[s_], by_status[s_], 1e-12) for s_ in by_status),
+        (fit.by_status, by_status))
+    chk("the chance for each status and number of games missed matches too: "
+        "its own count pulled toward its status's rate as if that rate had "
+        "been seen twenty times",
+        set(fit.cell) == set(cell) and len(cell) == 20
+        and all(near(fit.cell[k_], cell[k_], 1e-12) for k_ in cell)
+        and fit.count == count and fit.rows == len(want))
+    chk("(the fixture is worth it: every status was seen; out and doubtful "
+        "never played, questionable sometimes; a regular who played last "
+        "week is likelier than one who has missed three)",
+        all(count[(s_, m_)] > 0 for s_, m_ in (("out", 0), ("doubtful", 1),
+                                               ("questionable", 0), ("listed", 0)))
+        and by_status["out"] == 0.0 and by_status["doubtful"] == 0.0
+        and 0.0 < by_status["questionable"] < 1.0
+        and cell[("none", 0)] > cell[("none", 3)] + 0.05
+        and cell[("out", 0)] == 0.0)
+    none_fit = fp.PlayChance().fit(h)
+    cell0, by0, _ = hand_chances(h.frame, None, T)
+    chk("with no report at all everyone is 'none', and a status never seen "
+        "takes the all-player rate",
+        all(near(none_fit.cell[k_], cell0[k_], 1e-12) for k_ in cell0)
+        and near(none_fit.by_status["out"], by0["none"], 1e-12)
+        and not near(none_fit.cell[("none", 0)], fit.cell[("none", 0)], 1e-6))
+
+    later = rep.copy()
+    later.loc[later.t >= T, "status"] = "doubtful"
+    chk("a report from the week being projected, or later, does not reach "
+        "what is counted on the history",
+        fp.PlayChance(later).fit(h).cell == fit.cell)
+    earlier = rep.copy()
+    earlier.loc[earlier.t == 202403, "status"] = "out"
+    chk("...and one from before it does",
+        fp.PlayChance(earlier).fit(h).cell != fit.cell)
+    thin = History(f[f.t < 202305], 202305)
+    tf = fp.PlayChance(rep).fit(thin)
+    chk("fewer than a hundred listed player-games: nothing is counted, and "
+        "it says why",
+        not tf.ok and f"only {len(hand_listed(thin.frame))} listed" in tf.why
+        and len(hand_listed(thin.frame)) < CHANCE_ROWS, tf.why)
+    floor = fp.MIN_CHANCE_ROWS
+    try:
+        fp.MIN_CHANCE_ROWS = len(want)
+        at_it = fp.PlayChance(rep).fit(History(h.frame, T)).ok
+        fp.MIN_CHANCE_ROWS = len(want) + 1
+        under = fp.PlayChance(rep).fit(History(h.frame, T)).ok
+    finally:
+        fp.MIN_CHANCE_ROWS = floor
+    chk("...the least it will count on is met by exactly that many listed "
+        "player-games and not by one fewer; and the least is a hundred",
+        at_it and not under and floor == CHANCE_ROWS)
+    used = fp.PlayChance(rep)
+    used.fit(h)
+    h2 = History(f[(f.t < T) & (f.player_id != "CCC_WR2")], T)
+    chk("it counts afresh for another history that stops at the same week",
+        used.fit(h2) is not fit and used.fit(h2).rows < fit.rows
+        and used.fit(h2) is used.fit(h2))
+    chk("an unknown status, two reports for one player-week, or a chance "
+        "outside 0 to 1 handed in, is refused",
+        raises(lambda: fp.PlayChance(rep.assign(status="probable")), ValueError,
+               "probable")
+        and raises(lambda: fp.PlayChance(pd.concat([rep, rep.iloc[:1]])), ValueError,
+                   "two reports")
+        and raises(lambda: fp.PlayChance(given={"AAA_QB": 1.2}), ValueError, "AAA_QB")
+        and raises(lambda: fp.PlayChance(given={"AAA_QB": -0.1}), ValueError, "AAA_QB"))
+
+
+@section("27. chance of playing — on a slate, and in the opportunity model")
+def _():
+    f, rep = play_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    b = fs.slate_candidates(f, h)
+    pc = fp.PlayChance(rep)
+    d = pc.describe(h, b)
+    cell, by_status, _ = hand_chances(h.frame, rep, T)
+    listed = hand_listed(f[f.t <= T])
+    now = {p_: s_ for t_, p_, s_ in REPORTED if t_ == T}
+    ok = True
+    for i, r in enumerate(b.itertuples()):
+        miss = listed[(r.team, T, r.player_id)][0]
+        s_ = now.get(r.player_id, "none")
+        ok &= (d.status[i] == s_ and d.missed[i] == miss
+               and near(d.chance[i], cell[(s_, miss)], 1e-12)
+               and d.source[i] == "counted")
+    idx = {p_: i for i, p_ in enumerate(b.player_id)}
+    chk("every listed player gets this week's status, his games missed and "
+        "the chance counted for that pair", ok and len(d) == len(b)
+        and np.array_equal(pc.chances(h, b), d.chance.to_numpy()))
+    traded = {b.team[i]: d.missed[i] for i in range(len(b))
+              if b.player_id[i] == "AAA_WR2"}
+    chk("a traded player is listed by both teams, and his games missed are "
+        "counted for EACH: one for the team he left, none for the one he "
+        "joined", traded == {"AAA": 1, "CCC": 0}, traded)
+    chk("(the slate has an out player, a questionable one, one listed with "
+        "no status, and one who has missed three)",
+        d.status[idx["DDD_WR1"]] == "out" and d.status[idx["AAA_WR1"]] == "questionable"
+        and d.status[idx["CCC_TE"]] == "listed" and d.missed[idx["CCC_WR2"]] == 3
+        and "BBB_TE" not in idx
+        and d.chance[idx["DDD_WR1"]] < 0.05 < d.chance[idx["CCC_WR2"]]
+        < d.chance[idx["AAA_QB"]]
+        and d.chance[idx["AAA_WR1"]] < d.chance[idx["AAA_QB"]])
+    later = rep.copy()
+    later.loc[later.t > T, "status"] = "questionable"
+    moved = rep.copy()
+    moved.loc[(moved.t == T) & (moved.player_id == "AAA_WR1"), "status"] = "out"
+    chk("a later week's report moves nothing; this week's does",
+        np.array_equal(fp.PlayChance(later).chances(h, b), pc.chances(h, b))
+        and fp.PlayChance(moved).chances(h, b)[idx["AAA_WR1"]]
+        < pc.chances(h, b)[idx["AAA_WR1"]] - 0.3)
+    two = fp.PlayChance(rep, given={"AAA_WR2": 0.9, ("AAA", "AAA_WR2"): 0.0}
+                        ).describe(h, b)
+    chk("a chance can be handed in for one team's listing of a traded "
+        "player; the pair wins over the bare id",
+        {b.team[i]: two.chance[i] for i in range(len(b))
+         if b.player_id[i] == "AAA_WR2"} == {"AAA": 0.0, "CCC": 0.9}
+        and raises(lambda: fp.PlayChance(given={("AAA", "AAA_WR2"): 1.5}),
+                   ValueError, "AAA_WR2"))
+    chk("a slate for another week than the history stops before is refused",
+        raises(lambda: pc.describe(History(f[f.t < 202403], 202403), b),
+               ValueError, "202404"))
+    gv = fp.PlayChance(rep, given={"AAA_WR1": 0.25, "DDD_WR1": 1.0})
+    gd = gv.describe(h, b)
+    chk("a chance handed in overrides the counted one for that player and "
+        "nobody else, and says so",
+        gd.chance[idx["AAA_WR1"]] == 0.25 and gd.chance[idx["DDD_WR1"]] == 1.0
+        and gd.source[idx["AAA_WR1"]] == "given" and gd.status[idx["DDD_WR1"]] == "out"
+        and all(gd.chance[i] == d.chance[i] and gd.source[i] == "counted"
+                for i in range(len(b)) if b.player_id[i] not in ("AAA_WR1", "DDD_WR1")))
+    a = fs.slate_active(f, h)
+    new = a.iloc[[0]].assign(player_id="NEWMAN", name="NEWMAN", position="WR")
+    old = b[b.team == "BBB"].iloc[[0]].assign(player_id="BBB_TE", name="BBB_TE")
+    wide = pd.concat([a, new, old], ignore_index=True)
+    dn = fp.PlayChance(pd.concat([rep, pd.DataFrame(
+        [(T, "NEWMAN", "questionable")], columns=rep.columns)])).describe(h, wide)
+    chk("a player who has not played for the team in its last four games, "
+        "whether he never has or it was longer ago, has no count of games "
+        "missed", pd.isna(dn.missed[len(wide) - 2]) and pd.isna(dn.missed[len(wide) - 1])
+        and "BBB_TE" in set(h.frame.player_id))
+    chk("...and takes his status's overall rate: questionable for the "
+        "newcomer, 'none' for the man long gone",
+        near(dn.chance[len(wide) - 2], by_status["questionable"], 1e-12)
+        and near(dn.chance[len(wide) - 1], by_status["none"], 1e-12)
+        and not near(by_status["questionable"], by_status["none"], 1e-3))
+    thin = History(f[f.t < 202305], 202305)
+    bt = fs.slate_candidates(f, thin)
+    td = fp.PlayChance(rep, given={bt.player_id[0]: 0.4}).describe(thin, bt)
+    chk("too little history to count on: everyone is taken to play, and "
+        "says so; a chance handed in still stands",
+        td.chance[0] == 0.4 and td.source[0] == "given"
+        and (td.chance[1:] == 1.0).all() and set(td.source[1:]) == {"taken to play"})
+
+    # ---- in the opportunity model
+    plain = OpportunityModel()
+    base = plain.means(h, b)
+    sure = fp.ChanceOpportunity("sure", chance=fp.PlayChance(
+        given={p_: 1.0 for p_ in b.player_id}))
+    chk("with every chance at 1 it is the opportunity model, number for number",
+        all(same(sure.means(h, b)[s_], base[s_], 1e-12) for s_ in fo.OPP_STATS))
+    gone = fp.ChanceOpportunity("gone", chance=fp.PlayChance(
+        given={**{p_: 1.0 for p_ in b.player_id}, "AAA_WR1": 0.0, "CCC_RB": 0.0}))
+    without = b[~b.player_id.isin(["AAA_WR1", "CCC_RB"])].reset_index(drop=True)
+    gm, wm = gone.means(h, b), plain.means(h, without)
+    keep = np.flatnonzero(~b.player_id.isin(["AAA_WR1", "CCC_RB"]).to_numpy())
+    chk("with a teammate's chance at 0 everyone else gets exactly what the "
+        "opportunity model gives on a slate without him",
+        all(same(gm[s_][keep], wm[s_], 1e-9) for s_ in fo.SHARED)
+        and gm["targets"][idx["AAA_TE"]] > base["targets"][idx["AAA_TE"]] * 1.2)
+    chk("...and he himself is given what he would get if he did play, "
+        "which is what the plain model gives him",
+        near(gm["targets"][idx["AAA_WR1"]], base["targets"][idx["AAA_WR1"]], 1e-9))
+    co = fp.ChanceOpportunity("opp_report", chance=pc)
+    cm = co.means(h, b)
+    p = pc.chances(h, b)
+    ok = True
+    for stat in fo.SHARED:
+        for i, r in enumerate(b.itertuples()):
+            mates = [j for j in range(len(b))
+                     if b.team[j] == r.team and b.game_id[j] == r.game_id]
+            whole = sum(base[stat][j] for j in mates)
+            beside = base[stat][i] + sum(p[j] * base[stat][j] for j in mates if j != i)
+            ok &= near(cm[stat][i], whole * base[stat][i] / beside, 1e-9)
+    chk("with counted chances: his share is his weight over his own plus "
+        "each teammate's weight times that teammate's chance, by hand", ok)
+    chk("...so nobody is given less than the plain model gives him, and the "
+        "teammates of an out player are given more",
+        all((cm[s_] >= base[s_] - 1e-12).all() for s_ in fo.SHARED)
+        and cm["targets"][idx["DDD_WR2"]] > base["targets"][idx["DDD_WR2"]] * 1.15)
+    chk("pass attempts are untouched",
+        same(cm["attempts"], base["attempts"], 1e-12))
+    zero = fp.ChanceOpportunity("z", chance=fp.PlayChance(
+        given={p_: 0.0 for p_ in b.player_id}))
+    zf = zero.fit(h)
+    zf.share["targets"] = (np.array([-0.2, 1.0, 0.0, 0.0]),) + zf.share["targets"][1:]
+    zb = OpportunityModel()
+    zb.fit(h).share["targets"] = zf.share["targets"]
+    zbase = zb.means(h, b)["targets"]
+    zm = zero.means(h, b)["targets"]
+    chk("a player the model gives nothing stays at nothing, whatever the "
+        "chances; with every teammate at 0 a player gets the whole team",
+        (zbase == 0.0).sum() >= 4 and all(zm[i] == 0.0 for i in range(len(b))
+                                          if zbase[i] == 0.0)
+        and zbase[idx["AAA_WR1"]] > 0
+        and near(zm[idx["AAA_WR1"]],
+                 sum(zbase[j] for j in range(len(b)) if b.team[j] == "AAA"), 1e-9)
+        and np.isfinite(zm).all(), zm[:6].tolist())
+    chk("left to itself it counts chances from games missed, with no report",
+        fp.ChanceOpportunity().chance.reports is None
+        and fp.ChanceOpportunity().name == "opportunity_chance"
+        and same(fp.ChanceOpportunity().means(h, b)["carries"],
+                 fp.ChanceOpportunity("x", chance=fp.PlayChance()).means(h, b)["carries"]))
+    lines = eff_league()[1]
+    wl = fp.ChanceOpportunity("m", chance=pc, lines=lines)
+    chk("it still takes closing lines and the median, as the model under "
+        "it does", wl.lines is lines
+        and not same(wl.means(h, b)["targets"], cm["targets"])
+        and fp.ChanceOpportunity("q", single="median").single == "median")
+    em = EfficiencyModel("eff_report", opportunity=co)
+    plain_eff = EfficiencyModel()
+    chk("efficiency sits on it: expected catches rise with the expected "
+        "targets, at the same catch rate",
+        same(em.parts(h, b)["mean"]["receptions"] / cm["targets"],
+             plain_eff.parts(h, b)["mean"]["receptions"] / base["targets"], 1e-9)
+        and em.parts(h, b)["mean"]["receptions"][idx["DDD_WR2"]]
+        > plain_eff.parts(h, b)["mean"]["receptions"][idx["DDD_WR2"]])
+    run = fs.walk_forward(f, [plain_eff, em], weeks=[202403, T])
+    B = run.points[(run.points.version == "B") & (run.points.stat == "targets")
+                   & (run.points.week == 4)].set_index("player_id")
+    chk("through the harness, on the list of who had been playing, the "
+        "number recorded is the long-hand one and is above the plain model's "
+        "for an out player's teammate",
+        near(float(B.pt_eff_report["DDD_WR2"]), cm["targets"][idx["DDD_WR2"]], 1e-9)
+        and B.pt_eff_report["DDD_WR2"] > B.pt_efficiency["DDD_WR2"] * 1.15)
+    probe = fs.leak_probe(f, [EfficiencyModel("eff_report", opportunity=fp.ChanceOpportunity(
+        "o", chance=fp.PlayChance(rep)))], [202403, T])
+    chk("the leak probe finds nothing reaching it through the harness (it "
+        "cannot see the reports)", probe.clean and probe.outputs["eff_report"] > 200,
+        probe.describe()[:100])
+
+    cv = fp.chance_vs_played(pc, f, [202403, T])
+    c4 = cv[cv.t == T].reset_index(drop=True)
+    chk("chance beside played: one row for each player slate B lists, each "
+        "week asked, with the chance he was given and whether he played "
+        "for that team that week",
+        set(cv.t) == {202403, T} and len(c4) == len(b)
+        and list(c4.player_id) == list(b.player_id)
+        and np.array_equal(c4.chance.to_numpy(), d.chance.to_numpy())
+        and list(c4.status) == list(d.status)
+        and not c4.played[idx["DDD_WR1"]] and c4.played[idx["CCC_WR2"]]
+        and c4.played[idx["AAA_WR1"]]
+        and {c4.team[i]: bool(c4.played[i]) for i in range(len(b))
+             if b.player_id[i] == "AAA_WR2"} == {"AAA": False, "CCC": True}
+        and int(c4.played.sum()) == int(((f.t == T) & f.player_id.isin(
+            set(b.player_id))).sum()))
+    h3 = History(f[f.t < 202403], 202403)
+    c3 = cv[cv.t == 202403].reset_index(drop=True)
+    chk("...the earlier week counted on ITS history and read from ITS report",
+        np.array_equal(c3.chance.to_numpy(),
+                       pc.chances(h3, fs.slate_candidates(f, h3)))
+        and c3.status[list(c3.player_id).index("CCC_WR1")] == "questionable"
+        and not c3.played[list(c3.player_id).index("CCC_WR1")])
+
+
+@section("28. chance of playing — the injury reports themselves")
+def _():
+    stamp = lambda s_: pd.Timestamp(s_, tz="UTC")       # noqa: E731
+    raw = pd.DataFrame([
+        # season, week, team, type, id, status, modified
+        (2024, 3, "AAA", "REG", "p1", "Out", stamp("2024-09-20 20:00")),
+        (2024, 3, "AAA", "REG", "p2", "Questionable", stamp("2024-09-21 23:00")),
+        (2024, 3, "AAA", "REG", "p3", None, stamp("2024-09-20 20:00")),
+        (2024, 3, "AAA", "REG", "p4", "Note", stamp("2024-09-20 20:00")),
+        (2024, 3, "AAA", "REG", "p5", "Doubtful", stamp("2024-09-22 14:00")),   # game day
+        (2024, 3, "AAA", "REG", "p6", "Out", stamp("2024-09-23 02:00")),        # after
+        (2024, 3, "AAA", "REG", "p7", "Doubtful", pd.NaT),                      # no stamp
+        (2024, 3, "AAA", "REG", "p8", "Out", stamp("2024-09-20 21:00")),        # later report
+        (2024, 3, "AAA", "REG", "p8", "Questionable", stamp("2024-09-19 20:00")),
+        (2024, 3, "NXT", "REG", "p9", "Out", stamp("2024-09-25 20:00")),        # game not played yet
+        (2024, 19, "AAA", "WC", "p1", "Out", stamp("2025-01-10 20:00")),        # postseason
+        (2024, 3, "AAA", "REG", None, "Out", stamp("2024-09-20 20:00")),        # no id
+        (2024, 4, "AAA", "REG", "p1", "Questionable", stamp("2024-09-27 20:00")),
+    ], columns=["season", "week", "team", "game_type", "gsis_id", "report_status",
+                "date_modified"])
+    games = pd.DataFrame([(2024, 3, "AAA", "2024-09-22"), (2024, 4, "AAA", "2024-09-29"),
+                          (2024, 19, "AAA", "2025-01-12")],
+                         columns=["season", "week", "team", "game_date"])
+    out = fp.clean_reports(raw, games)
+    got = {(r.t, r.player_id): r.status for r in out.itertuples()}
+    chk("the reports table: one row per player and week, the report's three "
+        "game statuses in plain words, anything else on the report 'listed'",
+        got == {(202403, "p1"): "out", (202403, "p2"): "questionable",
+                (202403, "p3"): "listed", (202403, "p4"): "listed",
+                (202403, "p7"): "doubtful", (202403, "p8"): "out",
+                (202403, "p9"): "out", (202404, "p1"): "questionable"}, got)
+    chk("...a report changed on the day of the game or later is left out; "
+        "one with no time stamp is kept; of two for one week the later "
+        "stands, whichever row comes first; postseason and a row with no "
+        "id go",
+        (202403, "p5") not in got and (202403, "p6") not in got
+        and got[(202403, "p7")] == "doubtful" and got[(202403, "p8")] == "out"
+        and not any(t_ == 202419 for t_, _ in got))
+    chk("...and the report for a game that has not been played yet is KEPT: "
+        "it is the one a live run needs", got[(202403, "p9")] == "out")
+    chk("...and it counts what it dropped",
+        out.attrs["report"] == dict(rows=13, regular_season=11, game_not_on_file_yet=1,
+                                    changed_on_game_day_or_later=2, no_time_stamp=1,
+                                    second_report_same_week=1, kept=8),
+        out.attrs["report"])
+    chk("...and a table missing a column is refused by name",
+        raises(lambda: fp.clean_reports(raw.drop(columns=["date_modified"]), games),
+               ValueError, "date_modified"))
+    fp.PlayChance(out)          # what it makes is what PlayChance takes
+
+    import pathlib
+    import tempfile
+    real_cache, real_open = fp.ff_data.CACHE, fp.urllib.request.urlopen
+    calls = []
+
+    class _Resp:
+        def __init__(self, data): self.data, self.done = data, False
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            if self.done:
+                return b""
+            self.done = True
+            return self.data
+
+    def ok_open(url, timeout=0):
+        calls.append(url)
+        return _Resp(b"season-file")
+
+    def bad_open(url, timeout=0):
+        calls.append(url)
+        raise OSError("no network")
+
+    class _Dies(_Resp):
+        def read(self, n):
+            if self.done:
+                raise OSError("connection lost")
+            self.done = True
+            return self.data
+
+    def half_open(url, timeout=0):
+        return _Dies(b"half-a-file")
+
+    import contextlib
+    import io
+    said = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(said):
+            fp.ff_data.CACHE = pathlib.Path(tmp) / "cache"
+            fp.urllib.request.urlopen = bad_open
+            no_file = raises(lambda: fp.fetch_reports(2031), RuntimeError, "2031")
+            fp.urllib.request.urlopen = ok_open
+            first = fp.fetch_reports(2031)
+            n_first = len(calls)
+            again = fp.fetch_reports(2031)
+            fresh_no_fetch = len(calls) == n_first
+            fp.urllib.request.urlopen = bad_open
+            forced = fp.fetch_reports(2031, force=True)
+            fp.urllib.request.urlopen = half_open
+            halved = fp.fetch_reports(2031, force=True)
+            chk("a download that dies half way leaves the old copy as it "
+                "was and no partial file behind",
+                halved == first and first.read_bytes() == b"season-file"
+                and [x.name for x in fp.ff_data.CACHE.iterdir()]
+                == ["injuries_2031.parquet"])
+            chk("a season's reports are fetched from nflverse's injuries "
+                "release into the engine's cache under their own name",
+                first == fp.ff_data.CACHE / "injuries_2031.parquet"
+                and first.read_bytes() == b"season-file"
+                and calls[1].endswith("/injuries/injuries_2031.parquet")
+                and calls[1].startswith(fp.ff_data.BASE))
+            chk("...a fresh copy is not fetched again; a failed refresh falls "
+                "back on the copy there is; with no copy it stops and names "
+                "the season",
+                fresh_no_fetch and again == first and forced == first
+                and forced.read_bytes() == b"season-file" and no_file
+                and not list(fp.ff_data.CACHE.glob("*.tmp")))
+    finally:
+        fp.ff_data.CACHE, fp.urllib.request.urlopen = real_cache, real_open
+    chk("...and each fall-back says so, naming the season",
+        said.getvalue().count("injuries 2031 refresh failed") == 2
+        and "using cached copy" in said.getvalue(), said.getvalue()[:80])
+
+    frame = REAL.get("frame")
+    if frame is None:
+        frame = fs.load_frame()
+    years = sorted(int(y) for y in frame.season.unique())
+    rep = fp.load_reports(years)
+    rr = rep.attrs["report"]
+    chk("on real data: reports for every season in the frame, thousands of "
+        "them, one per player and week, nearly all of the regular-season "
+        "rows kept",
+        set(rep.t // 100) == set(years) and len(rep) > 15000
+        and not rep.duplicated(["t", "player_id"]).any()
+        and set(rep.status) == set(fp.STATUSES) - {"none"}
+        and rr["kept"] > 0.99 * rr["regular_season"]
+        and rr["changed_on_game_day_or_later"] < 0.01 * rr["regular_season"], rr)
+    newest = int(rep.t.max())
+    raw_new = pd.read_parquet(fp.fetch_reports(newest // 100))
+    raw_new = raw_new[(raw_new.game_type == "REG") & (raw_new.week == newest % 100)]
+    chk("...and the newest week's report is there for every team that filed "
+        "one, played yet or not",
+        (rep.t == newest).sum() == raw_new.gsis_id.nunique() > 100
+        and raw_new.team.nunique() >= 20, ((rep.t == newest).sum(), raw_new.team.nunique()))
+    wk = fs.test_weeks(frame)[-1]
+    hr = History(frame[frame.t < wk], wk)
+    rf = fp.PlayChance(rep).fit(hr)
+    chk("...and what is counted on it is football: out and doubtful almost "
+        "never play, questionable plays more often than not, a player on "
+        "the report with no status nearly always, and a regular who has "
+        "missed three straight rarely",
+        rf.ok and rf.by_status["out"] < 0.03 and rf.by_status["doubtful"] < 0.1
+        and 0.5 < rf.by_status["questionable"] < 0.8 and rf.by_status["listed"] > 0.85
+        and rf.cell[("none", 0)] > 0.8 and rf.cell[("none", 3)] < 0.25
+        and all(rf.count[(s_, 0)] > 100 for s_ in fp.STATUSES),
+        {k_: round(v_, 3) for k_, v_ in rf.by_status.items()})
+    sb = fs.slate_candidates(frame, hr)
+    pr = fp.PlayChance(rep).chances(hr, sb)
+    chk("...every listed player gets a chance between 0 and 1, and they are "
+        "not all the same", len(pr) == len(sb) > 500 and pr.min() >= 0
+        and pr.max() <= 1 and pr.std() > 0.1)
+
+
 _summary()
 sys.exit(1 if fails else 0)

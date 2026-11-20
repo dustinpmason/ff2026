@@ -4,15 +4,15 @@ Owned by the simulator thread. Ids are `S1`, `S2`, ... The betting engine's
 backlog is `BACKLOG.md` (ids `B...`) and is never edited from here.
 `SIM-HANDOFF.md` is the brief this build works from.
 
-## State on 2026-11-20 (evening)
+## State on 2026-11-20 (after S13)
 
 | | |
 |---|---|
-| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it, giving receptions, receiving yards, rushing yards, completions and passing yards (S17). All first versions, measured, with known weaknesses listed below. **Nothing yet projects touchdowns, and nothing has been set beside a book's line.** |
-| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_reverts.py`, this file |
-| Simulator suite | `python3 test_sim.py` → **606 checks, ALL PASS** |
+| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). **Nothing yet projects touchdowns, nothing has been set beside a book's line, and there is no script to run on a real slate.** |
+| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_reverts.py`, this file |
+| Simulator suite | `python3 test_sim.py` → **657 checks, ALL PASS** |
 | Engine suite | `python3 test_regression.py` → 1801, untouched. No existing file was edited. |
-| Next | S13, each player's chance of playing, built to take the injury report as an input (Dustin's order, 2026-11-20). |
+| Next | Touchdowns, then the live-run script, to reach a shadow run (Dustin's order, 2026-11-20). S11, S12, S18, S19, S20 wait until shadow runs have started. |
 
 ```bash
 python3 refresh.py
@@ -21,7 +21,8 @@ python3 test_sim.py                            # this build's count
 python3 sim_baseline.py --current-week 11      # the yardsticks; about 2 minutes
 python3 sim_opportunity.py --current-week 11   # targets, carries, pass attempts; about 4 minutes
 python3 sim_efficiency.py --current-week 11    # catches and yards; about 4 minutes
-python3 sim_reverts.py                         # break every behaviour; about 2 hours
+python3 sim_play.py --current-week 11          # chance of playing; about 6 minutes
+python3 sim_reverts.py                         # break every behaviour; about 3 hours
 ```
 
 `--current-week` is the NFL week now in progress. On 2026-11-20 that is 11,
@@ -639,6 +640,140 @@ by. Kept because the same mistakes are available again:
 
 ---
 
+## S13. Chance of playing — MEASURED 2026-11-20
+
+`ff_sim_play.py`. `PlayChance` puts a chance of playing on every listed
+player from his status on that week's injury report and how many of his
+team's last four games he has missed, counted on earlier weeks only; a
+chance can be handed in instead (`given={player_id: chance}`), which is
+the run-time input. `ChanceOpportunity` is the opportunity model with each
+teammate counted at his chance: a player's line is worked out as if he
+plays. With every chance at 1 it is the opportunity model number for
+number; with a teammate at 0 it is the opportunity model on a slate
+without him. Injury reports come from nflverse's `injuries` release,
+fetched by this file into the engine's cache.
+
+### What was measured (`sim_play.py`, run 2026-11-20)
+
+46 weeks, 694 games. "List not known" is the harness's slate B: everyone
+active for a team in one of its last four games.
+
+**Brier score on the main line, gap to knowing nothing** (standard errors
+in brackets):
+
+| | list known: simulator | list NOT known: game-log | as it was | with games missed | and the report |
+|---|---|---|---|---|---|
+| targets | −0.0141 (8.6) | +0.0013 | +0.0078 | −0.0127 | **−0.0138 (8.0)** |
+| carries | −0.0227 (7.7) | +0.0026 | +0.0130 | −0.0181 | **−0.0212 (7.4)** |
+| receptions | −0.0137 (8.5) | −0.0035 | +0.0030 | −0.0135 | **−0.0135 (7.9)** |
+| receiving yards | −0.0129 (7.9) | −0.0042 | −0.0019 | −0.0136 | **−0.0135 (8.2)** |
+| rushing yards | −0.0103 (3.4) | +0.0010 | +0.0067 | −0.0093 | **−0.0089 (2.9)** |
+
+Pass attempts, completions and passing yards do not move (−0.0184, −0.0112,
+−0.0111 in every list-not-known column).
+
+1. **With a chance of playing, the simulator with the list not known is
+   close to what it is with the list known**: a little behind on most
+   stats (table above; mean miss 2.19 against 2.17 targets, 3.96 against
+   3.88 carries, 23.53 against 23.14 receiving yards), and on a slightly
+   different set of players, since the list-not-known slate cannot grade a
+   man new to a team or back after more than four games. Against the
+   simulator as it was, on the same legs: targets −0.0215 (se 0.0022),
+   carries −0.0343 (se 0.0033), receptions −0.0165 (se 0.0019), receiving
+   yards −0.0116 (se 0.0016), rushing yards −0.0156 (se 0.0026). The large
+   bias is gone: targets −0.96 to +0.11, carries −1.95 to −0.04, receiving
+   yards −7.50 to +0.69.
+2. **Pooled over the rungs, its probabilities there are within 1.1 points
+   of what it says in every band** (receptions, completions and the three
+   yardages). As it was, it was 4 to 8 points too sure from 65% up. This
+   table flatters the main line: see "What is weak".
+3. **Most of the gain is games missed; in this test the report adds
+   little.** Report on top of games missed: carries −0.0031 (se 0.0013);
+   targets −0.0010 (se 0.0007) and the other three, noise. The report
+   makes the chance itself much better (Brier of the chance 0.0934 against
+   0.1192). The test cannot see most of what a report is worth: the player
+   ruled out is never graded; a quarterback ruled out changes nothing
+   here, because the starter is whoever started last week; and stand-in
+   lines do not move on news as a book's do.
+4. **The chance is not biased from Week 2 on, and badly wrong in Week 1.**
+   Week 2 on: said 72.2%, played 72.3% (23,686 listed player-games). Week
+   1: said 76.6%, played 49.5% (1,642). Out and doubtful: said 0 to 1%,
+   played 0%. Questionable: said 65.8%, played 62.0%. Where it says 5 to
+   25% (4,571) they played 11.7% against 15.4%.
+
+### What is weak
+
+- **On the MAIN line its confident legs are too sure, the overs most
+  (S21).** With the report, list not known: overs it put at 65% or better,
+  1,183 legs, stated 72.0%, happened 65.5% (se 1.6); unders 4,346 legs,
+  72.6% against 69.9% (se 0.8); its main-line bands from 65 to 80% come
+  in 3.4 to 4.8 points under what they say. With the chance of playing
+  the old lean toward the under has turned: from 75% up it is the overs
+  that come in short.
+- **Week 1 (S23).** A team's games are taken as one run across seasons, so
+  in Week 1 "played the team's last game" means last season's finale. The
+  chance it puts on that is 27 points too high. A real depth chart makes
+  the list right; the chance on it would still need its own Week 1 count.
+- **The starting quarterback has to be named.** The model gives the pass
+  attempts to whoever the slate names; if he is out, his backup gets none.
+- **Past reports cannot be dated for 2025 and 2026.** Those files carry no
+  time stamps. In 2023 and 2024, 18 of 11,405 stamped rows were from game
+  day or later and are left out. Each status played at the same rate in
+  all three graded seasons (questionable 62%, 64%, 59%), which is what
+  pre-game statuses would show; it is not proof. A Saturday downgrade
+  would be in there, and would be a fair input.
+- **It reads the game status only**, not practice participation, and
+  knows nothing of injured reserve except through games missed.
+- **"As if he plays, teammates at their chance" is an approximation.** It
+  understates a player's expected share a little, most when one heavy
+  teammate is near 50%. Argued, not measured.
+- **The harness's list is cruder than a depth chart.** A real run should
+  do better than "active in one of the last four games".
+- **Not right for the list-known slate.** There everyone plays, and a
+  questionable player's teammates would get a little too much. After
+  inactives are posted, hand in 1 for everyone active.
+
+### How it was checked
+
+Within the budget set on 2026-11-20: the suite (657 checks, 51 of them
+new); the leak probe on all 46 weeks (1,669,578 outputs identical; it
+cannot see the reports); the walk-forward measurement above; reverts for
+the new file only, each run once (62 in the end, 62 caught; the first pass
+was 61 written and 58 caught, the 3 not caught being edits that changed
+nothing, which were dropped along with the redundant filter they pointed
+at); and ONE independent review pass.
+
+The review reran the measurement, found every figure matching and no leak,
+and returned fourteen defects. None was a wrong measured number, so there
+was no second pass; **the fixes below have not been reviewed.** The ones
+that mattered:
+
+- **This week's injury report was being thrown away.** Reports were kept
+  only for teams whose game was already on file, so for a live week every
+  out or questionable player in a game not yet played read as "not on the
+  report". The measurement could not see it; a shadow run would have been
+  wrong from its first line. Fixed, and the suite now checks on real data
+  that the newest week's report is there for every team that filed one.
+- **"It runs 1 to 5 points high everywhere"** was one bad week averaged
+  over the rest (finding 4).
+- **"As good with the list not known as with it known"** compared two
+  columns on different players and ignored that the point estimates and
+  the mean miss are a little worse (finding 1).
+- **"About 5 points too sure on both sides"** was the old model's figure
+  under the new model's heading; and the lean "not being there" held only
+  below 75%.
+- **A check that could not fail** (an `or` that made a whole condition
+  true), and a two-reports-in-a-week test whose rows happened to be in
+  order already.
+
+Fresh clone at commit d250e84 with the new and changed files added: engine
+suite 1801, simulator suite 657, `sim_play.py` output identical to the
+working copy's. No earlier revert was rerun: `ff_sim.py`, `ff_sim_opp.py`,
+`ff_sim_eff.py` and sections 1 to 24 of the suite are byte for byte the
+committed ones.
+
+---
+
 ## Open
 
 | id | what | status |
@@ -654,14 +789,17 @@ by. Kept because the same mistakes are available again:
 | **S10** | **`ff_sim.corr_joint` reads `ff_boost._pair_weight`**, a private name. | **NOTED.** If the engine renames it the import fails and says why. It is the table's r as a plain point estimate. It is not what `ff_boost.joint_error` does, and no table here calls it "the engine's". |
 | **S11** | **Players with a line are given too little, small roles too much.** | **OPEN, measured.** About 4% too little on targets and carries, and their overs come in 3 to 4 points more often than stated (S4 findings 3 and 4). Why is not settled: the share fit pulling big and small together, or first-game and fringe players handed a position's average. Things to try, each graded the same way: a snap share as an input (the brief asks for it and the model does not read one), a share fit that is not a straight line at the top, giving a new or unseen player less than his position's average. |
 | **S12** | **One spread per stat does not fit every size of role.** | **OPEN, measured.** Too wide for the biggest roles, too narrow for small ones (S4 finding 5). It is also measured before shares are scaled to the slate and applied after. Either may be part of why the top band is too sure (96.6% for a stated 97.1%; overs 94.5% for 96.7%); neither is tested. |
-| **S13** | **On slate B the opportunity model is worse than nothing on targets and carries, and the catches and yards built on them are no better than nothing (receptions, receiving yards) or worse (rushing yards).** | **NEXT (Dustin, 2026-11-20).** It shares a team's volume among everyone listed, and on slate B a fifth of it goes to players who do not play. It needs each player's chance of playing, so that a doubtful player is given a part share and not a whole one. **Dustin's requirement: build it to ACCEPT each player's chance of playing as an input at run time, from the injury report (out, doubtful, questionable) and the depth chart, and not only as something estimated from the history.** His main run is 3 to 6 hours before kickoff, before inactives, with a re-check after they post, and early looks 1 to 4 days out; by the main run he knows the injury report, so he is much nearer "list known" than "not known". The harness will need a third slate between A and B to grade it: injury-report designations as they stood before kickoff are not on file for past weeks, which has to be solved or said. |
+| **S13** | **Each player's chance of playing.** | **DONE 2026-11-20**, section above. Left open inside it: Week 1 (S23); practice participation is not read; the starting quarterback must be named at run time; the slate it is graded on is cruder than a depth chart; a status never seen in the history takes the all-player rate (every status has been seen since 2023). Hand-set numbers, not tuned: the look-back of four team-games (the harness's own), a pull of 20 rows toward each status's rate, no counting on fewer than 100 listed player-games. |
 | **S14** | **The closing spread and total reach the model outside the harness.** | **OPEN pending Dustin's decision.** They are handed over at construction, where the leak probe cannot see. What stands there: the model looks a line up only for games in its history or on its slate; the suite checks that, and that moving a later game's line moves nothing. `_market`'s own refusal cannot fire from the code as it stands; it is a tripwire for a later edit. If Dustin wants them used, the right home is the harness's slate, which is a change to `ff_sim.py` and its reverts. The table of lines holds only games played, so a live week needs its lines supplied; a missing or non-numeric line stops the run and names the game. |
 | **S15** | **Team volume is three separate fits; no plays, no pass rate, no snaps.** | **NOTED.** A team's projected targets and its quarterback's projected attempts are not tied to each other (projected targets ran 0.92 to 0.97 of projected attempts in the reviewer's check). Whether plays times pass rate does better is measurable and not yet measured. |
 | **S16** | **Counts are independent across players.** | **NOTED.** The model states no chance of two legs together, so the pair report has nothing of its own to score yet. Pairs wait for a game-level simulation. |
 | **S17** | **Efficiency.** | **FIRST VERSION MEASURED 2026-11-20**, section above. Its hand-set numbers, none tuned against the test: a 16-game half-life on a player's own totals; the list the pull is picked from (2 to 1,280, ten values); no rate learned from fewer than 16 games with an opportunity; a position needs 200 catches, carries or attempts in the history before it has its own spread of yards; yards per catch or carry never under a tenth of a yard. Open items S18 and S19. |
 | **S18** | **Rushing yards are too sure.** | **OPEN, measured.** 2.4 to 3.6 points in every band from 65% up. The stated spread is 5% too narrow overall, 16% for backs expected 10 to 30 yards (20.42 actual against 17.59) and 18% for those expected under 10 (4.83 against 4.09). Why is not established. Candidates, none tested: the one-spread-per-stat carries count (S12; a reviewer found the squared miss per carry flat in carries, which points there rather than at yards per carry); the game script, not built; and 6.4% of player-games with a carry finishing below zero, which a gamma cannot give. |
-| **S19** | **The distributions lean right and results do not.** | **OPEN, measured, and it matters most for setting a threshold.** Every count here is a negative binomial, with more of its weight below its own average than above. Starters beat the model's expected completions and passing yards 51.0% and 50.6% of the time where it says 47.2% and 46.0%, with the expected numbers the right size. Main-line overs come in 2.5 to 4.3 points more often than stated on all five stats. For receivers and rushers some of that is the expected number running 4 to 5% low (S11) and the tables cannot split the two. To try: a count with less lean for the same spread; a quarterback's attempts as a share of team plays rather than a free count. |
+| **S19** | **The distributions lean right and results do not.** | **OPEN, measured; WAITS until shadow runs start.** Every count here is a negative binomial, with more of its weight below its own average than above. Starters beat the model's expected completions and passing yards 51.0% and 50.6% of the time where it says 47.2% and 46.0%, with the expected numbers the right size. **Corrected 2026-11-20:** this section used to say "a stated over is worth a few points more than it says". That is true of the pooled table and of the low rungs and FALSE for confident overs on the main line, which come in about 5 points LESS often than stated (S21). Do not read a direction for a bet off S19. To try: a count with less lean for the same spread; a quarterback's attempts as a share of team plays rather than a free count. |
 | **S20** | **Passing yards are spread too wide, and not sure enough.** | **OPEN, measured.** Stated spread 81.56 against 76.15 actual; a stated 82.5% came in at 85.9%. The model takes the variance of a game's passing yards to grow in step with attempts; a reviewer's check on the last graded history found the squared miss per attempt falling from about 120 below 29 attempts to 74 to 88 above 36, so it does not. Attempts and yards per attempt are not independent either (a quarterback throwing 45 times is usually behind). |
+| **S21** | **Calibration pooled over all rungs hides opposite errors by rung.** | **OPEN, measured; found by the engine thread 2026-11-20 and reproduced here.** Simulator as it was, list known, catches and yards, favoured side: on the main line a stated 65-70% came in 61.1%, 70-75% 67.9%, 75-80% 72.6%; on the x0.6 rung the same bands came in 72.6%, 74.0%, 80.3%. Main-line legs it put at 65% or better: overs 920 legs, stated 72.5%, happened 67.5% (se 1.8); unders 5,874 legs, 73.5% against 68.6% (se 0.7). With the chance of playing, list not known: overs 72.0% against 65.5%, unders 72.6% against 69.9%. The game-log model's confident main-line overs: 69.7% stated, 57.9% happened. So every pooled calibration table in this file flatters the main line, which is the rung most like a posted line. `sim_play.py` section 5 prints the table rung by rung; `sim_opportunity.py` and `sim_efficiency.py` do not yet. A threshold must be read from the main-line row, and better from real posted lines (S3). |
+| **S22** | **Parked until shadow runs start (Dustin, 2026-11-20):** S11, S12, S18, S19, S20. | **WAITING.** |
+| **S23** | **The chance of playing is 27 points too high in Week 1.** | **OPEN, measured.** Said 76.6%, played 49.5% on 1,642 listed player-games; from Week 2 on, 72.2% against 72.3%. The count treats a team's games as one run across seasons. Fix: count season-openers apart (there are two seasons of them to count on by 2026), or do not carry a list across a season at all. Does not touch a shadow run started mid-season. |
 
 ## Needs from the engine thread
 
@@ -682,6 +820,13 @@ For its information, each measured above:
    two ways across seasons has a shorter log there (2 of 1,732 logs on three
    weeks).
 5. If S5 is wanted: `ff_data.ASSETS` would need nflverse's weekly roster file.
+6. `ff_sim_play.py` fetches nflverse's `injuries` release itself, into
+   `ff_data.CACHE` as `injuries_<year>.parquet`, using `ff_data.BASE` and
+   `ff_data._is_stale` (a private name: if it is renamed the first fetch
+   fails with an AttributeError naming it). `refresh.py` does not refresh it; it
+   refreshes itself when older than the engine's six hours. If the engine
+   wants injury reports too, the clean home is an `injuries` entry in
+   `ff_data.ASSETS`.
 
 ## Decided by Dustin
 
@@ -694,6 +839,18 @@ For its information, each measured above:
   kickoff, before inactives, with a re-check after they post; early looks 1
   to 4 days out. By the main run the injury report and depth chart are
   known.
+- **2026-11-20. Priority is a shadow run:** a script he can run on a real
+  slate that prints each player's stat line and the chance of clearing
+  each posted line. Order: S13 (done), touchdowns, the live-run script.
+  S11, S12, S18, S19, S20 wait until shadow runs have started.
+- **2026-11-20. Testing budget per stage:** the suite, the leak probe, the
+  walk-forward measurement, reverts for the new code only (run once), and
+  ONE independent review pass; no second pass unless the first finds a
+  wrong number; old reverts are not rerun. Write-ups keep to what was
+  measured, what is weak, and what he needs to do.
+- **2026-11-20. Past injury reports** are fetched by a simulator file of
+  its own (he was offered that or the engine's loader, did not choose,
+  and said to go straight on; this was the recommended option).
 
 ## Decisions waiting for Dustin
 

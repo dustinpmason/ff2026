@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py` and
-`ff_sim_eff.py` and see that `test_sim.py` notices.
+"""S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py`,
+`ff_sim_eff.py` and `ff_sim_play.py` and see that `test_sim.py` notices.
 
-    python3 sim_reverts.py            # all of them; about 2 hours on 2 cores
+    python3 sim_reverts.py            # all of them; about 3 hours on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
-    python3 sim_reverts.py 6 7 17     # just these, by number (plus the controls)
+    python3 sim_reverts.py 8 9 17     # just these, by number (plus the controls)
     python3 sim_reverts.py --show 300 # ...and print which checks failed for each
 
 SIM-HANDOFF.md, "Before saying done", item 1: "Break every new check. Remove
@@ -13,8 +13,9 @@ This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
 How it works. Each entry below is one small edit to `ff_sim.py` (or, for
-the entries made with `mut_opp` and `mut_eff`, to `ff_sim_opp.py` and
-`ff_sim_eff.py`) that removes or reverses one behaviour. For each, a temporary directory gets the edited
+the entries made with `mut_opp`, `mut_eff` and `mut_play`, to
+`ff_sim_opp.py`, `ff_sim_eff.py` and `ff_sim_play.py`) that removes or
+reverses one behaviour. For each, a temporary directory gets the edited
 file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
 revert was NOT CAUGHT. Anything else is caught.
@@ -24,32 +25,37 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Six controls run with EVERY pass, including a pass of a few numbered
+Eight controls run with EVERY pass, including a pass of a few numbered
 reverts, and a pass that fails any of them proves nothing. Two for each
 file: an edit that changes no behaviour must read NOT CAUGHT (so the
 unbroken suite passes here, and the edited copy is the one imported), and
 an edit that breaks something plain must be caught. They are numbers 0 to
-5; the reverts start at 6.
+7; the reverts start at 8.
 
 An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST RUNS — 2026-11-20, 2 cores, on fresh clones. 444 reverts and 6 controls.
+LAST RUNS — 2026-11-20, 2 cores. 506 reverts and 8 controls.
 
-  `ff_sim.py` and `ff_sim_opp.py`, 355 reverts (entries 6 to 360): 355
-  caught, 0 not, in seven blocks, run before `ff_sim_eff.py` existed.
-  Those two files, and sections 1 to 20 of `test_sim.py`, are byte for
-  byte what they were then (checked against the commit), so that result
-  stands. Twelve of them, every thirtieth, were run again alongside the
-  efficiency reverts and were caught.
+  `ff_sim.py` and `ff_sim_opp.py`, 355 reverts: 355 caught, 0 not, on a
+  fresh clone in seven blocks, run before the later files existed.
 
-  `ff_sim_eff.py`, 89 reverts (entries 361 to 449): 89 caught, 0 not, in
-  three blocks.
+  `ff_sim_eff.py`, 89 reverts: 89 caught, 0 not, on a fresh clone in
+  three blocks; twelve of the 355 were run again alongside and caught.
 
-  Each block runs the six controls and the unbroken suite again at its
-  end; all passed. The whole list has NOT been run in one go since the
-  third file was added.
+  `ff_sim_play.py`, 62 reverts: 62 caught, 0 not, in the working copy,
+  each run once. The first pass was 61 reverts, 58 caught; the three not
+  caught were edits that changed nothing and were dropped (see
+  SIM-BACKLOG, S13); the rest were added or rewritten after the review.
+
+  From 2026-11-20 the rule, set by Dustin, is: reverts for new code only,
+  run once; earlier ones are not rerun while their file and their
+  sections of the suite are byte for byte unchanged (checked against the
+  commit each time). Each block runs the controls and the unbroken suite
+  again at its end; all passed. The whole list has NOT been run in one go
+  since the second file was added. Entry numbers shift when controls are
+  added: find an entry by `--show` and its name, not by an old number.
 
 The first full run of the `ff_sim.py` reverts alone (2026-11-20, 257 of
 257) was run in four blocks. After its third block one fixture in
@@ -68,7 +74,7 @@ import sys
 import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
-TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py")
+TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py")
 SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
@@ -78,7 +84,11 @@ NULL_OPP = "CONTROL: nothing changed in ff_sim_opp.py (must read NOT CAUGHT)"
 BROKEN_OPP = "CONTROL: ff_sim_opp.py's shared stats swapped (must be caught)"
 NULL_EFF = "CONTROL: nothing changed in ff_sim_eff.py (must read NOT CAUGHT)"
 BROKEN_EFF = "CONTROL: ff_sim_eff.py's stats reordered (must be caught)"
-CONTROLS = (0, 1, 2, 3, 4, 5)
+NULL_PLAY = "CONTROL: nothing changed in ff_sim_play.py (must read NOT CAUGHT)"
+BROKEN_PLAY = "CONTROL: ff_sim_play.py's statuses reordered (must be caught)"
+CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7)
+NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY)
+BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY)
 
 M: list = []
 
@@ -95,6 +105,10 @@ def mut_eff(name: str, *pairs) -> None:
     M.append((name, pairs, "ff_sim_eff.py"))
 
 
+def mut_play(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_play.py"))
+
+
 # ---- controls on this runner itself
 mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
@@ -108,6 +122,10 @@ mut_eff(NULL_EFF, ("EFF_STATS = (*OPP_STATS, *COUNTS, *YARDS)",
                    "EFF_STATS = (*OPP_STATS,  *COUNTS, *YARDS)"))
 mut_eff(BROKEN_EFF, ("EFF_STATS = (*OPP_STATS, *COUNTS, *YARDS)",
                      "EFF_STATS = (*COUNTS, *OPP_STATS, *YARDS)"))
+mut_play(NULL_PLAY, ('STATUSES = ("none", "listed", "questionable", "doubtful", "out")',
+                     'STATUSES = ("none",  "listed", "questionable", "doubtful", "out")'))
+mut_play(BROKEN_PLAY, ('STATUSES = ("none", "listed", "questionable", "doubtful", "out")',
+                       'STATUSES = ("listed", "none", "questionable", "doubtful", "out")'))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -1353,6 +1371,177 @@ mut_eff("eff lined: 'said' is the chance of the under",
         ('        "said": j[f"p_{name}"].to_numpy(dtype=float),',
          '        "said": 1.0 - j[f"p_{name}"].to_numpy(dtype=float),'))
 
+# ---- S13: each player's chance of playing (ff_sim_play.py)
+# -- the reports
+mut_play("play: anything on the report with no game status is 'none'",
+         ('        "status": kept.report_status.map(REPORT_WORD).fillna("listed")',
+          '        "status": kept.report_status.map(REPORT_WORD).fillna("none")'))
+mut_play("play: 'Doubtful' is read as out",
+         ('REPORT_WORD = {"Questionable": "questionable", "Doubtful": "doubtful",',
+          'REPORT_WORD = {"Questionable": "questionable", "Doubtful": "out",'))
+mut_play("play: postseason reports are kept",
+         ('    reg = raw[(raw.game_type == "REG") & raw.gsis_id.notna()]',
+          '    reg = raw[raw.gsis_id.notna()]'))
+mut_play("play: a report with no player id is kept",
+         ('    reg = raw[(raw.game_type == "REG") & raw.gsis_id.notna()]',
+          '    reg = raw[(raw.game_type == "REG")]'))
+mut_play("play: a report for a game not on file yet is dropped",
+         ("    kept = m[~late]\n", "    kept = m[~late & m.game_date.notna().to_numpy()]\n"))
+mut_play("play: two reports in a week are taken in the order they came",
+         ('            .sort_values("_stamp", kind="stable", na_position="first")\n', ""))
+mut_play("play: a report changed on game day is used",
+         ("    late = (stamp.dt.normalize() >= day).to_numpy()",
+          "    late = (stamp.dt.normalize() > day).to_numpy()"))
+mut_play("play: a report changed after the game is used",
+         ("    late = (stamp.dt.normalize() >= day).to_numpy()",
+          "    late = np.zeros(len(m), dtype=bool)"))
+mut_play("play: a report with no time stamp is dropped",
+         ("    late = (stamp.dt.normalize() >= day).to_numpy()",
+          "    late = ((stamp.dt.normalize() >= day) | stamp.isna()).to_numpy()"))
+mut_play("play: of two reports in a week the EARLIER stands",
+         ('            .drop_duplicates(["season", "week", "gsis_id"], keep="last"))',
+          '            .drop_duplicates(["season", "week", "gsis_id"], keep="first"))'))
+mut_play("play: a reports table missing a column is not refused",
+         ("    if need - set(raw.columns):", "    if False:"))
+mut_play("play: the week is one out",
+         ('        "t": (kept.season * 100 + kept.week).astype(int).to_numpy(),',
+          '        "t": (kept.season * 100 + kept.week + 1).astype(int).to_numpy(),'))
+mut_play("play: the count of rows kept is the count of rows read",
+         ('        "kept": int(len(out))}', '        "kept": int(len(raw))}'))
+mut_play("play: the count of rows with no time stamp is always zero",
+         ('        "no_time_stamp": int(stamp.isna().sum()),', '        "no_time_stamp": 0,'))
+mut_play("play: only the home teams' games are known",
+         ('        for side in ("home_team", "away_team")], ignore_index=True)',
+          '        for side in ("home_team",)], ignore_index=True)'))
+mut_play("play: a fresh copy is fetched again",
+         ("    if not force and not ff_data._is_stale(dest):", "    if False:"))
+mut_play("play: a failed refresh stops even with a copy on hand",
+         ("        if dest.exists():\n            print(f\"  ! injuries",
+          "        if False:\n            print(f\"  ! injuries"))
+mut_play("play: a half-finished download is left behind",
+         ("        tmp.unlink(missing_ok=True)\n", ""))
+mut_play("play: the cached file has another name",
+         ('    dest = ff_data.CACHE / f"injuries_{year}.parquet"',
+          '    dest = ff_data.CACHE / f"injury_{year}.parquet"'))
+mut_play("play: fetched from another release",
+         ('REPORT_URL = "{B}/injuries/injuries_{yr}.parquet"',
+          'REPORT_URL = "{B}/injury/injuries_{yr}.parquet"'))
+# -- who was listed, and whether he played
+mut_play("play: listed from the last three games, not four",
+         ("for d in range(1, lookback + 1)],", "for d in range(1, lookback)],"))
+mut_play("play: games missed is one too many",
+         ('        "missed": (C.back - 1).to_numpy(),', '        "missed": C.back.to_numpy(),'))
+mut_play("play: games missed counts from his OLDEST of the four",
+         ('         .groupby(["team", "seq", "player_id"], as_index=False).back.min())',
+          '         .groupby(["team", "seq", "player_id"], as_index=False).back.max())'))
+mut_play("play: listed for a game the team has not played",
+         ('    C = C.merge(tw, on=["team", "seq"])      # a game the team has not played drops out',
+          '    C = C.merge(tw, on=["team", "seq"], how="left")'))
+mut_play("play: everyone listed is marked as having sat",
+         ('        "played": C.played.notna().to_numpy()})',
+          '        "played": C.played.isna().to_numpy()})'))
+# -- counting
+mut_play("play: an unknown status is accepted",
+         ("            if bad:\n                raise ValueError(f\"unknown injury status",
+          "            if False:\n                raise ValueError(f\"unknown injury status"))
+mut_play("play: two reports for one player-week are accepted",
+         ('            if reports.duplicated(["t", "player_id"]).any():', "            if False:"))
+mut_play("play: a chance outside 0 to 1 may be handed in",
+         ("            if not 0.0 <= float(p) <= 1.0:", "            if False:"))
+mut_play("play: a game in the history is given the NEXT week's report",
+         ('                           for k in zip(L.t, L.player_id)], dtype=object)',
+          '                           for k in zip(L.t + 1, L.player_id)], dtype=object)'))
+mut_play("play: a stale count is reused for another history",
+         ("        if self._last[0] is hist:", "        if self._last[0] is not None:"))
+mut_play("play: the count is kept by week, not by history",
+         ("        if self._last[0] is hist:",
+          "        if self._last[0] is not None and self._last[0].before == hist.before:"))
+mut_play("play: too little history is counted on anyway",
+         ("        if len(L) < MIN_CHANCE_ROWS:", "        if False:"))
+mut_play("play: 50 listed player-games is enough", ("MIN_CHANCE_ROWS = 100", "MIN_CHANCE_ROWS = 50"))
+mut_play("play: it takes 500 listed player-games", ("MIN_CHANCE_ROWS = 100", "MIN_CHANCE_ROWS = 500"))
+mut_play("play: a player not on the report is counted as listed",
+         ('        status = np.array([self._status.get(k, "none")',
+          '        status = np.array([self._status.get(k, "listed")'))
+mut_play("play: a status never seen is given no chance",
+         ("            rate = float(played[is_s].mean()) if is_s.any() else everyone",
+          "            rate = float(played[is_s].mean()) if is_s.any() else 0.0"))
+mut_play("play: the pull is 5 rows, not 20", ("PRIOR_ROWS = 20.0", "PRIOR_ROWS = 5.0"))
+mut_play("play: a cell is pulled toward everyone's rate, not its status's",
+         ("                    (played[in_cell].sum() + PRIOR_ROWS * rate) / (n + PRIOR_ROWS))",
+          "                    (played[in_cell].sum() + PRIOR_ROWS * everyone) / (n + PRIOR_ROWS))"))
+mut_play("play: a cell is its own count with no pull",
+         ("                    (played[in_cell].sum() + PRIOR_ROWS * rate) / (n + PRIOR_ROWS))",
+          "                    played[in_cell].sum() / max(n, 1))"))
+mut_play("play: a cell takes in every longer absence too",
+         ("                in_cell = is_s & (L.missed.to_numpy() == miss)",
+          "                in_cell = is_s & (L.missed.to_numpy() >= miss)"))
+mut_play("play: the rows behind a cell are miscounted",
+         ("                fit.count[(s, miss)] = n", "                fit.count[(s, miss)] = len(L)"))
+# -- on a slate
+mut_play("play: a slate player's status is last week's",
+         ('            status = self._status.get((hist.before, pid), "none")',
+          '            status = self._status.get((hist.before - 1, pid), "none")'))
+mut_play("play: a slate player not on the report is 'listed'",
+         ('            status = self._status.get((hist.before, pid), "none")',
+          '            status = self._status.get((hist.before, pid), "listed")'))
+mut_play("play: games missed looks back over every game the team has played",
+         ("        weeks = {tm: np.sort(g.unique())[-CANDIDATE_LOOKBACK:]",
+          "        weeks = {tm: np.sort(g.unique())"))
+mut_play("play: a traded player's last game is his last for ANY team",
+         ('            seen = last.get((tm, pid))',
+          '            seen = max((v for (_, q), v in last.items() if q == pid), default=None)'))
+mut_play("play: a chance handed in is ignored",
+         ("            if handed is not None:", "            if False:"))
+mut_play("play: a chance handed in for one team's listing is ignored",
+         ("            handed = self.given.get((tm, pid), self.given.get(pid))",
+          "            handed = self.given.get(pid)"))
+mut_play("play: a slate for the wrong week is counted for anyway",
+         ("        if week - {hist.before}:", "        if False:"))
+mut_play("play: with too little history everyone is a coin flip",
+         ('                rec.append((status, missed, 1.0, "taken to play"))',
+          '                rec.append((status, missed, 0.5, "taken to play"))'))
+mut_play("play: a player not seen lately takes the 'none' rate whatever his status",
+         ('                rec.append((status, missed, fit.by_status[status], "counted"))',
+          '                rec.append((status, missed, fit.by_status["none"], "counted"))'))
+mut_play("play: the status is ignored when a chance is looked up",
+         ('                rec.append((status, missed, fit.cell[(status, missed)], "counted"))',
+          '                rec.append((status, missed, fit.cell[("none", missed)], "counted"))'))
+# -- in the opportunity model
+mut_play("play: the chances are not used",
+         ("        p = self.chance.chances(hist, slate)", "        p = np.ones(len(slate))"))
+mut_play("play: a player is weighed at his own chance too",
+         ("            beside = m + (likely - p * m)       # him, and his teammates at their chances",
+          "            beside = likely"))
+mut_play("play: carries are left as they were",
+         ("        for stat in SHARED:\n            m = out[stat]",
+          "        for stat in SHARED[:1]:\n            m = out[stat]"))
+mut_play("play: teammates across the whole slate, not his team's game",
+         ('        team = pd.Series(list(zip(slate["game_id"], slate["team"])), dtype=object)',
+          '        team = pd.Series(["all"] * len(slate), dtype=object)'))
+mut_play("play: the closing lines handed in are dropped",
+         ("        super().__init__(name, lines=lines, single=single)",
+          "        super().__init__(name, lines=None, single=single)"))
+mut_play("play: the choice of single number is dropped",
+         ("        super().__init__(name, lines=lines, single=single)",
+          "        super().__init__(name, lines=lines)"))
+mut_play("play: left to itself it is handed nothing to count with",
+         ("        self.chance = chance if chance is not None else PlayChance()",
+          "        self.chance = chance"))
+# -- chance beside played
+mut_play("play check: graded on who was active, not who was listed",
+         ("        slate = slate_candidates(frame, hist)\n        d = chance.describe(hist, slate)",
+          "        slate = __import__('ff_sim').slate_active(frame, hist)\n        d = chance.describe(hist, slate)"))
+mut_play("play check: 'played' means played for anyone",
+         ('        was = set(zip(frame.team[frame.t == t], frame.player_id[frame.t == t]))',
+          '        was = {(tm, q) for q in frame.player_id[frame.t == t] for tm in set(frame.team)}'))
+mut_play("play check: 'played' is read from the first week asked for",
+         ('        was = set(zip(frame.team[frame.t == t], frame.player_id[frame.t == t]))',
+          '        was = set(zip(frame.team[frame.t == weeks[0]], frame.player_id[frame.t == weeks[0]]))'))
+mut_play("play check: the chance sees the week it is checked on",
+         ("        hist = History(frame[frame.t < t], t)\n        slate = slate_candidates(frame, hist)",
+          "        hist = History(frame[frame.t <= t], t + 1)\n        slate = slate_candidates(frame, History(frame[frame.t < t], t))"))
+
 
 def run_one(i: int):
     name, pairs, target = M[i]
@@ -1402,8 +1591,7 @@ def main() -> int:
     with cf.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
         for r in ex.map(run_one, only):
             res.append(r)
-            if SHOW or (r[2] not in ("caught", "applies")
-                        and r[1] not in (NULL, NULL_OPP, NULL_EFF)):
+            if SHOW or (r[2] not in ("caught", "applies") and r[1] not in NULLS):
                 print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
     # The unbroken suite once more, AFTER everything else: if the machine
     # went wrong part-way (a full disk, a dead cache), every revert after
@@ -1419,11 +1607,8 @@ def main() -> int:
     missed = [r for r in real if r[2] != "caught"]
     ctl = {r[1]: r[2] for r in res if r[1].startswith("CONTROL")}
     print(f"\n{len(real)} reverts: {caught} caught, {len(missed)} not")
-    ok = (ctl.get(NULL) == "NOT CAUGHT" and ctl.get(BROKEN) == "caught"
-          and ctl.get(NULL_OPP) == "NOT CAUGHT"
-          and ctl.get(BROKEN_OPP) == "caught"
-          and ctl.get(NULL_EFF) == "NOT CAUGHT"
-          and ctl.get(BROKEN_EFF) == "caught"
+    ok = (all(ctl.get(n) == "NOT CAUGHT" for n in NULLS)
+          and all(ctl.get(n) == "caught" for n in BROKENS)
           and last is not None and last[2] == "NOT CAUGHT")
     ctl["the unbroken suite again, at the end"] = last[2] if last else None
     print("runner controls:", "OK" if ok
