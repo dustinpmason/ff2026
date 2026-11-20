@@ -3042,5 +3042,653 @@ def _():
             RuntimeError, "line up"))
 
 
+# ===========================================================================
+# S17 — efficiency (ff_sim_eff.py)
+# ===========================================================================
+fe = EfficiencyModel = None
+
+
+@section("21. efficiency — it loads")
+def _():
+    global fe, EfficiencyModel
+    import ff_sim_eff
+    fe, EfficiencyModel = ff_sim_eff, ff_sim_eff.EfficiencyModel
+    chk("it gives a number for the three opportunities, two counts and three "
+        "yardages, and nothing else",
+        fe.EFF_STATS == ("targets", "carries", "attempts", "receptions",
+                         "completions", "receiving_yards", "rushing_yards",
+                         "passing_yards"))
+
+
+# The test's OWN typed copy of what the model sets by hand and of which
+# column is divided by which.
+HL_RATE, RATE_ROWS, SPREAD_UNITS, YFLOOR = 16.0, 16, 200.0, 0.1
+GRID = (2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1280.0)
+RATE_COLS = {"catch": ("receptions", "targets"),
+             "yards_per_catch": ("receiving_yards", "receptions"),
+             "yards_per_carry": ("rushing_yards", "carries"),
+             "completion": ("completions", "attempts"),
+             "yards_per_attempt": ("passing_yards", "attempts")}
+YARD_RATES = ("yards_per_catch", "yards_per_carry", "yards_per_attempt")
+
+
+def eff_league():
+    """(frame, lines): the rotating league with catches, completions and
+    yards DRAWN on top of its targets, carries and attempts. Receivers and
+    teams differ in how well they catch and how far they go; a few rushing
+    totals are negative."""
+    f, lines = rotating_league()
+    rng = np.random.default_rng(11)
+    catch = dict(WR1=0.68, WR2=0.55, TE=0.72, RB=0.80, QB=0.5, QB2=0.5)
+    far = dict(WR1=14.0, WR2=10.0, TE=8.0, RB=6.5, QB=5.0, QB2=5.0)
+    run_ = dict(RB=4.4, QB=5.5, WR1=7.0, WR2=7.0, TE=3.0, QB2=4.0)
+
+    def yards(n, each, shape):
+        return float(np.round(rng.gamma(shape, each / shape, int(n)).sum()))
+
+    for i in f.index:
+        role = f.at[i, "player_id"].split("_")[1]
+        up = TEAM_LEAN[f.at[i, "team"]]
+        rec = float(rng.binomial(int(f.at[i, "targets"]),
+                                 min(catch[role] * (0.8 + 0.2 * up), 0.95)))
+        f.at[i, "receptions"] = rec
+        f.at[i, "receiving_yards"] = yards(rec, far[role] * up, 1.3)
+        f.at[i, "rushing_yards"] = (yards(f.at[i, "carries"],
+                                          run_[role] * (2.4 * up - 1.4), 0.7)
+                                    - (3.0 if i % 7 == 0 and f.at[i, "carries"] else 0.0))
+        comp = float(rng.binomial(int(f.at[i, "attempts"]), 0.56 + 0.08 * up))
+        f.at[i, "completions"] = comp
+        f.at[i, "passing_yards"] = yards(comp, 10.0 + 2.0 * up, 1.1)
+    # yards with no catch and no carry behind them: a lateral, a fumble
+    lat = (f.t == 202303) & (f.player_id == "BBB_RB")
+    f.loc[lat, ["receptions", "receiving_yards"]] = [0.0, 7.0]
+    f.loc[(f.t == 202305) & (f.player_id == "CCC_WR2"), ["carries", "rushing_yards"]] = [0.0, 4.0]
+    return f, lines
+
+
+def by_hand_eff(F):
+    """Everything the efficiency model learns from a history, with plain
+    loops, from the description in its docstring."""
+    w = 0.5 ** (1.0 / HL_RATE)
+    rows = list(F.sort_values(["player_id", "t"], kind="stable").itertuples())
+    out = {}
+    for rate, (nc, dc) in RATE_COLS.items():
+        overall = (sum(getattr(r, nc) for r in rows)
+                   / sum(getattr(r, dc) for r in rows))
+        pn, pd_ = {}, {}
+        for r in rows:
+            if r.position is not None:
+                pn[r.position] = pn.get(r.position, 0.0) + getattr(r, nc)
+                pd_[r.position] = pd_.get(r.position, 0.0) + getattr(r, dc)
+        by_pos = {q: pn[q] / pd_[q] for q in pn if pd_[q] > 0}
+        before, num_now, den_now, cur = [], {}, {}, object()
+        for r in rows:
+            if r.player_id != cur:
+                cur, sn, sd = r.player_id, 0.0, 0.0
+            before.append((sn, sd))
+            sn, sd = w * sn + getattr(r, nc), w * sd + getattr(r, dc)
+            num_now[cur], den_now[cur] = sn, sd
+        used = [(getattr(r, nc), getattr(r, dc), b, by_pos.get(r.position, overall),
+                 r.position) for r, b in zip(rows, before) if getattr(r, dc) > 0]
+        miss = {k: sum((x - d * ((bn + k * nm) / (bd + k))) ** 2
+                       for x, d, (bn, bd), nm, _ in used) for k in GRID}
+        k = min(GRID, key=lambda v: (miss[v], v))
+        o = dict(k=k, overall=overall, by_pos=by_pos, num_now=num_now,
+                 den_now=den_now, rows=len(used), miss=miss)
+        if rate in YARD_RATES:
+            sq, un = {}, {}
+            for x, d, (bn, bd), nm, q in used:
+                sq[q] = sq.get(q, 0.0) + (x - d * ((bn + k * nm) / (bd + k))) ** 2
+                un[q] = un.get(q, 0.0) + d
+            o["spread"] = {q: sq[q] / un[q] for q in sq
+                           if q is not None and un[q] >= SPREAD_UNITS}
+            o["spread_all"] = sum(sq.values()) / sum(un.values())
+            o["units"] = un
+        out[rate] = o
+    return out
+
+
+def by_hand_parts(F, slate, lines=None):
+    """Expected numbers, the spread underneath and the variance for a slate,
+    from the two by-hand fits."""
+    opp = by_hand_fit(F, lines)
+    eff = by_hand_eff(F)
+    om = by_hand_means(opp, slate, lines)
+    rows = list(slate.itertuples())
+
+    def rate(name, r):
+        o = eff[name]
+        v = ((o["num_now"].get(r.player_id, 0.0)
+              + o["k"] * o["by_pos"].get(r.position, o["overall"]))
+             / (o["den_now"].get(r.player_id, 0.0) + o["k"]))
+        return max(v, YFLOOR) if name in YARD_RATES else v
+
+    def spread(name, r):
+        return eff[name]["spread"].get(r.position, eff[name]["spread_all"])
+
+    mean = {s_: list(om[s_]) for s_ in ("targets", "carries", "attempts")}
+    mean["receptions"] = [m * rate("catch", r) for m, r in zip(om["targets"], rows)]
+    mean["completions"] = [m * rate("completion", r)
+                           for m, r in zip(om["attempts"], rows)]
+    size = {s_: opp[s_]["size"] for s_ in ("targets", "carries", "attempts")}
+    size.update(receptions=size["targets"], completions=size["attempts"],
+                receiving_yards=size["targets"], rushing_yards=size["carries"],
+                passing_yards=size["attempts"])
+    unit, var = {}, {}
+    for stat, count, name in (("receiving_yards", "receptions", "yards_per_catch"),
+                              ("rushing_yards", "carries", "yards_per_carry"),
+                              ("passing_yards", "attempts", "yards_per_attempt")):
+        unit[stat] = [(rate(name, r), spread(name, r)) for r in rows]
+        mean[stat] = [c * u[0] for c, u in zip(mean[count], unit[stat])]
+        var[stat] = [c * u[1] + u[0] ** 2 * (c + c * c / size[stat])
+                     for c, u in zip(mean[count], unit[stat])]
+    for stat in ("targets", "carries", "attempts", "receptions", "completions"):
+        var[stat] = [m + m * m / size[stat] for m in mean[stat]]
+    return dict(mean=mean, size=size, unit=unit, var=var, eff=eff)
+
+
+def same(a, b, tol=1e-9):
+    return bool(np.allclose(np.asarray(a, dtype=float), np.asarray(b, dtype=float),
+                            rtol=tol, atol=tol, equal_nan=True))
+
+
+def erlang_tail(x, k):
+    """P(a sum of k unit exponentials > x), from its formula."""
+    term, total = 1.0, 0.0
+    for j in range(k):
+        total += term
+        term *= x / (j + 1)
+    return math.exp(-x) * total
+
+
+def nb_pmf(j, mean, size):
+    p = size / (size + mean)
+    return math.exp(math.lgamma(j + size) - math.lgamma(j + 1) - math.lgamma(size)
+                    + size * math.log(p) + j * math.log1p(-p))
+
+
+@section("22. efficiency — what it learns, by hand")
+def _():
+    v = pd.Series([4.0, 10.0, 8.0, 2.0, 6.0])
+    g = pd.Series(["a", "b", "a", "b", "a"])
+    before, now = fe.leaning_sum(v, g, 2.0)
+    w = 0.5 ** 0.5
+    chk("a leaning total 'before' a game is that group's earlier games, the "
+        "newest at full weight; nothing before his first",
+        before[0] == 0.0 and before[1] == 0.0 and near(before[2], 4.0)
+        and near(before[3], 10.0) and near(before[4], w * 4.0 + 8.0, 1e-12),
+        list(before))
+    chk("...and 'now' takes in every game he has",
+        near(now["a"], w * w * 4.0 + w * 8.0 + 6.0, 1e-12)
+        and near(now["b"], w * 10.0 + 2.0, 1e-12))
+    chk("a rate pulled toward the position, by hand: 3 of 5 with a pull of 10 "
+        "toward 0.9 is 12 of 15",
+        near(fe.pulled(3.0, 5.0, 0.9, 10.0), 0.8, 1e-12)
+        and near(fe.pulled(0.0, 0.0, 0.9, 10.0), 0.9, 1e-12))
+
+    f, lines = eff_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    fit = EfficiencyModel().fit(h)
+    ref = by_hand_eff(h.frame)
+    for rate in RATE_COLS:
+        r, o = fit.rate[rate], ref[rate]
+        chk(f"{rate}: the pull it picks, the position rates and the all-player "
+            f"rate match a long-hand re-derivation",
+            r["k"] == o["k"] and near(r["overall"], o["overall"], 1e-12)
+            and tuple(r["miss"]) == GRID
+            and all(near(r["miss"][k_] / o["miss"][k_], 1.0, 1e-9) for k_ in GRID)
+            and set(r["by_pos"]) == set(o["by_pos"])
+            and all(near(r["by_pos"][q], o["by_pos"][q], 1e-12) for q in o["by_pos"]),
+            (r["k"], o["k"]))
+        chk(f"{rate}: every player's leaning totals match it",
+            set(r["num_now"]) == set(o["num_now"])
+            and all(near(r["num_now"][q], o["num_now"][q], 1e-9)
+                    and near(r["den_now"][q], o["den_now"][q], 1e-9)
+                    for q in o["num_now"]))
+        if rate in YARD_RATES:
+            chk(f"{rate}: the spread of one catch, carry or attempt matches "
+                f"it, by position and over all",
+                set(r["spread"]) == set(o["spread"])
+                and all(near(r["spread"][q], o["spread"][q], 1e-6)
+                        for q in o["spread"])
+                and near(r["spread_all"], o["spread_all"], 1e-6),
+                (r["spread"], o["spread"]))
+        else:
+            chk(f"{rate}: a rate that is not yards has no spread of its own",
+                "spread" not in r and "spread_all" not in r)
+    ks = [ref[r_]["k"] for r_ in RATE_COLS]
+    chk("the fixture is worth the comparison: the pulls picked differ and "
+        "none sits at an end of the list; the list's two ends would each "
+        "have been a worse pick; one position has its own spread and "
+        "another is too thin to",
+        len(set(ks)) > 1 and all(GRID[0] < k_ < GRID[-1] for k_ in ks)
+        and all(ref[r_]["miss"][ref[r_]["k"]] < min(ref[r_]["miss"][GRID[0]],
+                                                    ref[r_]["miss"][GRID[-1]])
+                for r_ in RATE_COLS)
+        and "WR" in ref["yards_per_catch"]["spread"]
+        and "TE" not in ref["yards_per_catch"]["spread"]
+        and 0 < ref["yards_per_catch"]["units"]["TE"] < SPREAD_UNITS, ks)
+
+    nopos = h.frame.copy()
+    nopos["position"] = nopos.position.where(nopos.player_id != "DDD_TE", None)
+    hn = History(nopos, T)
+    fn, rn = EfficiencyModel().fit(hn), by_hand_eff(hn.frame)
+    chk("a player with no position on file is judged against the all-player "
+        "rate: the pull, every position's rate and every spread still match "
+        "the long-hand ones",
+        all(fn.rate[r_]["k"] == rn[r_]["k"]
+            and set(fn.rate[r_]["by_pos"]) == set(rn[r_]["by_pos"])
+            and all(near(fn.rate[r_]["by_pos"][q], rn[r_]["by_pos"][q], 1e-12)
+                    for q in rn[r_]["by_pos"])
+            and all(near(fn.rate[r_]["miss"][k_] / rn[r_]["miss"][k_], 1.0, 1e-9)
+                    for k_ in GRID)
+            and set(fn.rate[r_].get("spread", {})) == set(rn[r_].get("spread", {}))
+            and near(fn.rate[r_].get("spread_all", 0.0),
+                     rn[r_].get("spread_all", 0.0), 1e-6) for r_ in RATE_COLS)
+        and fn.rate["catch"]["miss"] != fit.rate["catch"]["miss"])
+
+    def te_catches(total):
+        """The history with the tight ends' catches set to add up to exactly
+        `total`."""
+        d = h.frame.copy()
+        te = d.index[d.position == "TE"]
+        d.loc[te, "receptions"] = 5.0
+        d.loc[te[0], "receptions"] = total - 5.0 * (len(te) - 1)
+        return History(d, T)
+
+    at_200 = EfficiencyModel().fit(te_catches(SPREAD_UNITS))
+    chk("a position with exactly 200 catches has its own spread of yards; "
+        "with 199 it takes the all-position one",
+        float(te_catches(SPREAD_UNITS).frame.query("position == 'TE'").receptions.sum())
+        == SPREAD_UNITS
+        and "TE" in at_200.rate["yards_per_catch"]["spread"]
+        and "TE" not in EfficiencyModel().fit(te_catches(SPREAD_UNITS - 1.0))
+        .rate["yards_per_catch"]["spread"])
+
+    def only(n, col, *more):
+        """The history with `col` (and what is counted from it) zeroed in
+        all but `n` of the player-games that had any."""
+        d = h.frame.copy()
+        keep = d.index[d[col] > 0][:n]
+        for c in (col, *more):
+            d[c] = d[c].where(d.index.isin(keep), 0.0)
+        return History(d, T)
+
+    def with_attempts(n):
+        return only(n, "attempts", "completions", "passing_yards")
+
+    for col, more, word in (("targets", ("receptions", "receiving_yards"), "target"),
+                            ("receptions", ("receiving_yards",), "catch"),
+                            ("carries", ("rushing_yards",), "carry")):
+        tm = EfficiencyModel()
+        chk(f"too few games with a {word}: it does not fit, and says which "
+            f"opportunity was short",
+            not tm.fit(only(RATE_ROWS - 1, col, *more)).ok
+            and f"15 player-games with a {word} " in tm.fit(
+                only(RATE_ROWS - 1, col, *more)).why,
+            tm.fit(only(RATE_ROWS - 1, col, *more)).why)
+
+    thin = EfficiencyModel()
+    chk("sixteen games with a pass attempt is enough to learn a passer's "
+        "rates from, fifteen is not, and it says which",
+        EfficiencyModel().fit(with_attempts(RATE_ROWS)).ok
+        and not thin.fit(with_attempts(RATE_ROWS - 1)).ok
+        and "15 player-games with a pass attempt" in thin.fit(
+            with_attempts(RATE_ROWS - 1)).why, thin.fit(with_attempts(15)).why)
+    a = fs.slate_active(f, h)
+    tp = thin.parts(with_attempts(RATE_ROWS - 1), a)
+    tr = thin.rates(with_attempts(RATE_ROWS - 1), a)
+    chk("...and then every rate and spread is blank, not zero",
+        len(tr) == len(RATE_COLS) + len(YARD_RATES)
+        and all(len(v_) == len(a) and np.isnan(v_).all() for v_ in tr.values()))
+    chk("...and it says nothing at all, not even the opportunities",
+        all(np.isnan(tp["mean"][s_]).all() for s_ in fe.EFF_STATS)
+        and math.isnan(thin.project(with_attempts(RATE_ROWS - 1), a)
+                       .p_over(0, "receptions", 2.5)))
+    changed = f[f.t < T].copy()
+    changed.loc[changed.player_id == "AAA_WR1", "receptions"] *= 0.5
+    hc = History(changed, T)
+    used = EfficiencyModel()
+    used.fit(h)
+    chk("a model that has fitted one history fits another afresh, even one "
+        "that stops at the same week",
+        used.fit(hc) is not used.fit(h)
+        and near(used.fit(hc).rate["catch"]["num_now"]["AAA_WR1"],
+                 0.5 * fit.rate["catch"]["num_now"]["AAA_WR1"], 1e-9)
+        and used.fit(h) is used.fit(h))
+
+
+@section("23. efficiency — projecting a slate")
+def _():
+    f, lines = eff_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    new = a[a.player_id == "AAA_WR2"].assign(player_id="NEWMAN", name="NEWMAN")
+    odd = a[a.player_id == "BBB_TE"].assign(player_id="KICKER", name="KICKER",
+                                            position="K")
+    nopos = a[a.player_id == "DDD_TE"].assign(player_id="NOPOS", name="NOPOS",
+                                              position=None)
+    full = pd.concat([a, new, odd, nopos], ignore_index=True)
+    m = EfficiencyModel()
+    got, want = m.parts(h, full), by_hand_parts(h.frame, full)
+    var = m.variances(h, full)
+    for stat in fe.EFF_STATS:
+        chk(f"expected {stat} match the long-hand ones",
+            same(got["mean"][stat], want["mean"][stat]))
+        chk(f"...and so does the variance put round them",
+            same(var[stat], want["var"][stat], 1e-7)
+            and near(got["size"][stat], want["size"][stat], 1e-6))
+    for stat in fe.YARDS:
+        chk(f"{stat}: the yards each one is worth, and how much one varies, "
+            f"match too",
+            same(got["unit"][stat][0], [u[0] for u in want["unit"][stat]])
+            and same(got["unit"][stat][1], [u[1] for u in want["unit"][stat]], 1e-7))
+    idx = {p_: i for i, p_ in enumerate(full.player_id)}
+    eff = want["eff"]
+    chk("(the long-hand slate exercises what it should: a first-game player "
+        "is his position's rate, an unseen or missing position the "
+        "all-player one, and a receiver's own rate sits between his raw "
+        "rate and his position's)",
+        near(m.rates(h, full)["catch"][idx["NEWMAN"]], eff["catch"]["by_pos"]["WR"], 1e-12)
+        and near(m.rates(h, full)["catch"][idx["KICKER"]], eff["catch"]["overall"], 1e-12)
+        and near(m.rates(h, full)["catch"][idx["NOPOS"]], eff["catch"]["overall"], 1e-12)
+        and min(eff["catch"]["by_pos"]["WR"],
+                eff["catch"]["num_now"]["AAA_WR1"] / eff["catch"]["den_now"]["AAA_WR1"])
+        < m.rates(h, full)["catch"][idx["AAA_WR1"]]
+        < max(eff["catch"]["by_pos"]["WR"],
+              eff["catch"]["num_now"]["AAA_WR1"] / eff["catch"]["den_now"]["AAA_WR1"]))
+    P = m.project(h, full)
+    O = OpportunityModel().project(h, full)
+    chk("targets, carries and pass attempts pass through from the "
+        "opportunity model unchanged, number and chance",
+        all(P.point(i, s_) == O.point(i, s_)
+            or (math.isnan(P.point(i, s_)) and math.isnan(O.point(i, s_)))
+            for i in range(len(full)) for s_ in fo.OPP_STATS)
+        and all(P.p_over(idx[p_], s_, ln) == O.p_over(idx[p_], s_, ln)
+                for p_, s_, ln in (("AAA_WR1", "targets", 6.5),
+                                   ("CCC_RB", "carries", 12.5),
+                                   ("BBB_QB", "attempts", 30.5))))
+    chk("its single number is the expected number, for every stat",
+        all(P.point(idx["AAA_WR1"], s_) == got["mean"][s_][idx["AAA_WR1"]]
+            for s_ in ("receptions", "receiving_yards", "rushing_yards"))
+        and P.point(idx["BBB_QB"], "passing_yards")
+        == got["mean"]["passing_yards"][idx["BBB_QB"]] > 100)
+    i, q = idx["AAA_WR1"], idx["BBB_QB"]
+    mr, mc_ = want["mean"]["receptions"][i], want["mean"]["completions"][q]
+    chk("the chance of a catches line is the count's chance of MORE than it, "
+        "spread as his targets are; completions as his attempts are",
+        near(P.p_over(i, "receptions", 4.5), nb_tail(4, mr, want["size"]["targets"]), 1e-9)
+        and near(P.p_over(q, "completions", 19.5),
+                 nb_tail(19, mc_, want["size"]["attempts"]), 1e-9)
+        and not near(want["size"]["targets"], want["size"]["attempts"], 1e-3))
+    chk("...and landing exactly on a whole-number line is not over it",
+        P.p_over(i, "receptions", 4.0) == P.p_over(i, "receptions", 4.5)
+        < P.p_over(i, "receptions", 3.5))
+    chk("it says nothing about touchdowns, and nothing about a receiver's "
+        "passing",
+        all(math.isnan(P.point(i, s_)) and math.isnan(P.p_over(i, s_, 0.5))
+            for s_ in ("passing_tds", TD_STAT, "passing_yards", "completions")))
+
+    # ---- yards: a sum over the count, checked three independent ways
+    toy = fe._Lines(dict(
+        mean={"receptions": np.array([2.0]), "receiving_yards": np.array([14.0])},
+        size={"receptions": 3.0, "receiving_yards": 3.0},
+        unit={"receiving_yards": (np.array([7.0]), np.array([49.0]))},
+        count={"receiving_yards": "receptions"}))
+    by_formula = sum(nb_pmf(k_, 2.0, 3.0) * erlang_tail(20.5 / 7.0, k_)
+                     for k_ in range(1, 200))
+    chk("yards: when one catch is worth an exponential 7 yards, the chance "
+        "of a line is the catches' chances times the closed-form tail of "
+        "that many exponentials",
+        near(toy.p_over(0, "receiving_yards", 20.5), by_formula, 1e-9),
+        (toy.p_over(0, "receiving_yards", 20.5), by_formula))
+    two = fe._Lines(dict(
+        mean={"receptions": np.array([2.5]), "receiving_yards": np.array([20.0])},
+        size={"receptions": 4.0, "receiving_yards": 4.0},
+        unit={"receiving_yards": (np.array([8.0]), np.array([32.0]))},
+        count={"receiving_yards": "receptions"}))
+    by_formula2 = sum(nb_pmf(k_, 2.5, 4.0) * erlang_tail(30.5 / 4.0, 2 * k_)
+                      for k_ in range(1, 200))
+    chk("...and when one catch is worth 8 yards with a variance of 32 (two "
+        "exponentials of 4), that many pairs of exponentials",
+        near(two.p_over(0, "receiving_yards", 30.5), by_formula2, 1e-9),
+        (two.p_over(0, "receiving_yards", 30.5), by_formula2))
+    chk("...a player with no catches is not over any line; everyone is over "
+        "a line below zero; the chance falls as the line rises",
+        near(toy.p_over(0, "receiving_yards", 0.0), 1.0 - nb_pmf(0, 2.0, 3.0), 1e-9)
+        and toy.p_over(0, "receiving_yards", -0.5) == 1.0
+        and toy.p_over(0, "receiving_yards", 5.5) > toy.p_over(0, "receiving_yards", 40.5))
+    none = fe._Lines(dict(
+        mean={"carries": np.array([0.0]), "rushing_yards": np.array([0.0])},
+        size={"carries": 3.0, "rushing_yards": 3.0},
+        unit={"rushing_yards": (np.array([4.0]), np.array([30.0]))},
+        count={"rushing_yards": "carries"}))
+    chk("...and a player expected no carries at all is priced at none",
+        none.p_over(0, "rushing_yards", 0.5) == 0.0
+        and none.point(0, "rushing_yards") == 0.0)
+    for who, stat in (("AAA_WR1", "receiving_yards"), ("CCC_RB", "rushing_yards"),
+                      ("BBB_QB", "passing_yards")):
+        j = idx[who]
+        mu, vv = got["mean"][stat][j], var[stat][j]
+        step = max(mu / 400.0, 0.02)
+        ys = np.arange(0.0, mu + 14 * math.sqrt(vv), step)
+        tail = np.array([P.p_over(j, stat, y_) for y_ in ys])
+        first = float(np.trapezoid(tail, ys))
+        second = float(2.0 * np.trapezoid(tail * ys, ys))
+        chk(f"{stat}: the chances it states add up to the expected number "
+            f"and the variance it reports",
+            abs(first - mu) < 2e-3 * mu and abs(second - (vv + mu * mu))
+            < 4e-3 * (vv + mu * mu), (first, mu, second, vv + mu * mu))
+
+    low = EfficiencyModel()
+    lf = low.fit(h)
+    lf.rate["yards_per_carry"]["by_pos"]["WR"] = -3.0
+    chk("yards per carry are never taken below a tenth of a yard",
+        near(low.rates(h, full)["yards_per_carry"][idx["NEWMAN"]], YFLOOR, 1e-12)
+        and low.parts(h, full)["mean"]["rushing_yards"][idx["NEWMAN"]] >= 0
+        and math.isfinite(low.project(h, full).p_over(idx["NEWMAN"],
+                                                      "rushing_yards", 2.5)))
+    cf = EfficiencyModel()
+    cfit = cf.fit(h)
+    cfit.rate["catch"]["by_pos"]["WR"] = -0.5
+    chk("...but the floor is for yards only: a catch rate is left as fitted",
+        cf.rates(h, full)["catch"][idx["NEWMAN"]] == -0.5)
+
+    mkt = OpportunityModel("o", lines=lines)
+    em = EfficiencyModel("with_lines", opportunity=mkt)
+    chk("it sits on the opportunity model it is given",
+        em.opp is mkt and same(em.parts(h, full)["mean"]["receptions"],
+                               by_hand_parts(h.frame, full, lines)["mean"]["receptions"])
+        and not same(em.parts(h, full)["mean"]["receptions"],
+                     got["mean"]["receptions"]))
+    chk("...which must report its expected count, not its median",
+        raises(lambda: EfficiencyModel(opportunity=OpportunityModel(single="median")),
+               ValueError, "median"))
+    chk("with none given it makes its own, named after itself",
+        EfficiencyModel("abc").opp.name == "abc_opportunity"
+        and EfficiencyModel("abc").opp.lines is None)
+
+    run = fs.walk_forward(f, [EfficiencyModel(), fs.LastFour()], weeks=[202403, T])
+    L = run.legs[run.legs.version == "A"]
+    chk("through the harness it prices its eight stats and leaves "
+        "touchdowns blank",
+        L[L.stat.isin(fe.EFF_STATS)].p_efficiency.notna().all()
+        and L[~L.stat.isin(fe.EFF_STATS)].p_efficiency.isna().all()
+        and set(L[L.p_efficiency.notna()].stat) == set(fe.EFF_STATS)
+        and (~L.stat.isin(fe.EFF_STATS)).sum() > 0)
+    hw = run.points[(run.points.version == "A") & (run.points.player_id == "AAA_WR1")
+                    & (run.points.stat == "receiving_yards") & (run.points.week == 4)]
+    at = list(a.player_id).index("AAA_WR1")
+    chk("...and the number the harness records is the long-hand one",
+        len(hw) == 1 and near(float(hw.pt_efficiency.iloc[0]),
+                              by_hand_parts(h.frame, a)["mean"]["receiving_yards"][at],
+                              1e-9))
+    sat = f[~((f.t == T) & (f.player_id == "AAA_WR2"))]
+    rs = fs.walk_forward(sat, [EfficiencyModel()], weeks=[T])
+    chk("its numbers differ between the two slates when a regular sits out",
+        fs.version_gap(rs, "efficiency") > 0)
+    probe = fs.leak_probe(f, [EfficiencyModel()], [202403, T])
+    chk("the leak probe finds nothing reaching it through the harness",
+        probe.clean and probe.outputs["efficiency"] > 200, probe.describe()[:120])
+
+
+@section("24. efficiency — its expected numbers beside what happened, and real data")
+def _():
+    f, _ = eff_league()
+    T = 202404
+    weeks = [202403, T]
+    m = EfficiencyModel()
+    ea = fe.expected_vs_actual(m, f, weeks)
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    parts, var = m.parts(h, a), m.variances(h, a)
+    e4 = ea[ea.t == T]
+    ok_e = ok_a = ok_v = ok_g = True
+    for s_ in fe.EFF_STATS:
+        d = e4[e4.stat == s_].set_index("player_id")
+        ok_e &= len(d) == int(np.isfinite(parts["mean"][s_]).sum())
+        for i, r in enumerate(a.itertuples()):
+            if not np.isfinite(parts["mean"][s_][i]):
+                continue
+            x = float(f[(f.t == T) & (f.player_id == r.player_id)][s_].iloc[0])
+            ok_e &= near(d.expected[r.player_id], parts["mean"][s_][i], 1e-12)
+            ok_a &= d.actual[r.player_id] == x
+            ok_v &= near(d.variance[r.player_id], var[s_][i], 1e-9)
+            ok_g &= d.game_id[r.player_id] == r.game_id
+    chk("one row per slate player and stat he is given a number for, each "
+        "week asked, carrying the model's expected number",
+        ok_e and set(ea.t) == set(weeks) and set(ea.stat) == set(fe.EFF_STATS))
+    chk("...what he did THAT week in that stat",
+        ok_a and len({tuple(e4[e4.stat == s_].actual.round(3))
+                      for s_ in fe.EFF_STATS}) == len(fe.EFF_STATS))
+    chk("...the model's own variance, and his game", ok_v and ok_g)
+    P4 = m.project(h, a)
+    ok_s = True
+    for s_ in fe.EFF_STATS:
+        d = e4[e4.stat == s_].set_index("player_id")
+        for i, r in enumerate(a.itertuples()):
+            if np.isfinite(parts["mean"][s_][i]):
+                ok_s &= near(d.said_above[r.player_id],
+                             P4.p_over(i, s_, parts["mean"][s_][i]), 1e-12)
+    wr = e4[(e4.player_id == "AAA_WR1")].set_index("stat")
+    chk("...and the chance the model itself gives of finishing above its "
+        "expected number: under a half for a count, which leans right",
+        ok_s and e4.said_above.between(0, 1).all()
+        and near(wr.said_above["receptions"],
+                 nb_tail(math.floor(wr.expected["receptions"]),
+                         wr.expected["receptions"],
+                         parts["size"]["receptions"]), 1e-9)
+        and 0.2 < wr.said_above["receptions"] < 0.5)
+    e3 = ea[(ea.t == 202403) & (ea.stat == "receptions")].set_index("player_id")
+    h3 = History(f[f.t < 202403], 202403)
+    s3 = fs.slate_active(f, h3)
+    chk("...and the earlier week is fitted on ITS history and graded on ITS "
+        "result",
+        e3.actual["AAA_WR1"] == float(f[(f.t == 202403)
+                                        & (f.player_id == "AAA_WR1")].receptions.iloc[0])
+        and near(e3.expected["AAA_WR1"],
+                 EfficiencyModel().parts(h3, s3)["mean"]["receptions"]
+                 [list(s3.player_id).index("AAA_WR1")], 1e-12))
+    only = fe.expected_vs_actual(m, f, [T], stats=("receptions", "rushing_yards"))
+    chk("it can be asked for some stats only",
+        set(only.stat) == {"receptions", "rushing_yards"}
+        and len(only) == len(e4[e4.stat.isin(["receptions", "rushing_yards"])]))
+    sat = f[~((f.t == T) & (f.player_id == "AAA_WR2"))]
+    es = fe.expected_vs_actual(EfficiencyModel(), sat, [T])
+    chk("it is graded on the slate of who was ACTIVE: a regular who sat out "
+        "is not in it",
+        "AAA_WR2" not in set(es.player_id) and es.actual.notna().all()
+        and "AAA_WR2" in set(fs.slate_candidates(
+            sat, History(sat[sat.t < T], T)).player_id))
+    chk("a week too thin to fit gives no rows, not an error",
+        len(fe.expected_vs_actual(EfficiencyModel(), f, [202302])) == 0)
+
+    run = fs.walk_forward(f, [EfficiencyModel(), fs.LastFour()], weeks=weeks)
+    wl = fe.with_main_line(run, ea, "efficiency")
+    L = run.legs[(run.legs.version == "A") & (run.legs.rung == fs.MAIN)
+                 & run.legs.stat.isin(fe.EFF_STATS)]
+    k = L.set_index(["game_id", "player_id", "stat"])
+    e = ea.set_index(["game_id", "player_id", "stat"])
+    chk("players with a main line: one row for each such leg, actives known, "
+        "carrying that leg's line, result and stated chance and that "
+        "player's expected number",
+        len(wl) == len(L) > 20 and set(wl.stat) == set(fe.EFF_STATS)
+        and all(k.line[(r.game_id, r.player_id, r.stat)] == r.line
+                and k.actual[(r.game_id, r.player_id, r.stat)] == r.actual
+                and bool(k["over"][(r.game_id, r.player_id, r.stat)]) == r.over
+                and near(k.p_efficiency[(r.game_id, r.player_id, r.stat)], r.said, 1e-12)
+                and near(e.said_above[(r.game_id, r.player_id, r.stat)],
+                         r.said_above, 1e-12)
+                and near(e.expected[(r.game_id, r.player_id, r.stat)], r.expected, 1e-12)
+                for r in wl.itertuples()), (len(wl), len(L)))
+    few = fe.with_main_line(run, ea, "efficiency", stats=("receptions",))
+    chk("...for some stats only when asked",
+        set(few.stat) == {"receptions"} and len(few) == int((wl.stat == "receptions").sum()))
+    w4 = fe.with_main_line(run, ea, "last4_avg")
+    chk("...with another projector's stated chance when asked for his",
+        len(w4) == len(wl) and not same(w4.said, wl.said)
+        and same(w4.expected, wl.expected))
+    bad = ea.copy()
+    bad.loc[(bad.stat == wl.stat[0]) & (bad.player_id == wl.player_id[0])
+            & (bad.game_id == wl.game_id[0]), "actual"] += 1.0
+    chk("...and it stops if a result disagrees, a lined player has no "
+        "expected number, or a player is there twice",
+        raises(lambda: fe.with_main_line(run, bad, "efficiency"), RuntimeError,
+               "line up")
+        and raises(lambda: fe.with_main_line(
+            run, ea[ea.player_id != wl.player_id[0]], "efficiency"),
+            RuntimeError, "line up")
+        and raises(lambda: fe.with_main_line(run, pd.concat([ea, ea]), "efficiency"),
+                   Exception, "one-to-one"))
+    who = wl.player_id[0]
+    part = fs.Run(points=run.points, names=run.names, weeks=run.weeks,
+                  legs=run.legs.assign(p_efficiency=run.legs.p_efficiency.where(
+                      run.legs.player_id != who)))
+    wp = fe.with_main_line(part, ea, "efficiency")
+    chk("...a leg the projector did not price is left out, not carried blank",
+        len(wp) == len(wl) - int((wl.player_id == who).sum()) < len(wl)
+        and who not in set(wp.player_id))
+
+    frame = REAL.get("frame")
+    if frame is None:
+        frame = fs.load_frame()
+    wk = fs.test_weeks(frame)[-2:]
+    rr = fs.walk_forward(frame, [EfficiencyModel()], weeks=wk)
+    ra = rr.legs[(rr.legs.version == "A") & rr.legs.stat.isin(fe.EFF_STATS)]
+    pv = ra.p_efficiency.to_numpy(dtype=float)
+    chk("on real weeks it prices every leg of its eight stats, between 0 and 1",
+        not np.isnan(pv).any() and pv.min() >= 0 and pv.max() <= 1 and len(ra) > 3000,
+        len(ra))
+    hr = History(frame[frame.t < wk[-1]], wk[-1])
+    sa = fs.slate_active(frame, hr)
+    rm = EfficiencyModel()
+    rfit, rt = rm.fit(hr), rm.rates(hr, sa)
+    chk("on real history the pull picked for each rate is inside the list, "
+        "not at an end of it",
+        all(GRID[0] < rfit.rate[r_]["k"] < GRID[-1] for r_ in RATE_COLS),
+        {r_: rfit.rate[r_]["k"] for r_ in RATE_COLS})
+    recv = sa.position.isin(["WR", "TE", "RB"]).to_numpy()
+    qb = sa.starting_qb.to_numpy()
+    chk("...and the rates are football: catch rates, yards a catch, yards a "
+        "carry, completion rates and yards an attempt",
+        0.45 < rt["catch"][recv].min() and rt["catch"][recv].max() < 0.95
+        and 5 < rt["yards_per_catch"][recv].min() and rt["yards_per_catch"][recv].max() < 20
+        and 2.5 < np.median(rt["yards_per_carry"][sa.position.to_numpy() == "RB"]) < 5.5
+        and 0.55 < rt["completion"][qb].min() and rt["completion"][qb].max() < 0.75
+        and 5.5 < rt["yards_per_attempt"][qb].min() and rt["yards_per_attempt"][qb].max() < 9,
+        (rt["catch"][recv].min(), rt["catch"][recv].max(),
+         rt["yards_per_attempt"][qb].min(), rt["yards_per_attempt"][qb].max()))
+    pm = rm.parts(hr, sa)["mean"]
+    chk("...a real starter is expected a real day's passing yards",
+        len(pm["passing_yards"][qb]) >= 20 and 140 < pm["passing_yards"][qb].min()
+        and pm["passing_yards"][qb].max() < 330,
+        (pm["passing_yards"][qb].min(), pm["passing_yards"][qb].max()))
+    pr = fs.leak_probe(frame, [EfficiencyModel()], wk[-1:])
+    chk("the leak probe finds nothing reaching it through the harness, on "
+        "real data", pr.clean, pr.describe()[:120])
+
+
 _summary()
 sys.exit(1 if fails else 0)

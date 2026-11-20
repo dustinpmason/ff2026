@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""S1. Break every behaviour in `ff_sim.py` and `ff_sim_opp.py` and see that
-`test_sim.py` notices.
+"""S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py` and
+`ff_sim_eff.py` and see that `test_sim.py` notices.
 
-    python3 sim_reverts.py            # all of them; about 50 minutes on 2 cores
+    python3 sim_reverts.py            # all of them; about 2 hours on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
-    python3 sim_reverts.py 4 5 17     # just these, by number (plus the controls)
+    python3 sim_reverts.py 6 7 17     # just these, by number (plus the controls)
     python3 sim_reverts.py --show 300 # ...and print which checks failed for each
 
 SIM-HANDOFF.md, "Before saying done", item 1: "Break every new check. Remove
@@ -13,8 +13,8 @@ This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
 How it works. Each entry below is one small edit to `ff_sim.py` (or, for
-the entries made with `mut_opp`, to `ff_sim_opp.py`) that removes or
-reverses one behaviour. For each, a temporary directory gets the edited
+the entries made with `mut_opp` and `mut_eff`, to `ff_sim_opp.py` and
+`ff_sim_eff.py`) that removes or reverses one behaviour. For each, a temporary directory gets the edited
 file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
 revert was NOT CAUGHT. Anything else is caught.
@@ -24,22 +24,32 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Four controls run with EVERY pass, including a pass of a few numbered
+Six controls run with EVERY pass, including a pass of a few numbered
 reverts, and a pass that fails any of them proves nothing. Two for each
 file: an edit that changes no behaviour must read NOT CAUGHT (so the
 unbroken suite passes here, and the edited copy is the one imported), and
 an edit that breaks something plain must be caught. They are numbers 0 to
-3; the reverts start at 4.
+5; the reverts start at 6.
 
 An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST FULL RUN — 2026-11-20, 2 cores, on a fresh clone: 355 reverts (258 of
-`ff_sim.py`, 97 of `ff_sim_opp.py`), 355 caught, 0 not; runner controls OK.
-It was run in seven blocks of numbered reverts (4 to 358), because one
-block is all this machine will run in one go; each block runs the four
-controls and the unbroken suite again at its end.
+LAST RUNS — 2026-11-20, 2 cores, on fresh clones. 444 reverts and 6 controls.
+
+  `ff_sim.py` and `ff_sim_opp.py`, 355 reverts (entries 6 to 360): 355
+  caught, 0 not, in seven blocks, run before `ff_sim_eff.py` existed.
+  Those two files, and sections 1 to 20 of `test_sim.py`, are byte for
+  byte what they were then (checked against the commit), so that result
+  stands. Twelve of them, every thirtieth, were run again alongside the
+  efficiency reverts and were caught.
+
+  `ff_sim_eff.py`, 89 reverts (entries 361 to 449): 89 caught, 0 not, in
+  three blocks.
+
+  Each block runs the six controls and the unbroken suite again at its
+  end; all passed. The whole list has NOT been run in one go since the
+  third file was added.
 
 The first full run of the `ff_sim.py` reverts alone (2026-11-20, 257 of
 257) was run in four blocks. After its third block one fixture in
@@ -58,7 +68,7 @@ import sys
 import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
-TARGETS = ("ff_sim.py", "ff_sim_opp.py")
+TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py")
 SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
@@ -66,7 +76,9 @@ NULL = "CONTROL: nothing changed (must read NOT CAUGHT)"
 BROKEN = "CONTROL: week key broken (must be caught)"
 NULL_OPP = "CONTROL: nothing changed in ff_sim_opp.py (must read NOT CAUGHT)"
 BROKEN_OPP = "CONTROL: ff_sim_opp.py's shared stats swapped (must be caught)"
-CONTROLS = (0, 1, 2, 3)
+NULL_EFF = "CONTROL: nothing changed in ff_sim_eff.py (must read NOT CAUGHT)"
+BROKEN_EFF = "CONTROL: ff_sim_eff.py's stats reordered (must be caught)"
+CONTROLS = (0, 1, 2, 3, 4, 5)
 
 M: list = []
 
@@ -79,6 +91,10 @@ def mut_opp(name: str, *pairs) -> None:
     M.append((name, pairs, "ff_sim_opp.py"))
 
 
+def mut_eff(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_eff.py"))
+
+
 # ---- controls on this runner itself
 mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
@@ -88,6 +104,10 @@ mut_opp(NULL_OPP, ('OPP_STATS = ("targets", "carries", "attempts")',
                    'OPP_STATS = ("targets",  "carries", "attempts")'))
 mut_opp(BROKEN_OPP, ('SHARED = ("targets", "carries")',
                      'SHARED = ("carries", "targets")'))
+mut_eff(NULL_EFF, ("EFF_STATS = (*OPP_STATS, *COUNTS, *YARDS)",
+                   "EFF_STATS = (*OPP_STATS,  *COUNTS, *YARDS)"))
+mut_eff(BROKEN_EFF, ("EFF_STATS = (*OPP_STATS, *COUNTS, *YARDS)",
+                     "EFF_STATS = (*COUNTS, *OPP_STATS, *YARDS)"))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -1089,6 +1109,250 @@ mut_opp("opp lined: 'said' is the chance of the under",
         ('        "said": j[f"p_{name}"].to_numpy(dtype=float),',
          '        "said": 1.0 - j[f"p_{name}"].to_numpy(dtype=float),'))
 
+# ---- S17: efficiency (ff_sim_eff.py)
+# -- the parts
+mut_eff("eff: a game's own number is in its own 'before'",
+        ("    return incl.groupby(groups).shift(1).fillna(0.0), incl.groupby(groups).last()",
+         "    return incl, incl.groupby(groups).last()"))
+mut_eff("eff: 'now' is the group's FIRST total",
+        ("    return incl.groupby(groups).shift(1).fillna(0.0), incl.groupby(groups).last()",
+         "    return incl.groupby(groups).shift(1).fillna(0.0), incl.groupby(groups).first()"))
+mut_eff("eff: a plain total, not a leaning one",
+        ("    incl = (values.groupby(groups).ewm(halflife=half_life).sum()",
+         "    incl = (values.groupby(groups).expanding().sum()"))
+mut_eff("eff: a leaning average where a total belongs",
+        ("    incl = (values.groupby(groups).ewm(halflife=half_life).sum()",
+         "    incl = (values.groupby(groups).ewm(halflife=half_life).mean()"))
+mut_eff("eff: a first game has no 'before' at all",
+        ("    return incl.groupby(groups).shift(1).fillna(0.0), incl.groupby(groups).last()",
+         "    return incl.groupby(groups).shift(1), incl.groupby(groups).last()"))
+mut_eff("eff: the pull adds the position's rate once, however hard it pulls",
+        ("    return (own_num + k * norm) / (own_den + k)",
+         "    return (own_num + norm) / (own_den + k)"))
+mut_eff("eff: the pull counts double below the line",
+        ("    return (own_num + k * norm) / (own_den + k)",
+         "    return (own_num + k * norm) / (own_den + 2 * k)"))
+mut_eff("eff: half-life changed", ("HALF_LIFE_RATE = 16.0 ", "HALF_LIFE_RATE = 8.0 "))
+mut_eff("eff: the list of pulls loses its top",
+        ("160.0, 320.0, 640.0, 1280.0)", "160.0, 320.0, 640.0)"))
+mut_eff("eff: the list of pulls loses a middle value",
+        ("SHRINK_GRID = (2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0,",
+         "SHRINK_GRID = (2.0, 5.0, 10.0, 20.0, 40.0, 160.0,"))
+mut_eff("eff: a rate may be learned from 5 games", ("MIN_RATE_ROWS = 16", "MIN_RATE_ROWS = 5"))
+mut_eff("eff: a rate needs 30 games", ("MIN_RATE_ROWS = 16", "MIN_RATE_ROWS = 30"))
+mut_eff("eff: a position gets its own spread from 20 catches",
+        ("MIN_SPREAD_UNITS = 200.0", "MIN_SPREAD_UNITS = 20.0"))
+mut_eff("eff: a position needs 2000 catches for its own spread",
+        ("MIN_SPREAD_UNITS = 200.0", "MIN_SPREAD_UNITS = 2000.0"))
+mut_eff("eff: the floor under yards each is a whole yard",
+        ("RATE_FLOOR = 0.1", "RATE_FLOOR = 1.0"))
+mut_eff("eff: a hundredth of the count's tail is dropped",
+        ("TAIL = 1e-10", "TAIL = 1e-2"))
+mut_eff("eff: does not say it reads the slate",
+        ("    uses_actives = True", "    uses_actives = False"))
+mut_eff("eff: an opportunity model reporting its median is accepted",
+        ('        if self.opp.single != "mean":', "        if False:"))
+mut_eff("eff: the opportunity model it is given is ignored",
+        ("        self.opp = opportunity if opportunity is not None else OpportunityModel(",
+         "        self.opp = OpportunityModel("))
+mut_eff("eff: its own opportunity model takes the plain name",
+        ('            f"{name}_opportunity")', '            "opportunity")'))
+# -- learning from the history
+mut_eff("eff: a stale fit is reused for another history",
+        ("        if self._last[0] is hist:", "        if self._last[0] is not None:"))
+mut_eff("eff: the fit is kept by week, not by history",
+        ("        if self._last[0] is hist:",
+         "        if self._last[0] is not None and self._last[0].before == hist.before:"))
+mut_eff("eff: too few games fitted anyway",
+        ("            if int(had.sum()) < MIN_RATE_ROWS:", "            if False:"))
+mut_eff("eff: games with no opportunity are counted as games",
+        ("            had = (den > 0).to_numpy()", "            had = (den >= 0).to_numpy()"))
+mut_eff("eff: the all-player rate is the average of game rates",
+        ("            overall = float(num.sum() / den.sum())",
+         "            overall = float((num[den > 0] / den[den > 0]).mean())"))
+mut_eff("eff: a position with no opportunities is given a rate",
+        ("            by_pos = (pos_num[pos_den > 0] / pos_den[pos_den > 0]).to_dict()",
+         "            by_pos = (pos_num / pos_den).to_dict()"))
+mut_eff("eff: position rate is one number for everyone",
+        ("            norm = F.position.map(by_pos).fillna(overall).to_numpy(dtype=float)",
+         "            norm = F.position.map({}).fillna(overall).to_numpy(dtype=float)"))
+mut_eff("eff: a player with no position breaks the fit",
+        ("            norm = F.position.map(by_pos).fillna(overall).to_numpy(dtype=float)",
+         "            norm = F.position.map(by_pos).to_numpy(dtype=float)"))
+mut_eff("eff: what he has caught is leaned, what he was thrown is not",
+        ("            den_before, den_now = leaning_sum(den, F.player_id, HALF_LIFE_RATE)",
+         "            den_before, den_now = leaning_sum(den, F.player_id, 1e9)"))
+mut_eff("eff: the pull is scored by the size of the miss, not its square",
+        ("            miss = {k: float(((x - d * pulled(nb, db, norm[had], k)) ** 2).sum())",
+         "            miss = {k: float(np.abs(x - d * pulled(nb, db, norm[had], k)).sum())"))
+mut_eff("eff: the WORST pull is picked",
+        ("            k = min(SHRINK_GRID, key=lambda v: (miss[v], v))",
+         "            k = max(SHRINK_GRID, key=lambda v: (miss[v], v))"))
+mut_eff("eff: the lightest pull is always picked",
+        ("            k = min(SHRINK_GRID, key=lambda v: (miss[v], v))",
+         "            k = SHRINK_GRID[0]"))
+mut_eff("eff: the spread is measured with the lightest pull",
+        ("                sq = (x - d * pulled(nb, db, norm[had], k)) ** 2",
+         "                sq = (x - d * pulled(nb, db, norm[had], SHRINK_GRID[0])) ** 2"))
+mut_eff("eff: a position's spread is per game, not per catch",
+        ("                per = pd.Series(sq).groupby(pos).sum() / units",
+         "                per = pd.Series(sq).groupby(pos).mean()"))
+mut_eff("eff: the all-position spread is per game, not per catch",
+        ('                out["spread_all"] = float(sq.sum() / d.sum())',
+         '                out["spread_all"] = float(sq.mean())'))
+mut_eff("eff: a thin position keeps its own spread",
+        ('                out["spread"] = per[units >= MIN_SPREAD_UNITS].to_dict()',
+         '                out["spread"] = per.to_dict()'))
+mut_eff("eff: a rate that is not yards is given a spread",
+        ("            if rate in {r for _, r in YARDS.values()}:\n                # How much",
+         "            if True:\n                # How much"))
+# -- projecting a slate
+mut_eff("eff: a position never seen gets a rate of zero",
+        ('            norm = np.array([r["by_pos"].get(p, r["overall"]) for p in pos],',
+         '            norm = np.array([r["by_pos"].get(p, 0.0) for p in pos],'))
+mut_eff("eff: a player's own games are ignored",
+        ('            out[rate] = pulled(own_num, own_den, norm, r["k"])',
+         '            out[rate] = norm'))
+mut_eff("eff: the pull picked on the history is not the one used",
+        ('            out[rate] = pulled(own_num, own_den, norm, r["k"])',
+         '            out[rate] = pulled(own_num, own_den, norm, SHRINK_GRID[0])'))
+mut_eff("eff: every rate is floored, not only yards",
+        ('            out[rate] = pulled(own_num, own_den, norm, r["k"])',
+         '            out[rate] = np.clip(pulled(own_num, own_den, norm, r["k"]), RATE_FLOOR, None)'))
+mut_eff("eff: yards each may go below the floor",
+        ("                out[rate] = np.clip(out[rate], RATE_FLOOR, None)\n", ""))
+mut_eff("eff: a position never seen gets no spread",
+        ('                    [r["spread"].get(p, r["spread_all"]) for p in pos], dtype=float)',
+         '                    [r["spread"].get(p, 0.0) for p in pos], dtype=float)'))
+mut_eff("eff: every position takes the all-position spread",
+        ('                    [r["spread"].get(p, r["spread_all"]) for p in pos], dtype=float)',
+         '                    [r["spread_all"] for p in pos], dtype=float)'))
+mut_eff("eff: catches come from carries",
+        ('COUNTS = {"receptions": ("targets", "catch"),',
+         'COUNTS = {"receptions": ("carries", "catch"),'))
+mut_eff("eff: completions use the catch rate",
+        ('          "completions": ("attempts", "completion")}',
+         '          "completions": ("attempts", "catch")}'))
+mut_eff("eff: receiving yards are summed over targets, not catches",
+        ('YARDS = {"receiving_yards": ("receptions", "yards_per_catch"),',
+         'YARDS = {"receiving_yards": ("targets", "yards_per_catch"),'))
+mut_eff("eff: rushing yards use yards per catch",
+        ('         "rushing_yards": ("carries", "yards_per_carry"),',
+         '         "rushing_yards": ("carries", "yards_per_catch"),'))
+mut_eff("eff: passing yards use the completion rate as yards each",
+        ('         "passing_yards": ("attempts", "yards_per_attempt")}',
+         '         "passing_yards": ("attempts", "completion")}'))
+mut_eff("eff: catches are not thinned by the catch rate",
+        ("            mean[stat] = mean[frm] * rt[rate]", "            mean[stat] = mean[frm] * 1.0"))
+mut_eff("eff: every count is spread as targets are",
+        ("            size[stat] = size[frm]", '            size[stat] = size["targets"]'))
+mut_eff("eff: yards are a count, not a count times yards each",
+        ("            mean[stat] = mean[count] * rt[rate]", "            mean[stat] = mean[count] * 1.0"))
+mut_eff("eff: every yardage is spread as carries are",
+        ("            size[stat] = size[count]", '            size[stat] = size["carries"]'))
+mut_eff("eff: a thin history still passes the opportunities through",
+        ("        if not self.fit(hist).ok:\n            mean = {s: nan for s in EFF_STATS}",
+         "        if False:\n            mean = {s: nan for s in EFF_STATS}"))
+mut_eff("eff: yardage variance leaves out how the count varies",
+        ('                             + each ** 2 * (c + c ** 2 / p["size"][stat]))',
+         '                             + each ** 2 * c)'))
+mut_eff("eff: yardage variance leaves out how one catch varies",
+        ("                out[stat] = (c * var_each\n", "                out[stat] = (0.0 * var_each\n"))
+mut_eff("eff: a count's variance is a Poisson's",
+        ('                out[stat] = m + m ** 2 / p["size"][stat]', '                out[stat] = m'))
+# -- the chance of a line
+mut_eff("eff: a stat it does not project gets a number",
+        ('        if stat not in self.p["mean"]:\n            return float("nan")',
+         '        if stat not in self.p["mean"]:\n            stat = "targets"'))
+mut_eff("eff: 'over' a count needs one more than the line",
+        ("            return float(nbinom.sf(math.floor(line), r, r / (r + m)))",
+         "            return float(nbinom.sf(math.floor(line) + 1, r, r / (r + m)))"))
+mut_eff("eff: landing on a whole-number count line is over",
+        ("            return float(nbinom.sf(math.floor(line), r, r / (r + m)))",
+         "            return float(nbinom.sf(math.ceil(line) - 1, r, r / (r + m)))"))
+mut_eff("eff: yards are priced as if they were a count",
+        ("        if stat not in YARDS:\n            return float(nbinom.sf(",
+         "        if True:\n            return float(nbinom.sf("))
+mut_eff("eff: a line below zero is not certain",
+        ("        if line < 0:\n            return 1.0\n", ""))
+mut_eff("eff: the count under the yards has the yards' mean",
+        ('        c = float(self.p["mean"][self.p["count"][stat]][i])', "        c = m"))
+mut_eff("eff: a game with no catch is given yards",
+        ("        k = np.arange(1, int(nbinom.ppf(1.0 - TAIL, r, p)) + 2)",
+         "        k = np.arange(0, int(nbinom.ppf(1.0 - TAIL, r, p)) + 2)"))
+mut_eff("eff: the yards do not grow with the catches",
+        ("                      * gamma.sf(line, a=k * each ** 2 / var_each,",
+         "                      * gamma.sf(line, a=each ** 2 / var_each,"))
+mut_eff("eff: shape and scale the wrong way round",
+        ("                      * gamma.sf(line, a=k * each ** 2 / var_each,\n                                 scale=var_each / each)).sum())",
+         "                      * gamma.sf(line, a=k * var_each / each,\n                                 scale=each ** 2 / var_each)).sum())"))
+mut_eff("eff: the yards of one catch are scaled to a quarter",
+        ("                                 scale=var_each / each)).sum())",
+         "                                 scale=var_each / each / 4)).sum())"))
+# -- the expected numbers beside what happened
+mut_eff("eff sizes: the expected number sees the week it is checked on",
+        ("        hist = History(frame[frame.t < t], t)\n        slate = slate_active(frame, hist)\n        mean = model.parts(hist, slate)",
+         "        hist = History(frame[frame.t < t], t)\n        slate = slate_active(frame, hist)\n        hist = History(frame[frame.t <= t], t + 1)\n        mean = model.parts(hist, slate)"))
+mut_eff("eff sizes: graded on everyone who had been playing, not who was active",
+        ("        slate = slate_active(frame, hist)\n        mean = model.parts(hist, slate)",
+         "        slate = __import__('ff_sim').slate_candidates(frame, hist)\n        mean = model.parts(hist, slate)"))
+mut_eff("eff sizes: the actual is taken from the first week asked for",
+        ('        played = frame[frame.t == t].set_index(["game_id", "player_id"])',
+         '        played = frame[frame.t == weeks[0]].set_index(["game_id", "player_id"])'))
+mut_eff("eff sizes: rows it says nothing about are kept",
+        ("    return rows[rows.expected.notna()].reset_index(drop=True)", "    return rows"))
+mut_eff("eff sizes: one stat's actual under another's name",
+        ('                "actual": played[stat].reindex(at).to_numpy(dtype=float)}))',
+         '                "actual": played["targets"].reindex(at).to_numpy(dtype=float)}))'))
+mut_eff("eff sizes: the game beside a player is another player's",
+        ('                "game_id": slate["game_id"].to_numpy(),',
+         '                "game_id": slate["game_id"].to_numpy()[::-1],'))
+mut_eff("eff sizes: the chance of beating the expected number is the chance of beating zero",
+        ('                "said_above": [P.p_over(i, stat, m) if m == m else np.nan',
+         '                "said_above": [P.p_over(i, stat, 0.0) if m == m else np.nan'))
+mut_eff("eff sizes: every stat's chance of beating its number is the targets one",
+        ('                "said_above": [P.p_over(i, stat, m) if m == m else np.nan',
+         '                "said_above": [P.p_over(i, "targets", m) if m == m else np.nan'))
+mut_eff("eff lined: the chance of beating the expected number is the stated over",
+        ('        "said_above": j.said_above.to_numpy(dtype=float),',
+         '        "said_above": j[f"p_{name}"].to_numpy(dtype=float),'))
+mut_eff("eff: a thin history gives rates of zero, not blanks",
+        ("                out[rate] = np.full(n, np.nan)\n                continue",
+         "                out[rate] = np.zeros(n)\n                continue"))
+mut_eff("eff: a position needs MORE than the least for its own spread",
+        ('                out["spread"] = per[units >= MIN_SPREAD_UNITS].to_dict()',
+         '                out["spread"] = per[units > MIN_SPREAD_UNITS].to_dict()'))
+mut_eff("eff: the all-player rate leaves out yards with no catch behind them",
+        ("            overall = float(num.sum() / den.sum())",
+         "            overall = float(num[den > 0].sum() / den.sum())"))
+mut_eff("eff: every thin history is blamed on pass attempts",
+        ('                           f"{ONE[den_col]} in the history; needs {MIN_RATE_ROWS}")',
+         '                           f"pass attempt in the history; needs {MIN_RATE_ROWS}")'))
+mut_eff("eff sizes: the variance column is the expected number",
+        ('                "expected": mean[stat], "variance": var[stat],',
+         '                "expected": mean[stat], "variance": mean[stat],'))
+mut_eff("eff sizes: asked for some stats, it gives them all",
+        ("        for stat in stats:\n            out.append(pd.DataFrame({",
+         "        for stat in EFF_STATS:\n            out.append(pd.DataFrame({"))
+mut_eff("eff lined: every rung, not the main line",
+        ('    L = L[(L.version == "A") & (L.rung == MAIN) & L.stat.isin(list(stats))',
+         '    L = L[(L.version == "A") & L.stat.isin(list(stats))'))
+mut_eff("eff lined: both versions",
+        ('    L = L[(L.version == "A") & (L.rung == MAIN) & L.stat.isin(list(stats))',
+         '    L = L[(L.rung == MAIN) & L.stat.isin(list(stats))'))
+mut_eff("eff lined: asked for some stats, it gives them all",
+        ('    L = L[(L.version == "A") & (L.rung == MAIN) & L.stat.isin(list(stats))',
+         '    L = L[(L.version == "A") & (L.rung == MAIN) & L.stat.isin(list(EFF_STATS))'))
+mut_eff("eff lined: the same player twice is counted twice",
+        ('                validate="one_to_one")', "                )"))
+mut_eff("eff lined: legs the projector did not price are kept",
+        ('          & L[f"p_{name}"].notna()]', "          ]"))
+mut_eff("eff lined: a result that disagrees, or is missing, is let through",
+        ("    if not (j.actual == j.actual_again).all():", "    if False:"))
+mut_eff("eff lined: 'said' is the chance of the under",
+        ('        "said": j[f"p_{name}"].to_numpy(dtype=float),',
+         '        "said": 1.0 - j[f"p_{name}"].to_numpy(dtype=float),'))
+
 
 def run_one(i: int):
     name, pairs, target = M[i]
@@ -1139,7 +1403,7 @@ def main() -> int:
         for r in ex.map(run_one, only):
             res.append(r)
             if SHOW or (r[2] not in ("caught", "applies")
-                        and r[1] not in (NULL, NULL_OPP)):
+                        and r[1] not in (NULL, NULL_OPP, NULL_EFF)):
                 print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
     # The unbroken suite once more, AFTER everything else: if the machine
     # went wrong part-way (a full disk, a dead cache), every revert after
@@ -1158,6 +1422,8 @@ def main() -> int:
     ok = (ctl.get(NULL) == "NOT CAUGHT" and ctl.get(BROKEN) == "caught"
           and ctl.get(NULL_OPP) == "NOT CAUGHT"
           and ctl.get(BROKEN_OPP) == "caught"
+          and ctl.get(NULL_EFF) == "NOT CAUGHT"
+          and ctl.get(BROKEN_EFF) == "caught"
           and last is not None and last[2] == "NOT CAUGHT")
     ctl["the unbroken suite again, at the end"] = last[2] if last else None
     print("runner controls:", "OK" if ok
