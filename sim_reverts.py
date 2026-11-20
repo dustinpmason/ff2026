@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""S1. Break every behaviour in `ff_sim.py` and see that `test_sim.py` notices.
+"""S1. Break every behaviour in `ff_sim.py` and `ff_sim_opp.py` and see that
+`test_sim.py` notices.
 
-    python3 sim_reverts.py            # all of them; about 30 minutes on 2 cores
+    python3 sim_reverts.py            # all of them; about 50 minutes on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
-    python3 sim_reverts.py 0 1 17     # just these, by number
+    python3 sim_reverts.py 4 5 17     # just these, by number (plus the controls)
+    python3 sim_reverts.py --show 300 # ...and print which checks failed for each
 
 SIM-HANDOFF.md, "Before saying done", item 1: "Break every new check. Remove
 the behaviour and confirm a check fails. A crash counts; a pass does not."
 This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
-How it works. Each entry below is one small edit to `ff_sim.py` that removes
-or reverses one behaviour. For each, a temporary directory gets the edited
-`ff_sim.py`, a COPY of `test_sim.py`, and links to every other module; the
+How it works. Each entry below is one small edit to `ff_sim.py` (or, for
+the entries made with `mut_opp`, to `ff_sim_opp.py`) that removes or
+reverses one behaviour. For each, a temporary directory gets the edited
+file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
 revert was NOT CAUGHT. Anything else is caught.
 
@@ -21,18 +24,25 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Two controls run with EVERY pass, including a pass of a few numbered
-reverts, and a pass that fails either proves nothing: an edit that changes
-no behaviour must read NOT CAUGHT (so the unbroken suite passes here), and
-an edit that breaks the week key must be caught.
+Four controls run with EVERY pass, including a pass of a few numbered
+reverts, and a pass that fails any of them proves nothing. Two for each
+file: an edit that changes no behaviour must read NOT CAUGHT (so the
+unbroken suite passes here, and the edited copy is the one imported), and
+an edit that breaks something plain must be caught. They are numbers 0 to
+3; the reverts start at 4.
 
-An entry whose text no longer matches `ff_sim.py` exactly once is reported
+An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST FULL RUN — 2026-11-20, 2 cores: 257 reverts, 257 caught, 0 not;
-runner controls OK. It was run in four blocks of numbered reverts (each
-block runs the controls). After the third block one fixture in
+LAST FULL RUN — 2026-11-20, 2 cores, on a fresh clone: 355 reverts (258 of
+`ff_sim.py`, 97 of `ff_sim_opp.py`), 355 caught, 0 not; runner controls OK.
+It was run in seven blocks of numbered reverts (4 to 358), because one
+block is all this machine will run in one go; each block runs the four
+controls and the unbroken suite again at its end.
+
+The first full run of the `ff_sim.py` reverts alone (2026-11-20, 257 of
+257) was run in four blocks. After its third block one fixture in
 `test_sim.py` section 14 was made stricter, because revert "avail: share B
 DID list" had not been caught, and the six availability reverts were run
 again against it: all caught.
@@ -48,17 +58,25 @@ import sys
 import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
-SRC = (REPO / "ff_sim.py").read_text()
+TARGETS = ("ff_sim.py", "ff_sim_opp.py")
+SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
 NULL = "CONTROL: nothing changed (must read NOT CAUGHT)"
 BROKEN = "CONTROL: week key broken (must be caught)"
+NULL_OPP = "CONTROL: nothing changed in ff_sim_opp.py (must read NOT CAUGHT)"
+BROKEN_OPP = "CONTROL: ff_sim_opp.py's shared stats swapped (must be caught)"
+CONTROLS = (0, 1, 2, 3)
 
 M: list = []
 
 
 def mut(name: str, *pairs) -> None:
-    M.append((name, pairs))
+    M.append((name, pairs, "ff_sim.py"))
+
+
+def mut_opp(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_opp.py"))
 
 
 # ---- controls on this runner itself
@@ -66,6 +84,10 @@ mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
 mut(BROKEN, ("    return int(season) * 100 + int(week)",
              "    return int(season) * 100 + int(week) + 1"))
+mut_opp(NULL_OPP, ('OPP_STATS = ("targets", "carries", "attempts")',
+                   'OPP_STATS = ("targets",  "carries", "attempts")'))
+mut_opp(BROKEN_OPP, ('SHARED = ("targets", "carries")',
+                     'SHARED = ("carries", "targets")'))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -802,10 +824,275 @@ mut("range: one miss is enough to measure clustering",
 mut("range: five misses are not enough",
     ("RARE_FOR_CLUSTERING = 5", "RARE_FOR_CLUSTERING = 6"))
 
+mut("History: rows are left in the order they came",
+    ('        rows = rows.sort_values(["player_id", "t"], kind="stable")\n        t = rows',
+     '        t = rows'))
+
+# ---- S4: the opportunity model (ff_sim_opp.py)
+# -- the parts
+mut_opp("opp: a game's own number is in its own 'before'",
+        ("    return incl.groupby(groups).shift(1), incl.groupby(groups).last()",
+         "    return incl, incl.groupby(groups).last()"))
+mut_opp("opp: 'now' is the group's FIRST average",
+        ("    return incl.groupby(groups).shift(1), incl.groupby(groups).last()",
+         "    return incl.groupby(groups).shift(1), incl.groupby(groups).first()"))
+mut_opp("opp: a plain average, not a leaning one",
+        ("    incl = (values.groupby(groups).ewm(halflife=half_life).mean()",
+         "    incl = (values.groupby(groups).expanding().mean()"))
+mut_opp("opp: team half-life changed", ("HALF_LIFE_TEAM = 4.0 ", "HALF_LIFE_TEAM = 5.0 "))
+mut_opp("opp: short half-life changed", ("HALF_LIFE_SHORT = 3.0 ", "HALF_LIFE_SHORT = 4.0 "))
+mut_opp("opp: long half-life changed", ("HALF_LIFE_LONG = 10.0 ", "HALF_LIFE_LONG = 12.0 "))
+mut_opp("opp: spread formula drops the Poisson part",
+        ("    excess = float(((x - m) ** 2 - m).sum())",
+         "    excess = float(((x - m) ** 2).sum())"))
+mut_opp("opp: spread not held to its range",
+        ("    return float(np.clip(float((m ** 2).sum()) / excess, *SIZE_RANGE))",
+         "    return float((m ** 2).sum()) / excess"))
+mut_opp("opp: no spread measurable gives the wide end",
+        ("    if len(x) == 0 or excess <= 0:\n        return SIZE_RANGE[1]",
+         "    if len(x) == 0 or excess <= 0:\n        return SIZE_RANGE[0]"))
+mut_opp("opp: predicting for nobody is an error",
+        ("    return beta[0] + X.reshape(len(X), len(beta) - 1) @ beta[1:]",
+         "    return beta[0] + X.reshape(len(X), -1) @ beta[1:]"))
+mut_opp("opp: any word is taken for the single number",
+        ("        if single not in SINGLE:", "        if False:"))
+mut_opp("opp: does not say it reads the slate",
+        ("    uses_actives = True", "    uses_actives = False"))
+# -- learning from the history
+mut_opp("opp: a stale fit is reused for another history",
+        ("        if self._last[0] is hist:", "        if self._last[0] is not None:"))
+mut_opp("opp: the fit is kept by week, not by history",
+        ("        if self._last[0] is hist:",
+         "        if self._last[0] is not None and self._last[0].before == hist.before:"))
+mut_opp("opp: team-games left in the order of their names",
+        ('              [list(OPP_STATS)].sum().sort_values("t", kind="stable")\n',
+         '              [list(OPP_STATS)].sum()\n'))
+mut_opp("opp: too few team-games fitted anyway",
+        ("        if len(tg) < MIN_FIT_ROWS:", "        if False:"))
+mut_opp("opp: too few player-games fitted anyway",
+        ("            if int(seen.sum()) < MIN_FIT_ROWS:", "            if False:"))
+mut_opp("opp: a fit may have as few as 5 rows", ("MIN_FIT_ROWS = 16", "MIN_FIT_ROWS = 5"))
+mut_opp("opp: a fit needs 30 rows", ("MIN_FIT_ROWS = 16", "MIN_FIT_ROWS = 30"))
+mut_opp("opp: a team's first game is filled with zero",
+        ("            X = np.column_stack([off_before.fillna(league),\n                                 def_before.fillna(league), market])",
+         "            X = np.column_stack([off_before.fillna(0.0),\n                                 def_before.fillna(0.0), market])"))
+mut_opp("opp: 'allowed' is the team's own, not the opponent's",
+        ("            def_before, def_now = leaning_average(tg[stat], tg.opponent,",
+         "            def_before, def_now = leaning_average(tg[stat], tg.team,"))
+mut_opp("opp: share of a zero-volume team is not zero",
+        ("            share = (P[stat] / team_total.where(team_total > 0)).fillna(0.0)",
+         "            share = (P[stat] / team_total.where(team_total > 0)).fillna(1.0)"))
+mut_opp("opp: the long-run share is fitted with the short half-life",
+        ("            long_before, long_now = leaning_average(share, P.player_id,\n                                                    HALF_LIFE_LONG)",
+         "            long_before, long_now = leaning_average(share, P.player_id,\n                                                    HALF_LIFE_SHORT)"))
+mut_opp("opp: the short share is kept where the long one belongs",
+        ("            fit.share[stat] = (beta, short_now.to_dict(), long_now.to_dict(),",
+         "            fit.share[stat] = (beta, short_now.to_dict(), short_now.to_dict(),"))
+mut_opp("opp: the all-player share is the largest, not the average",
+        ("            overall = float(share.mean())", "            overall = float(share.max())"))
+mut_opp("opp: position norm is one number for everyone",
+        ("            norm = P.position.map(by_pos).fillna(overall)",
+         "            norm = P.position.map({}).fillna(overall)"))
+mut_opp("opp: a player with no position breaks the share fit",
+        ("            norm = P.position.map(by_pos).fillna(overall)",
+         "            norm = P.position.map(by_pos)"))
+mut_opp("opp: spread measured on the team's volume as it turned out",
+        ('                 * P[f"pred_{stat}"].to_numpy()[seen])',
+         '                 * P[f"team_{stat}"].to_numpy()[seen])'))
+mut_opp("opp: spread measured on every tiny expected count",
+        ("            use = m > SIZE_MIN_MEAN\n", "            use = m > -1.0\n"))
+mut_opp("opp: spread measured only above 3", ("SIZE_MIN_MEAN = 1.0", "SIZE_MIN_MEAN = 3.0"))
+mut_opp("opp: starter's share measured on every quarterback",
+        ("        starts = P[P.qb_start]", '        starts = P[P.position == "QB"]'))
+mut_opp("opp: no starter on record gives half",
+        ("                             if len(starts) else 1.0)",
+         "                             if len(starts) else 0.5)"))
+mut_opp("opp: pass-attempt spread measured on team totals",
+        ("            starts.attempts.to_numpy(dtype=float),\n            fit.starter_share * starts.pred_attempts.to_numpy(dtype=float))",
+         '            tg["attempts"].to_numpy(dtype=float), team_pred["attempts"])'))
+mut_opp("opp: pass-attempt spread measured round the targets prediction",
+        ("            fit.starter_share * starts.pred_attempts.to_numpy(dtype=float))",
+         "            fit.starter_share * starts.pred_targets.to_numpy(dtype=float))"))
+mut_opp("opp: pass-attempt spread measured round the whole team's attempts",
+        ("            fit.starter_share * starts.pred_attempts.to_numpy(dtype=float))",
+         "            starts.pred_attempts.to_numpy(dtype=float))"))
+# -- projecting a slate
+mut_opp("opp: a slate missing a column is not refused",
+        ('        if missing:\n            raise ValueError(f"the slate is missing',
+         '        if False:\n            raise ValueError(f"the slate is missing'))
+mut_opp("opp: a starter flag that is neither yes nor no is read anyway",
+        ("        if not flag.isin([True, False]).all():", "        if False:"))
+mut_opp("opp: two starters on a team are each given the starter's share",
+        ("        if (named > 1).any():", "        if False:"))
+mut_opp("opp: a thin history is projected from anyway",
+        ("        if not fit.ok:\n            return blank", "        if False:\n            return blank"))
+mut_opp("opp: a new team is given no volume of its own",
+        ("                [off_now.get(t, league) for _, t in teams],",
+         "                [off_now.get(t, 0.0) for _, t in teams],"))
+mut_opp("opp: a new opponent is taken to allow nothing",
+        ("                [def_now.get(opponent[k], league) for k in teams], market])",
+         "                [def_now.get(opponent[k], 0.0) for k in teams], market])"))
+mut_opp("opp: projection uses the team's own 'allowed'",
+        ("                [def_now.get(opponent[k], league) for k in teams], market])",
+         "                [def_now.get(k[1], league) for k in teams], market])"))
+mut_opp("opp: the two team inputs go in the other way round when projecting",
+        ("                [off_now.get(t, league) for _, t in teams],\n                [def_now.get(opponent[k], league) for k in teams], market])",
+         "                [def_now.get(opponent[k], league) for k in teams],\n                [off_now.get(t, league) for _, t in teams], market])"))
+mut_opp("opp: a team's volume may fall below one play",
+        ("            volume[stat] = dict(zip(teams, np.clip(predict(beta, X),\n                                                   VOLUME_FLOOR, None)))",
+         "            volume[stat] = dict(zip(teams, predict(beta, X)))"))
+mut_opp("opp: the floor under a team's volume is 5", ("VOLUME_FLOOR = 1.0", "VOLUME_FLOOR = 5.0"))
+mut_opp("opp: a position never seen gets nothing",
+        ("            norm = np.array([by_pos.get(p, overall) for p in pos], dtype=float)",
+         "            norm = np.array([by_pos.get(p, 0.0) for p in pos], dtype=float)"))
+mut_opp("opp: a player with no earlier game gets nothing",
+        ("            raw = norm.copy()               # no earlier game: his position's",
+         "            raw = np.zeros(n)"))
+mut_opp("opp: the short share stands in for the long one when projecting",
+        ("                [short[known], long_[known], norm[known]]))",
+         "                [short[known], short[known], norm[known]]))"))
+mut_opp("opp: a negative share is kept",
+        ("            raw = np.clip(raw, 0.0, None)\n            total",
+         "            total"))
+mut_opp("opp: shares not scaled to one",
+        ("            share = np.divide(raw, total, out=np.full(n, np.nan), where=total > 0)",
+         "            share = raw"))
+mut_opp("opp: a team given no share at all is priced at zero",
+        ("out=np.full(n, np.nan), where=total > 0)", "out=np.zeros(n), where=total > 0)"))
+mut_opp("opp: carries are shared out with the targets fit",
+        ("            beta, short_now, long_now, by_pos, overall = fit.share[stat]",
+         '            beta, short_now, long_now, by_pos, overall = fit.share["targets"]'))
+mut_opp("opp: carries are scaled to the team's targets",
+        ("            out[stat] = share * np.array([volume[stat][k] for k in key])",
+         '            out[stat] = share * np.array([volume["targets"][k] for k in key])'))
+mut_opp("opp: who starts is ignored",
+        ("        starts = flag.to_numpy(dtype=bool)", "        starts = np.zeros(n, dtype=bool)"))
+mut_opp("opp: the starter gets every pass attempt",
+        ('        out["attempts"] = np.where(starts, fit.starter_share * team_att, np.nan)',
+         '        out["attempts"] = np.where(starts, team_att, np.nan)'))
+mut_opp("opp: everyone on the slate is given the starter's attempts",
+        ('        out["attempts"] = np.where(starts, fit.starter_share * team_att, np.nan)',
+         '        out["attempts"] = fit.starter_share * team_att'))
+mut_opp("opp: a named starter not listed at quarterback gets none",
+        ('        out["attempts"] = np.where(starts, fit.starter_share * team_att, np.nan)',
+         '        out["attempts"] = np.where(starts & (pos == "QB"), fit.starter_share * team_att, np.nan)'))
+mut_opp("opp: a player on the slate twice is given two shares",
+        ('        if slate.duplicated(["game_id", "team", "player_id"]).any():',
+         '        if False:'))
+mut_opp("opp: a team-game with one carry is treated as having none",
+        ("            share = (P[stat] / team_total.where(team_total > 0)).fillna(0.0)",
+         "            share = (P[stat] / team_total.where(team_total > 1)).fillna(0.0)"))
+# -- the count round the mean
+mut_opp("opp: the single number is always the median",
+        ('        if self.single == "mean":', "        if False:"))
+mut_opp("opp: the single number is always the mean",
+        ('        if self.single == "mean":', "        if True:"))
+mut_opp("opp: the median is some other point",
+        ("        return float(nbinom.ppf(0.5, *d))", "        return float(nbinom.ppf(0.6, *d))"))
+mut_opp("opp: 'over' needs one more than the line",
+        ("            nbinom.sf(math.floor(line), *d))",
+         "            nbinom.sf(math.floor(line) + 1, *d))"))
+mut_opp("opp: landing on a whole-number line counts as over",
+        ("            nbinom.sf(math.floor(line), *d))",
+         "            nbinom.sf(math.ceil(line) - 1, *d))"))
+mut_opp("opp: a stat it does not project gets a number",
+        ("        if stat not in self.mean:\n            return None",
+         '        if stat not in self.mean:\n            stat = "targets"'))
+mut_opp("opp: every stat is priced with the targets spread",
+        ("        r = self.size[stat]", '        r = self.size["targets"]'))
+# -- the closing spread and total
+mut_opp("opp market: a game outside the history and slate is looked up",
+        ("            if g not in allowed:", "            if False:"))
+mut_opp("opp market: fitting is allowed every game there is",
+        ("        market = self._market(tg.game_id, tg.team, fit.games)",
+         "        market = self._market(tg.game_id, tg.team, set(self.lines or ()) | fit.games)"))
+mut_opp("opp market: projecting is allowed every game there is",
+        ("                              fit.games | {g for g, _ in teams})",
+         "                              set(self.lines or ()) | fit.games)"))
+mut_opp("opp market: the visitor gets the home team's spread",
+        ("            out.append((spread if tm == home else -spread, total))",
+         "            out.append((spread, total))"))
+mut_opp("opp market: the spread is turned round when fitting only",
+        ("        market = self._market(tg.game_id, tg.team, fit.games)",
+         "        market = self._market(tg.game_id, tg.team, fit.games) * np.array([-1.0, 1.0])[:(2 if self.lines else 0)]"))
+mut_opp("opp market: the spread is turned round when projecting only",
+        ("                              fit.games | {g for g, _ in teams})",
+         "                              fit.games | {g for g, _ in teams}) * np.array([-1.0, 1.0])[:(2 if self.lines else 0)]"))
+mut_opp("opp market: a team that was not in the game is signed as the visitor",
+        ("            if tm not in (home, away):", "            if False:"))
+mut_opp("opp market: a game with no line is a zero",
+        ("            if g not in self.lines:\n                raise KeyError(f\"no closing line on file for {g}\")\n            home, away, spread, total = self.lines[g]",
+         "            home, away, spread, total = self.lines.get(g, (tm, tm, 0.0, 0.0))"))
+mut_opp("opp market: an empty table of lines is read as no lines",
+        ("        if self.lines is None:", "        if not self.lines:"))
+mut_opp("opp market: a line that is not a number is used",
+        ("            if not (math.isfinite(spread) and math.isfinite(total)):",
+         "            if False:"))
+mut_opp("opp market: only the spread is checked for being a number",
+        ("            if not (math.isfinite(spread) and math.isfinite(total)):",
+         "            if not math.isfinite(spread):"))
+mut_opp("opp market: a missing total is accepted by the loader",
+        ('    if g[["spread_line", "total_line"]].isna().any().any():',
+         '    if g[["spread_line"]].isna().any().any():'))
+mut_opp("opp market: postseason lines included",
+        ('    g = p[p.season_type == "REG"].drop_duplicates("game_id")',
+         '    g = p.drop_duplicates("game_id")'))
+mut_opp("opp market: a missing line is accepted",
+        ('    if g[["spread_line", "total_line"]].isna().any().any():', "    if False:"))
+mut_opp("opp market: home and visitor the wrong way round",
+        ("            zip(g.game_id, g.home_team, g.away_team, g.spread_line,",
+         "            zip(g.game_id, g.away_team, g.home_team, g.spread_line,"))
+# -- the expected counts beside what happened
+mut_opp("opp sizes: the expected count sees the week it is checked on",
+        ("        hist = History(frame[frame.t < t], t)\n        slate = slate_active(frame, hist)\n        mean = model.means(hist, slate)",
+         "        hist = History(frame[frame.t < t], t)\n        slate = slate_active(frame, hist)\n        mean = model.means(History(frame[frame.t <= t], t + 1), slate)"))
+mut_opp("opp sizes: graded on everyone who had been playing, not who was active",
+        ("        slate = slate_active(frame, hist)\n        mean = model.means(hist, slate)\n        size",
+         "        slate = __import__('ff_sim').slate_candidates(frame, hist)\n        mean = model.means(hist, slate)\n        size"))
+mut_opp("opp sizes: the actual is taken from the first week asked for",
+        ('        played = frame[frame.t == t].set_index(["game_id", "player_id"])',
+         '        played = frame[frame.t == weeks[0]].set_index(["game_id", "player_id"])'))
+mut_opp("opp sizes: rows it says nothing about are kept",
+        ("    return rows[rows.expected.notna()].reset_index(drop=True)",
+         "    return rows"))
+mut_opp("opp sizes: one stat's actual under another's name",
+        ('                "actual": played[stat].reindex(at).to_numpy(dtype=float)}))',
+         '                "actual": played["targets"].reindex(at).to_numpy(dtype=float)}))'))
+mut_opp("opp sizes: the game beside a player is another player's",
+        ('                "game_id": slate["game_id"].to_numpy(),',
+         '                "game_id": slate["game_id"].to_numpy()[::-1],'))
+mut_opp("opp sizes: the variance is a Poisson's",
+        ('                "variance": m + m ** 2 / size.get(stat, np.nan),',
+         '                "variance": m,'))
+mut_opp("opp sizes: every stat's variance uses the targets spread",
+        ('                "variance": m + m ** 2 / size.get(stat, np.nan),',
+         '                "variance": m + m ** 2 / size.get("targets", np.nan),'))
+mut_opp("opp sizes: a week too thin to fit is an error",
+        ('                "variance": m + m ** 2 / size.get(stat, np.nan),',
+         '                "variance": m + m ** 2 / size[stat],'))
+mut_opp("opp lined: every rung, not the main line",
+        ("    L = L[(L.version == \"A\") & (L.rung == MAIN) & L.stat.isin(OPP_STATS)",
+         "    L = L[(L.version == \"A\") & L.stat.isin(OPP_STATS)"))
+mut_opp("opp lined: both versions",
+        ("    L = L[(L.version == \"A\") & (L.rung == MAIN) & L.stat.isin(OPP_STATS)",
+         "    L = L[(L.rung == MAIN) & L.stat.isin(OPP_STATS)"))
+mut_opp("opp lined: every stat the projector priced",
+        ("    L = L[(L.version == \"A\") & (L.rung == MAIN) & L.stat.isin(OPP_STATS)",
+         "    L = L[(L.version == \"A\") & (L.rung == MAIN)"))
+mut_opp("opp lined: the same player twice is counted twice",
+        ('                validate="one_to_one")', "                )"))
+mut_opp("opp lined: legs the projector did not price are kept",
+        ('          & L[f"p_{name}"].notna()]', "          ]"))
+mut_opp("opp lined: a result that disagrees, or is missing, is let through",
+        ("    if not (j.actual == j.actual_again).all():", "    if False:"))
+mut_opp("opp lined: 'said' is the chance of the under",
+        ('        "said": j[f"p_{name}"].to_numpy(dtype=float),',
+         '        "said": 1.0 - j[f"p_{name}"].to_numpy(dtype=float),'))
+
 
 def run_one(i: int):
-    name, pairs = M[i]
-    s = SRC
+    name, pairs, target = M[i]
+    s = SRC[target]
     for old, new in pairs:
         if s.count(old) != 1:
             return i, name, "BAD REVERT", f"{s.count(old)} matches for {old[:50]!r}"
@@ -815,9 +1102,9 @@ def run_one(i: int):
     d = pathlib.Path(tempfile.mkdtemp(prefix="sim_revert_"))
     try:
         for f in REPO.glob("*.py"):
-            if f.name not in ("ff_sim.py", "test_sim.py"):
+            if f.name not in (target, "test_sim.py"):
                 os.symlink(f, d / f.name)
-        (d / "ff_sim.py").write_text(s)
+        (d / target).write_text(s)
         (d / "test_sim.py").write_text(TEST)      # a COPY: see the docstring
         r = subprocess.run([sys.executable, "test_sim.py"], cwd=d,
                            capture_output=True, text=True, timeout=900)
@@ -834,22 +1121,25 @@ def run_one(i: int):
 
 
 CHECK_ONLY = False
+SHOW = False
 
 
 def main() -> int:
-    global CHECK_ONLY
+    global CHECK_ONLY, SHOW
     args = [a for a in sys.argv[1:]]
     CHECK_ONLY = "--check" in args
+    SHOW = "--show" in args
     only = [int(a) for a in args if a.isdigit()] or list(range(len(M)))
-    # The two controls run with EVERY pass, however few reverts were asked
-    # for. Without them a broken environment, where the unbroken suite
-    # fails too, reads as "caught".
-    only = sorted(set(only) | {0, 1})
+    # The controls run with EVERY pass, however few reverts were asked for.
+    # Without them a broken environment, where the unbroken suite fails
+    # too, reads as "caught".
+    only = sorted(set(only) | set(CONTROLS))
     res = []
     with cf.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
         for r in ex.map(run_one, only):
             res.append(r)
-            if r[2] not in ("caught", "applies") and r[1] != NULL:
+            if SHOW or (r[2] not in ("caught", "applies")
+                        and r[1] not in (NULL, NULL_OPP)):
                 print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
     # The unbroken suite once more, AFTER everything else: if the machine
     # went wrong part-way (a full disk, a dead cache), every revert after
@@ -857,8 +1147,8 @@ def main() -> int:
     last = None if CHECK_ONLY else run_one(0)
     bad = [r for r in res if r[2] == "BAD REVERT"]
     if CHECK_ONLY:
-        print(f"{len(res)} reverts, {len(res) - len(bad)} apply cleanly, "
-              f"{len(bad)} do not")
+        print(f"{len(res)} entries ({len(CONTROLS)} of them controls), "
+              f"{len(res) - len(bad)} apply cleanly, {len(bad)} do not")
         return 1 if bad else 0
     real = [r for r in res if not r[1].startswith("CONTROL")]
     caught = sum(1 for r in real if r[2] == "caught")
@@ -866,6 +1156,8 @@ def main() -> int:
     ctl = {r[1]: r[2] for r in res if r[1].startswith("CONTROL")}
     print(f"\n{len(real)} reverts: {caught} caught, {len(missed)} not")
     ok = (ctl.get(NULL) == "NOT CAUGHT" and ctl.get(BROKEN) == "caught"
+          and ctl.get(NULL_OPP) == "NOT CAUGHT"
+          and ctl.get(BROKEN_OPP) == "caught"
           and last is not None and last[2] == "NOT CAUGHT")
     ctl["the unbroken suite again, at the end"] = last[2] if last else None
     print("runner controls:", "OK" if ok

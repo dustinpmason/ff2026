@@ -2146,5 +2146,901 @@ def _():
         run.describe())
 
 
+# ===========================================================================
+# S4 — the opportunity model (ff_sim_opp.py)
+# ===========================================================================
+fo = OpportunityModel = None
+
+
+@section("16. the opportunity model — it loads")
+def _():
+    global fo, OpportunityModel
+    import ff_sim_opp
+    fo, OpportunityModel = ff_sim_opp, ff_sim_opp.OpportunityModel
+    chk("it projects targets, carries and pass attempts, and shares out the "
+        "first two", fo.OPP_STATS == ("targets", "carries", "attempts")
+        and fo.SHARED == ("targets", "carries"))
+
+
+# The test's OWN copy of every number the model sets by hand. Typed here, not
+# read from the module, so a changed constant shows up as a failed by-hand
+# check and not as two things changing together.
+HL_TEAM, HL_SHORT, HL_LONG = 4.0, 3.0, 10.0
+FIT_ROWS, CUT, SIZE_LO, SIZE_HI, FLOOR = 16, 1.0, 1.0, 500.0, 1.0
+
+
+def lean(vals, h):
+    """A leaning average worked the long way: [(before, including), ...]."""
+    w, out = 0.5 ** (1.0 / h), []
+    for k in range(len(vals)):
+        num = sum(w ** (k - j) * vals[j] for j in range(k + 1))
+        den = sum(w ** (k - j) for j in range(k + 1))
+        out.append((out[-1][1] if out else None, num / den))
+    return out
+
+
+def nb_tail(k, mean, size):
+    """P(X > k) for a negative binomial with that mean and size, summed term
+    by term from its formula."""
+    if mean == 0:
+        return 0.0
+    p = size / (size + mean)
+    below = sum(math.exp(math.lgamma(j + size) - math.lgamma(j + 1)
+                         - math.lgamma(size) + size * math.log(p)
+                         + j * math.log1p(-p)) for j in range(int(k) + 1))
+    return 1.0 - below
+
+
+def hand_size(x, m):
+    excess = sum((a - b) ** 2 - b for a, b in zip(x, m))
+    if not len(x) or excess <= 0:
+        return SIZE_HI
+    return min(max(sum(b * b for b in m) / excess, SIZE_LO), SIZE_HI)
+
+
+def spread_for(lines, game, team):
+    home, away, spread, total = lines[game]
+    return [spread if team == home else -spread, total]
+
+
+def by_hand_fit(F, lines=None):
+    """Everything the model learns from a history, re-derived with plain
+    loops from the description in its docstring."""
+    tg = {}
+    for r in F.itertuples():
+        d = tg.setdefault((r.game_id, r.team), dict(
+            t=r.t, opp=r.opponent, targets=0.0, carries=0.0, attempts=0.0))
+        for s_ in ("targets", "carries", "attempts"):
+            d[s_] += getattr(r, s_)
+    keys = sorted(tg, key=lambda k: (tg[k]["t"], k))
+    out = dict(keys=keys, tg=tg)
+    for stat in ("targets", "carries", "attempts"):
+        league = sum(tg[k][stat] for k in keys) / len(keys)
+        off, dfn = {}, {}
+        for k in keys:
+            off.setdefault(k[1], []).append(k)
+            dfn.setdefault(tg[k]["opp"], []).append(k)
+        before = ({}, {})
+        now = ({}, {})
+        for which, grp in enumerate((off, dfn)):
+            for name, ks in grp.items():
+                for k, (b, inc) in zip(ks, lean([tg[k][stat] for k in ks],
+                                                HL_TEAM)):
+                    before[which][k] = league if b is None else b
+                now[which][name] = inc
+        X = np.array([[1.0, before[0][k], before[1][k]]
+                      + (spread_for(lines, k[0], k[1]) if lines else [])
+                      for k in keys])
+        beta = np.linalg.lstsq(X, np.array([tg[k][stat] for k in keys]),
+                               rcond=None)[0]
+        out[stat] = dict(beta=beta, off_now=now[0], def_now=now[1],
+                         league=league,
+                         pred={k: float(X[i] @ beta) for i, k in enumerate(keys)})
+    rows = F.sort_values(["player_id", "t"], kind="stable")
+    for stat in ("targets", "carries"):
+        o = out[stat]
+        share = [getattr(r, stat) / tg[(r.game_id, r.team)][stat]
+                 if tg[(r.game_id, r.team)][stat] > 0 else 0.0
+                 for r in rows.itertuples()]
+        pos = list(rows.position)
+        overall = sum(share) / len(share)
+        by_pos = {q: float(np.mean([s_ for s_, q2 in zip(share, pos) if q2 == q]))
+                  for q in set(pos) if q is not None}
+        feats, ys, ms, xs, short_now, long_now = [], [], [], [], {}, {}
+        i = 0
+        for pid, grp in rows.groupby("player_id", sort=False):
+            sh = share[i:i + len(grp)]
+            s3, s10 = lean(sh, HL_SHORT), lean(sh, HL_LONG)
+            short_now[pid], long_now[pid] = s3[-1][1], s10[-1][1]
+            for j, r in enumerate(grp.itertuples()):
+                if j:
+                    feats.append([1.0, s3[j][0], s10[j][0],
+                                  by_pos.get(r.position, overall)])
+                    ys.append(sh[j])
+                    ms.append(o["pred"][(r.game_id, r.team)])
+                    xs.append(getattr(r, stat))
+            i += len(grp)
+        A = np.array(feats)
+        sbeta = np.linalg.lstsq(A, np.array(ys), rcond=None)[0]
+        m = [max(float(a @ sbeta), 0.0) * v for a, v in zip(A, ms)]
+        kept = [(x, v) for x, v in zip(xs, m) if v > CUT]
+        o.update(sbeta=sbeta, short_now=short_now, long_now=long_now,
+                 by_pos=by_pos, overall=overall, rows=len(feats),
+                 small=len(m) - len(kept),
+                 size=hand_size([a for a, _ in kept], [b for _, b in kept]))
+    st = [r for r in F.itertuples() if r.qb_start]
+    ss = (sum(r.attempts / tg[(r.game_id, r.team)]["attempts"] for r in st)
+          / len(st)) if st else 1.0
+    out["starter_share"] = ss
+    out["attempts"]["size"] = hand_size(
+        [r.attempts for r in st],
+        [ss * out["attempts"]["pred"][(r.game_id, r.team)] for r in st])
+    return out
+
+
+def by_hand_means(ref, slate, lines=None):
+    """The expected counts for a slate, from `by_hand_fit`'s numbers."""
+    rows = list(slate.itertuples())
+
+    def volume(stat, r):
+        o = ref[stat]
+        x = ([1.0, o["off_now"].get(r.team, o["league"]),
+              o["def_now"].get(r.opponent, o["league"])]
+             + (spread_for(lines, r.game_id, r.team) if lines else []))
+        return max(float(np.array(x) @ o["beta"]), FLOOR)
+
+    out = {}
+    for stat in ("targets", "carries"):
+        o = ref[stat]
+        raw = []
+        for r in rows:
+            norm = o["by_pos"].get(r.position, o["overall"])
+            raw.append(max(float(np.array(
+                [1.0, o["short_now"][r.player_id], o["long_now"][r.player_id],
+                 norm]) @ o["sbeta"]), 0.0)
+                if r.player_id in o["short_now"] else norm)
+        tot = {}
+        for r, v in zip(rows, raw):
+            tot[(r.game_id, r.team)] = tot.get((r.game_id, r.team), 0.0) + v
+        out[stat] = [v / tot[(r.game_id, r.team)] * volume(stat, r)
+                     if tot[(r.game_id, r.team)] > 0 else float("nan")
+                     for r, v in zip(rows, raw)]
+    out["attempts"] = [ref["starter_share"] * volume("attempts", r)
+                       if r.starting_qb else float("nan") for r in rows]
+    return out
+
+
+ROUNDS = ((("AAA", "BBB"), ("CCC", "DDD")), (("AAA", "CCC"), ("BBB", "DDD")),
+          (("AAA", "DDD"), ("BBB", "CCC")))
+TEAM_LEAN = dict(AAA=1.25, BBB=0.9, CCC=1.0, DDD=0.8)
+
+
+def rotating_league():
+    """(frame, lines). A league whose schedule ROTATES, so a team's own
+    average and what its opponent allows are different numbers. Counts are
+    DRAWN and widely spread; a tight end is rarely thrown to and a receiver
+    rarely runs; a second quarterback relieves one starter in two games;
+    one team-game has no carry at all and another exactly one; home and
+    away alternate."""
+    rng = np.random.default_rng(7)
+
+    def draw(mean, n=3):
+        return float(rng.negative_binomial(n, n / (n + mean))) if mean > 0 else 0.0
+
+    rows, lines, k = [], {}, 0
+    for season, nweeks in SEASON_WEEKS.items():
+        for week in range(1, nweeks + 1):
+            for a, b in ROUNDS[k % 3]:
+                home, away = (a, b) if week % 2 else (b, a)
+                lines[gid(season, week, a, b)] = (
+                    home, away, round(14 * (TEAM_LEAN[home] - TEAM_LEAN[away]), 1)
+                    + (k % 4) - 1.5, 38.0 + 2 * (k % 5) + 6 * TEAM_LEAN[a])
+                for team, opp in ((a, b), (b, a)):
+                    up, soft = TEAM_LEAN[team], 2.0 - TEAM_LEAN[opp]
+                    att = 12.0 + draw(20 * up * soft, 6)
+                    relief = team == "AAA" and (season, week) in ((2023, 3), (2023, 5))
+                    mk = lambda who, pos, **kw: rows.append(  # noqa: E731
+                        row(season, week, team, opp, f"{team}_{who}", pos, **kw))
+                    mk("QB", "QB", qb_start=True, carries=draw(2.5),
+                       attempts=att - (9 if relief else 0))
+                    if relief:
+                        mk("QB2", "QB", attempts=9)
+                    mk("RB", "RB", carries=draw(15 * soft), targets=draw(2.5))
+                    mk("WR1", "WR", targets=draw(8 * up * soft), carries=draw(0.4))
+                    mk("WR2", "WR", targets=draw(5 * up))
+                    mk("TE", "TE", targets=draw(0.7))
+            k += 1
+    f = mkframe(rows)
+    f.loc[(f.t == 202302) & (f.team == "CCC"), "carries"] = 0.0
+    f.loc[(f.t == 202303) & (f.team == "DDD"), "carries"] = 0.0
+    f.loc[(f.t == 202303) & (f.player_id == "DDD_RB"), "carries"] = 1.0
+    return f, lines
+
+
+def same_fit(a, b):
+    """Two fits agree on everything that reaches a projection."""
+    return (all(np.allclose(a.team[s_][0], b.team[s_][0])
+                and near(a.team[s_][3], b.team[s_][3], 1e-9)
+                and all(near(a.team[s_][j][k], b.team[s_][j][k], 1e-9)
+                        for j in (1, 2) for k in a.team[s_][j])
+                for s_ in fo.OPP_STATS)
+            and all(np.allclose(a.share[s_][0], b.share[s_][0])
+                    and all(near(a.share[s_][j][k], b.share[s_][j][k], 1e-9)
+                            for j in (1, 2) for k in a.share[s_][j])
+                    for s_ in fo.SHARED)
+            and all(near(a.size[s_], b.size[s_], 1e-6) for s_ in fo.OPP_STATS)
+            and near(a.starter_share, b.starter_share, 1e-12))
+
+
+def fit_matches(fit, ref):
+    """{what: ok} — a model's fit against the long-hand one, part by part."""
+    ok = {}
+    for stat in ("targets", "carries", "attempts"):
+        beta, off_now, def_now, lg = fit.team[stat]
+        o = ref[stat]
+        ok[f"{stat}: team fit"] = (
+            len(beta) == len(o["beta"]) and np.allclose(beta, o["beta"])
+            and near(lg, o["league"], 1e-9)
+            and set(off_now) == set(o["off_now"]) and set(def_now) == set(o["def_now"])
+            and all(near(off_now[k], o["off_now"][k], 1e-9) for k in off_now)
+            and all(near(def_now[k], o["def_now"][k], 1e-9) for k in def_now))
+        ok[f"{stat}: spread"] = near(fit.size[stat], o["size"], 1e-6)
+    for stat in ("targets", "carries"):
+        sbeta, short_now, long_now, by_pos, overall = fit.share[stat]
+        o = ref[stat]
+        ok[f"{stat}: share fit"] = (
+            np.allclose(sbeta, o["sbeta"]) and near(overall, o["overall"], 1e-12)
+            and set(short_now) == set(o["short_now"])
+            and all(near(short_now[k], o["short_now"][k], 1e-9) for k in short_now)
+            and all(near(long_now[k], o["long_now"][k], 1e-9) for k in long_now)
+            and set(by_pos) == set(o["by_pos"])
+            and all(near(by_pos[k], o["by_pos"][k], 1e-9) for k in by_pos))
+    ok["starter share"] = near(fit.starter_share, ref["starter_share"], 1e-12)
+    return ok
+
+
+def means_match(got, want):
+    return {s_: bool(np.allclose(np.asarray(got[s_], dtype=float),
+                                 np.asarray(want[s_], dtype=float),
+                                 rtol=1e-9, atol=1e-9, equal_nan=True))
+            for s_ in ("targets", "carries", "attempts")}
+
+
+@section("17. the opportunity model — what it learns, by hand")
+def _():
+    v = pd.Series([4.0, 10.0, 8.0, 2.0, 6.0])
+    g = pd.Series(["a", "b", "a", "b", "a"])
+    before, now = fo.leaning_average(v, g, 2.0)
+    w = 0.5 ** 0.5          # one game back, at a half-life of two games
+    a2 = (w * 4.0 + 8.0) / (w + 1.0)
+    a3 = (w * w * 4.0 + w * 8.0 + 6.0) / (w * w + w + 1.0)
+    chk("a leaning average 'before' a game uses only that group's earlier games",
+        math.isnan(before[0]) and math.isnan(before[1])
+        and near(before[2], 4.0) and near(before[3], 10.0)
+        and near(before[4], a2, 1e-12), list(before))
+    chk("...and 'now' is the average over all of them, newest weighted most",
+        near(now["a"], a3, 1e-12)
+        and near(now["b"], (w * 10.0 + 2.0) / (w + 1.0), 1e-12)
+        and a3 > 6.0 > now["b"])
+    v2 = v.copy()
+    v2[2] = 99.0
+    b2, _ = fo.leaning_average(v2, g, 2.0)
+    chk("a game's own number does not reach its own 'before', and does reach "
+        "the next one's", near(b2[2], before[2]) and not near(b2[4], before[4]))
+    chk("the fit recovers a straight line exactly",
+        np.allclose(fo.ols(np.array([[0, 0], [1, 0], [0, 1], [2, 3.0]]),
+                           np.array([1, 3, 4, 14.0])), [1, 2, 3])
+        and np.allclose(fo.predict(np.array([1, 2, 3.0]), np.array([[2, 3.0]])), [14]))
+    chk("...and predicting for nobody gives nothing, not an error",
+        len(fo.predict(np.array([1, 2, 3.0]), np.zeros((0, 2)))) == 0)
+    chk("a count's spread, by hand: size = sum m^2 / sum((x-m)^2 - m)",
+        near(fo.size_from(np.array([0.0, 4.0]), np.array([2.0, 2.0])), 2.0))
+    chk("counts no wider than a Poisson, or none at all, get the top of the "
+        "range; a very wide one the bottom",
+        fo.size_from(np.array([2.0, 2.0]), np.array([2.0, 2.0])) == SIZE_HI
+        and fo.size_from(np.array([]), np.array([])) == SIZE_HI
+        and fo.size_from(np.array([0.0, 40.0]), np.array([2.0, 2.0])) == SIZE_LO)
+
+    f, lines = rotating_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    fit = OpportunityModel().fit(h)
+    ref = by_hand_fit(h.frame)
+    for what, ok in fit_matches(fit, ref).items():
+        chk(f"{what} matches a long-hand re-derivation", ok)
+    chk("the fixture is worth the comparison: every spread is a measured one "
+        "and not an end of the range, some expected counts fall under the "
+        "cut, and starters do not throw every pass",
+        all(SIZE_LO < ref[s_]["size"] < SIZE_HI
+            for s_ in ("targets", "carries", "attempts"))
+        and all(ref[s_]["small"] > 0 for s_ in ("targets", "carries"))
+        and 0.9 < ref["starter_share"] < 1.0,
+        ([ref[s_]["size"] for s_ in ("targets", "carries", "attempts")],
+         ref["starter_share"]))
+    chk("...and a team's own average is not its opponent's 'allowed'",
+        not near(ref["targets"]["off_now"]["AAA"], ref["targets"]["def_now"]["BBB"],
+                 1e-6))
+
+    mfit = OpportunityModel("opp_market", lines=lines).fit(h)
+    mref = by_hand_fit(h.frame, lines)
+    for what, ok in fit_matches(mfit, mref).items():
+        chk(f"with the spread and total — {what} matches too", ok)
+    chk("...where the team fit has two more inputs, and they move it",
+        len(mfit.team["targets"][0]) == 5 and len(fit.team["targets"][0]) == 3
+        and not np.allclose(mfit.team["targets"][0][:3], fit.team["targets"][0]))
+
+    nostart = h.frame.copy()
+    nostart["qb_start"] = False
+    chk("with no starter on record he is taken to throw them all",
+        OpportunityModel().fit(History(nostart, T)).starter_share == 1.0)
+    shuffled = History(h.frame.sample(frac=1.0, random_state=3), T)
+    chk("rows handed over in any order give the same fit",
+        same_fit(OpportunityModel().fit(shuffled), fit))
+    ren = h.frame.copy()
+    ren["game_id"] = [f"g{999999 - t_}_{'_'.join(sorted((a_, b_)))}"
+                      for t_, a_, b_ in zip(ren.t, ren.team, ren.opponent)]
+    by_name = ren.drop_duplicates("game_id").sort_values("game_id").t.to_numpy()
+    chk("...and so do game ids whose names run backwards in time",
+        (np.diff(by_name) <= 0).all() and by_name[0] > by_name[-1]
+        and same_fit(OpportunityModel().fit(History(ren, T)), fit))
+    nopos = h.frame.copy()
+    nopos["position"] = nopos.position.where(nopos.player_id != "DDD_TE", None)
+    hn = History(nopos, T)
+    for what, ok in fit_matches(OpportunityModel().fit(hn),
+                                by_hand_fit(hn.frame)).items():
+        if "share" in what:
+            chk(f"a player with no position on file is given the all-player "
+                f"norm — {what} still matches", ok)
+
+    lg = league()
+    four = History(lg[lg.t <= 202304], 202305)
+    three = History(lg[lg.t <= 202303], 202304)
+    m3 = OpportunityModel()
+    chk("sixteen team-games is enough to fit, twelve is not, and it says why",
+        len(four.frame.groupby(["game_id", "team"])) == FIT_ROWS
+        and OpportunityModel().fit(four).ok
+        and not m3.fit(three).ok and "12 team-games" in m3.fit(three).why,
+        m3.fit(three).why)
+
+    def strangers(keep):
+        """Six weeks in which nobody has an earlier game, bar `keep`
+        players who have exactly one."""
+        d = lg[lg.season == 2023].copy()
+        regulars = sorted(set(d.player_id))[:keep]
+        d["player_id"] = [p_ if p_ in regulars and w_ <= 2 else f"{p_}@{w_}"
+                          for p_, w_ in zip(d.player_id, d.week)]
+        return History(d, 202401)
+
+    ms = OpportunityModel()
+    chk("...and so is a history where too few players have an earlier game: "
+        "sixteen such player-games fit, fifteen do not",
+        OpportunityModel().fit(strangers(FIT_ROWS)).ok
+        and not ms.fit(strangers(FIT_ROWS - 1)).ok
+        and "15 player-games" in ms.fit(strangers(FIT_ROWS - 1)).why,
+        ms.fit(strangers(FIT_ROWS - 1)).why)
+    sl = fs.slate_active(lg, History(lg[lg.t < 202401], 202401))
+    chk("...which then projects nothing, rather than zeros or an error",
+        all(np.isnan(v_).all() for v_ in ms.means(strangers(0), sl).values())
+        and math.isnan(ms.project(strangers(0), sl).point(0, "targets"))
+        and math.isnan(ms.project(strangers(0), sl).p_over(0, "targets", 2.5)))
+
+
+@section("18. the opportunity model — projecting a slate")
+def _():
+    f, lines = rotating_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    extra = a[a.player_id == "AAA_QB"].assign(player_id="AAA_QB2", name="AAA_QB2",
+                                              starting_qb=False)
+    new = a[a.player_id == "AAA_WR2"].assign(player_id="NEWMAN", name="NEWMAN")
+    odd = a[a.player_id == "BBB_TE"].assign(player_id="KICKER", name="KICKER",
+                                            position="K")
+    nopos = a[a.player_id == "DDD_TE"].assign(player_id="NOPOS", name="NOPOS",
+                                              position=None)
+    full = pd.concat([a, extra, new, odd, nopos], ignore_index=True)
+    ref = by_hand_fit(h.frame)
+    m = OpportunityModel()
+    for label, slate in (("the active slate", a),
+                         ("a slate with a spare quarterback, a first-game "
+                          "player, a position never seen and a player with "
+                          "none", full)):
+        for stat, ok in means_match(m.means(h, slate),
+                                    by_hand_means(ref, slate)).items():
+            chk(f"{label}: expected {stat} match the long-hand ones", ok)
+    mm = OpportunityModel("opp_market", lines=lines)
+    for stat, ok in means_match(mm.means(h, full),
+                                by_hand_means(by_hand_fit(h.frame, lines), full,
+                                              lines)).items():
+        chk(f"with the spread and total: expected {stat} match the long-hand "
+            f"ones", ok)
+    mean = m.means(h, full)
+    fit = m.fit(h)
+    idx = {p_: i for i, p_ in enumerate(full.player_id)}
+    key = list(zip(full.game_id, full.team))
+    chk("(the long-hand slate exercises what it should: a first-game player "
+        "with his position's share, an unseen position and a missing one "
+        "with the all-player share, a spare quarterback with no attempts)",
+        mean["targets"][idx["NEWMAN"]] > 0 and "K" not in fit.share["targets"][3]
+        and mean["targets"][idx["KICKER"]] > 0
+        and near(mean["targets"][idx["NOPOS"]] / mean["targets"][idx["DDD_TE"]]
+                 * max(float(np.array([1.0, fit.share["targets"][1]["DDD_TE"],
+                                       fit.share["targets"][2]["DDD_TE"],
+                                       fit.share["targets"][3]["TE"]])
+                             @ fit.share["targets"][0]), 0.0),
+                 fit.share["targets"][4], 1e-9)
+        and math.isnan(mean["attempts"][idx["AAA_QB2"]])
+        and mean["attempts"][idx["AAA_QB"]] > 15)
+    for stat in fo.SHARED:
+        beta, off_now, def_now, lg = fit.team[stat]
+        sums = pd.Series(mean[stat]).groupby(pd.Series(key)).sum()
+        opp_of = dict(zip(key, full.opponent))
+        chk(f"the {stat} handed out on a team add up to the team's projected "
+            f"{stat}",
+            all(near(sums[k], beta[0] + beta[1] * off_now[k[1]]
+                     + beta[2] * def_now[opp_of[k]], 1e-9) for k in sums.index)
+            and len(set(round(v_, 6) for v_ in sums)) == len(sums))
+    out = full[full.player_id != "AAA_WR1"].reset_index(drop=True)
+    i2 = {p_: i for i, p_ in enumerate(out.player_id)}
+    mean2 = m.means(h, out)
+    chk("with a teammate off the slate, his share is handed round: the rest "
+        "go up, the team total does not move, and another team is untouched",
+        mean2["targets"][i2["AAA_WR2"]] > mean["targets"][idx["AAA_WR2"]] + 0.1
+        and near(pd.Series(mean2["targets"]).groupby(out.team.to_numpy()).sum()["AAA"],
+                 pd.Series(mean["targets"]).groupby(full.team.to_numpy()).sum()["AAA"],
+                 1e-9)
+        and near(mean2["targets"][i2["CCC_WR1"]], mean["targets"][idx["CCC_WR1"]]))
+    chk("nobody but the named starter is given a pass attempt: no other "
+        "quarterback, no receiver, nobody with no position",
+        all(math.isnan(mean["attempts"][i]) != bool(full.starting_qb[i])
+            for i in range(len(full)))
+        and int(full.starting_qb.sum()) == 4
+        and (full.position[~full.starting_qb.to_numpy()] == "QB").sum() == 1)
+    wild = full.copy()
+    wild.loc[wild.player_id == "CCC_QB", "starting_qb"] = False
+    wild.loc[wild.player_id == "CCC_RB", "starting_qb"] = True
+    wa = m.means(h, wild)["attempts"]
+    chk("whoever is named the starter gets the starter's share, whatever "
+        "his position; the quarterback beside him gets none",
+        near(wa[idx["CCC_RB"]], mean["attempts"][idx["CCC_QB"]], 1e-9)
+        and math.isnan(wa[idx["CCC_QB"]]))
+    none = full.copy()
+    none.loc[none.team == "AAA", "starting_qb"] = False
+    na = m.means(h, none)["attempts"]
+    chk("a team with no starter named: it says nothing about its "
+        "quarterbacks' attempts, and other teams are untouched",
+        math.isnan(na[idx["AAA_QB"]]) and math.isnan(na[idx["AAA_QB2"]])
+        and near(na[idx["CCC_QB"]], mean["attempts"][idx["CCC_QB"]], 1e-12))
+    twice = pd.concat([full, full[full.player_id == "BBB_WR1"]], ignore_index=True)
+    chk("a player on the slate twice for one team is refused by name, not "
+        "given two shares",
+        raises(lambda: m.means(h, twice), ValueError, "BBB_WR1")
+        and raises(lambda: m.means(h, pd.concat(
+            [full, full[full.player_id == "CCC_QB"]], ignore_index=True)),
+            ValueError, "twice"))
+    two = full.copy()
+    two.loc[two.player_id == "AAA_QB2", "starting_qb"] = True
+    chk("two starters named for one team is refused, and names the team",
+        raises(lambda: m.means(h, two), ValueError, "AAA"))
+    blank = full.copy()
+    blank["starting_qb"] = blank.starting_qb.astype(object)
+    blank.loc[blank.player_id == "AAA_RB", "starting_qb"] = None
+    chk("a starter flag that is neither yes nor no is refused, not read as yes",
+        raises(lambda: m.means(h, blank), ValueError, "starting_qb"))
+    chk("a slate missing a column is refused by name, thin history or not",
+        raises(lambda: m.means(h, full.drop(columns=["starting_qb"])),
+               ValueError, "starting_qb")
+        and raises(lambda: m.means(History(f[f.t < 202302], 202302),
+                                   full.drop(columns=["opponent"])),
+                   ValueError, "opponent"))
+    empty = m.means(h, a.iloc[:0])
+    chk("an empty slate gets an empty answer",
+        set(empty) == set(fo.OPP_STATS) and all(len(v_) == 0 for v_ in empty.values()))
+    alone = full[full.player_id == "NEWMAN"].reset_index(drop=True)
+    beta, off_now, def_now, lg = fit.team["targets"]
+    chk("a slate of nobody but a new player gives him the whole team",
+        near(m.means(h, alone)["targets"][0],
+             beta[0] + beta[1] * off_now["AAA"]
+             + beta[2] * def_now[alone.opponent[0]], 1e-9))
+
+    z = full.copy()
+    z.loc[z.team == "CCC", "team"] = "ZZZ"
+    z.loc[z.opponent == "CCC", "opponent"] = "ZZZ"
+    zt = pd.Series(m.means(h, z)["targets"]).groupby(z.team.to_numpy()).sum()
+    other = z[z.opponent == "ZZZ"].team.iloc[0]
+    chk("a team with no earlier game is given the league's average volume",
+        near(zt["ZZZ"], beta[0] + beta[1] * lg + beta[2] * def_now[other], 1e-9),
+        zt.to_dict())
+    chk("...and its opponent the league's average allowed",
+        near(zt[other], beta[0] + beta[1] * off_now[other] + beta[2] * lg, 1e-9))
+
+    low = OpportunityModel()
+    lf = low.fit(h)
+    lf.team["carries"] = (np.array([-50.0, 0.0, 0.0]),) + lf.team["carries"][1:]
+    chk("a team's projected volume never falls below one play",
+        np.allclose(pd.Series(low.means(h, full)["carries"])
+                    .groupby(full.team.to_numpy()).sum(), FLOOR))
+    neg = OpportunityModel()
+    nf = neg.fit(h)
+    nf.share["targets"] = (np.array([-0.2, 1.0, 0.0, 0.0]),) + nf.share["targets"][1:]
+    nm = neg.means(h, full)["targets"]
+    chk("a share the fit puts below zero is zero, and the rest still add up",
+        nm[idx["AAA_TE"]] == 0.0 and (nm >= 0).all() and nm[idx["AAA_WR1"]] > 0
+        and np.allclose(pd.Series(nm).groupby(pd.Series(key)).sum().sort_index(),
+                        pd.Series(mean["targets"]).groupby(pd.Series(key)).sum()
+                        .sort_index()), nm[:6].tolist())
+    NP = neg.project(h, full)
+    chk("...and a player expected to get none is priced at none",
+        NP.point(idx["AAA_TE"], "targets") == 0.0
+        and NP.p_over(idx["AAA_TE"], "targets", 0.5) == 0.0)
+    zero = OpportunityModel()
+    zf = zero.fit(h)
+    zf.share["targets"] = (np.array([-1.0, 0.0, 0.0, 0.0]),) + zf.share["targets"][1:]
+    zm = zero.means(h, full)["targets"]
+    chk("a team none of whose players is given any share gets no projection, "
+        "not zeros; a team with one new player gives him everything",
+        all(math.isnan(zm[i]) for i in range(len(full)) if full.team[i] == "CCC")
+        and near(zm[idx["NEWMAN"]],
+                 float(np.nansum(mean["targets"][full.team.to_numpy() == "AAA"])),
+                 1e-9)
+        and zm[idx["AAA_WR1"]] == 0.0, zm[idx["NEWMAN"]])
+
+    # ---- the count round the mean
+    P = m.project(h, full)
+    size = fit.size
+    priced = [(idx["AAA_WR1"], "targets", 6.5), (idx["AAA_WR1"], "targets", 2.5),
+              (idx["CCC_RB"], "carries", 14.5), (idx["CCC_RB"], "carries", 6.5),
+              (idx["BBB_QB"], "attempts", 30.5), (idx["BBB_QB"], "attempts", 22.5)]
+    chk("the chance of a line is the count's chance of MORE than it, each "
+        "stat with its own spread — summed from the formula",
+        all(near(P.p_over(i, s_, ln), nb_tail(ln, mean[s_][i], size[s_]), 1e-9)
+            for i, s_, ln in priced)
+        and len({round(size[s_], 6) for s_ in fo.OPP_STATS}) == 3,
+        [(P.p_over(i, s_, ln), nb_tail(ln, mean[s_][i], size[s_]))
+         for i, s_, ln in priced][:2])
+    i = idx["AAA_WR1"]
+    chk("landing exactly on a whole-number line is not over it",
+        near(P.p_over(i, "targets", 6.0), nb_tail(6, mean["targets"][i],
+                                                  size["targets"]), 1e-9)
+        and P.p_over(i, "targets", 6.0) == P.p_over(i, "targets", 6.5)
+        and P.p_over(i, "targets", 6.0) < P.p_over(i, "targets", 5.5)
+        and P.p_over(i, "targets", -0.5) == 1.0)
+    chk("its single number is the expected count",
+        all(P.point(j, s_) == mean[s_][j] for j, s_, _ in priced))
+    PM = OpportunityModel("opp_median", single="median").project(h, full)
+    med = [PM.point(j, s_) for j, s_, _ in priced]
+    chk("...or, when asked, the count's median: the smallest whole number he "
+        "is at least as likely to stay at or under as to beat",
+        all(v_ == int(v_)
+            and nb_tail(v_, mean[s_][j], size[s_]) <= 0.5
+            < nb_tail(v_ - 1, mean[s_][j], size[s_])
+            for v_, (j, s_, _) in zip(med, priced))
+        and all(PM.p_over(j, s_, ln) == P.p_over(j, s_, ln) for j, s_, ln in priced)
+        and any(v_ != mean[s_][j] for v_, (j, s_, _) in zip(med, priced)), med)
+    chk("...and no third thing",
+        raises(lambda: OpportunityModel(single="mode"), ValueError, "single"))
+    chk("it says nothing about catches, yards or touchdowns",
+        all(math.isnan(P.point(i, s_)) and math.isnan(P.p_over(i, s_, 0.5))
+            for s_ in ("receptions", "receiving_yards", "rushing_yards",
+                       "passing_yards", TD_STAT, "completions", "passing_tds")))
+    chk("...nor a pass-attempt line for a receiver",
+        math.isnan(P.p_over(i, "attempts", 20.5)) and math.isnan(P.point(i, "attempts")))
+    top = int(mean["targets"][i] * 60) + 200
+    chk("the chances it states add up to the count it expects: the sum over "
+        "every whole number of 'more than that' is the mean",
+        all(near(sum(P.p_over(j, s_, k_ + 0.5) for k_ in range(top)),
+                 mean[s_][j], 1e-6) for j, s_, _ in priced[::2]),
+        [sum(P.p_over(j, s_, k_ + 0.5) for k_ in range(top)) - mean[s_][j]
+         for j, s_, _ in priced[::2]])
+
+    # ---- one fit per history, and never another history's
+    first = m.means(h, a)["targets"].copy()
+    h3 = History(f[f.t < 202403], 202403)
+    s3 = fs.slate_active(f, h3)
+    fresh3 = OpportunityModel().means(h3, s3)["targets"]
+    chk("a model that has fitted one history answers another exactly as a "
+        "fresh model does", np.array_equal(m.means(h3, s3)["targets"], fresh3,
+                                           equal_nan=True))
+    chk("...and the first again exactly as before",
+        np.array_equal(first, m.means(History(f[f.t < T], T), a)["targets"],
+                       equal_nan=True))
+    changed = f[f.t < T].copy()
+    changed.loc[changed.player_id == "AAA_WR1", "targets"] *= 0.5
+    hc = History(changed, T)
+    used = OpportunityModel()
+    used.means(h, a)
+    chk("...and two histories that stop at the SAME week are still two "
+        "histories",
+        np.array_equal(used.means(hc, a)["targets"],
+                       OpportunityModel().means(hc, a)["targets"], equal_nan=True)
+        and not np.allclose(used.means(hc, a)["targets"], first, equal_nan=True))
+
+    # ---- through the harness
+    lgf = league(extra=[row(2024, 4, "AAA", "BBB", "NEWMAN", "WR", targets=9)])
+    run = fs.walk_forward(lgf, [OpportunityModel(), fs.LastFour()],
+                          weeks=[202403, T])
+    chk("through the harness its numbers differ between the two slates",
+        fs.version_gap(run, "opportunity") > 0)
+    L = run.legs[(run.legs.version == "A")]
+    chk("it prices targets, carries and pass attempts, and leaves the rest blank",
+        L[L.stat.isin(fo.OPP_STATS)].p_opportunity.notna().all()
+        and L[~L.stat.isin(fo.OPP_STATS)].p_opportunity.isna().all()
+        and L.stat.isin(fo.OPP_STATS).sum() > 20)
+    hw = run.points[(run.points.version == "A") & (run.points.player_id == "AAA_WR1")
+                    & (run.points.stat == "targets") & (run.points.week == 4)]
+    hh = History(lgf[lgf.t < T], T)
+    want = by_hand_means(by_hand_fit(hh.frame), fs.slate_active(lgf, hh))
+    at = list(fs.slate_active(lgf, hh).player_id).index("AAA_WR1")
+    chk("...and the number the harness records for the hand-worked receiver "
+        "is the long-hand one", len(hw) == 1
+        and near(float(hw.pt_opportunity.iloc[0]), want["targets"][at], 1e-9),
+        (hw.pt_opportunity.tolist(), want["targets"][at]))
+    probe = fs.leak_probe(lgf, [OpportunityModel()], [202403, T])
+    chk("the leak probe finds nothing reaching it through the harness",
+        probe.clean and probe.outputs["opportunity"] > 100,
+        probe.describe()[:120])
+
+
+@section("19. the opportunity model — the closing spread and total")
+def _():
+    f, lines = rotating_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    lines = dict(lines)
+    lines["2031_01_AAA_BBB"] = ("AAA", "BBB", 7.0, 50.0)    # not yet played
+    m = OpportunityModel("opp_market", lines=lines)
+    g1 = a.game_id[0]
+    home, away, spread, total = lines[g1]
+    mk = m._market([g1, g1], [home, away], {g1})
+    chk("the spread is in the HOME team's favour for it and against the "
+        "visitor; the total is the same for both",
+        mk.shape == (2, 2) and spread != 0 and mk[0, 0] == spread
+        and mk[1, 0] == -spread and mk[0, 1] == mk[1, 1] == total, mk.tolist())
+    chk("a team that did not play in the game is refused, not signed as "
+        "the visitor", raises(lambda: m._market([g1], ["QQQ"], {g1}), ValueError,
+                              "QQQ"))
+    chk("with no lines it adds no column",
+        OpportunityModel()._market([g1], [home], {g1}).shape == (1, 0))
+    chk("a game neither in the history nor on the slate is refused",
+        raises(lambda: m._market(["2031_01_AAA_BBB"], ["AAA"], {g1}), LeakError,
+               "2031_01_AAA_BBB"))
+    chk("a game with no line on file is an error that names it, not a zero",
+        raises(lambda: m._market(["2024_09_AAA_BBB"], ["AAA"],
+                                 {"2024_09_AAA_BBB"}), KeyError, "2024_09_AAA_BBB"))
+    chk("...and an EMPTY table of lines is not the same as no lines",
+        raises(lambda: OpportunityModel("x", lines={}).means(h, a), KeyError))
+    for what, bad in (("spread", (home, away, float("nan"), total)),
+                      ("total", (home, away, spread, float("nan")))):
+        holed = dict(lines)
+        holed[g1] = bad
+        chk(f"a line whose {what} is not a number stops it, on the slate's "
+            f"game", raises(lambda: OpportunityModel("x", lines=holed).means(h, a),
+                            ValueError, g1))
+    asked = []
+    real = m._market
+
+    def spy(game_ids, teams, allowed):
+        asked.append((set(game_ids), set(allowed)))
+        return real(game_ids, teams, allowed)
+
+    m2 = OpportunityModel("opp_market", lines=lines)
+    m2._market = spy
+    mean = m2.means(h, a)
+    hist_games, slate_games = set(h.frame.game_id), set(a.game_id)
+    chk("fitting looks up the history's games and nothing else",
+        asked[0][0] == hist_games and asked[0][1] == hist_games)
+    chk("...and projecting the slate's games, with the history's allowed",
+        asked[1][0] == slate_games and asked[1][1] == hist_games | slate_games
+        and len(asked) == 2)
+    moved = dict(lines)
+    for g_ in slate_games:
+        hm, aw, sp, tt = moved[g_]
+        moved[g_] = (hm, aw, sp + 7.0, tt)
+    later = dict(lines)
+    later["2031_01_AAA_BBB"] = ("AAA", "BBB", -20.0, 70.0)
+    chk("this week's line moves this week's projection; a later game's "
+        "line does not",
+        not np.allclose(OpportunityModel("x", lines=moved).means(h, a)["targets"],
+                        mean["targets"])
+        and np.array_equal(OpportunityModel("x", lines=later).means(h, a)["targets"],
+                           mean["targets"]))
+    run = fs.walk_forward(f, [m], weeks=[202403, T])
+    chk("it runs through the harness with them",
+        run.legs.p_opp_market.notna().sum() > 20)
+
+    def loaded(spread_g2=-2.0, total_g2=41.0, spread_g3=1.0):
+        """`closing_lines` on a made-up play-by-play, or the error it raised."""
+        def load(years, columns=None):
+            return pd.DataFrame(dict(
+                game_id=["g1", "g1", "g2", "g3"],
+                season_type=["REG", "REG", "REG", "POST"],
+                home_team=["H1", "H1", "H2", "H3"],
+                away_team=["A1", "A1", "A2", "A3"],
+                spread_line=[3.5, 3.5, spread_g2, spread_g3],
+                total_line=[44.5, 44.5, total_g2, 50.0]))
+        real_load = fo.ff_data.load_pbp
+        fo.ff_data.load_pbp = load
+        try:
+            return fo.closing_lines([2024])
+        except Exception as e:                      # noqa: BLE001
+            return e
+        finally:
+            fo.ff_data.load_pbp = real_load
+
+    got = loaded()
+    chk("the lines table is one entry per regular-season game: home, "
+        "visitor, spread, total",
+        got == {"g1": ("H1", "A1", 3.5, 44.5), "g2": ("H2", "A2", -2.0, 41.0)}, got)
+    chk("a regular-season game with no spread stops the load",
+        isinstance(loaded(spread_g2=float("nan")), ValueError))
+    chk("...and so does one with no total",
+        isinstance(loaded(total_g2=float("nan")), ValueError))
+    chk("...a postseason one, which is never graded, does not",
+        loaded(spread_g3=float("nan")) == got)
+
+    frame = REAL.get("frame")
+    if frame is None:
+        frame = fs.load_frame()
+    cl = fo.closing_lines(sorted(int(y) for y in frame.season.unique()))
+    games = set(frame.game_id)
+    chk("on real data every game in the frame has a closing line",
+        games <= set(cl) and len(games) > 900, len(games - set(cl)))
+    pairs = frame.drop_duplicates(["game_id", "team"])
+    chk("...whose two sides are the two teams the frame has playing it, in "
+        "EVERY game",
+        all(tm in cl[g_][:2] for g_, tm in zip(pairs.game_id, pairs.team))
+        and all(cl[g_][0] != cl[g_][1] for g_ in games))
+    chk("...with plausible numbers",
+        all(-25 < cl[g_][2] < 25 and 25 < cl[g_][3] < 70 for g_ in games))
+    pbp = fo.ff_data.load_pbp(sorted(int(y) for y in frame.season.unique()),
+                              columns=["game_id", "home_score", "away_score"])
+    fin = pbp.drop_duplicates("game_id").set_index("game_id")
+    fav = [(cl[g_][2], fin.home_score[g_] - fin.away_score[g_]) for g_ in games
+           if abs(cl[g_][2]) >= 3]
+    won = float(np.mean([(s_ > 0) == (d_ > 0) for s_, d_ in fav if d_ != 0]))
+    chk("...and a positive spread does mean the HOME team is favoured: "
+        "sides favoured by a field goal or more win well over half",
+        len(fav) > 400 and 0.6 < won < 0.9, (len(fav), won))
+    weeks = fs.test_weeks(frame)[-2:]
+    rr = fs.walk_forward(frame, [OpportunityModel(),
+                                 OpportunityModel("opp_market", lines=cl)],
+                         weeks=weeks)
+    ra = rr.legs[(rr.legs.version == "A") & rr.legs.stat.isin(fo.OPP_STATS)]
+    v = ra[["p_opportunity", "p_opp_market"]].to_numpy(dtype=float)
+    chk("on real weeks both versions price every opportunity leg, between "
+        "0 and 1", not np.isnan(v).any() and v.min() >= 0 and v.max() <= 1
+        and len(ra) > 1000, len(ra))
+    h_real = History(frame[frame.t < weeks[-1]], weeks[-1])
+    sa = fs.slate_active(frame, h_real)
+    mm = OpportunityModel().means(h_real, sa)
+    tt = pd.Series(mm["targets"]).groupby(sa.team.to_numpy()).sum()
+    chk("a real team's projected targets are a real team's targets",
+        tt.between(18, 48).all() and 26 < tt.mean() < 38, tt.describe().to_dict())
+    qa = mm["attempts"][sa.starting_qb.to_numpy()]
+    chk("...and a real starter's projected pass attempts likewise",
+        len(qa) >= 20 and (qa > 18).all() and (qa < 48).all(), (qa.min(), qa.max()))
+    sizes = OpportunityModel().fit(h_real).size
+    chk("...and on real history every spread is a measured one",
+        all(SIZE_LO < sizes[s_] < SIZE_HI for s_ in fo.OPP_STATS), sizes)
+    pr = fs.leak_probe(frame, [OpportunityModel(),
+                               OpportunityModel("opp_market", lines=cl)], weeks[-1:])
+    chk("the leak probe finds nothing reaching either through the harness, "
+        "on real data (it cannot see the lines)", pr.clean, pr.describe()[:120])
+
+
+@section("20. the opportunity model — its expected counts beside what happened")
+def _():
+    f, _ = rotating_league()
+    T = 202404
+    weeks = [202403, T]
+    m = OpportunityModel()
+    ea = fo.expected_vs_actual(m, f, weeks)
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    mean = m.means(h, a)
+    size = m.fit(h).size
+    e4 = ea[ea.t == T]
+    chk("one row per slate player and stat he is given a number for, each "
+        "week asked",
+        set(ea.t) == set(weeks)
+        and all(len(e4[e4.stat == s_]) == int(np.isfinite(mean[s_]).sum())
+                for s_ in fo.OPP_STATS)
+        and (e4.stat == "attempts").sum() == int((a.position == "QB").sum()),
+        e4.stat.value_counts().to_dict())
+    ok_e = ok_a = ok_v = ok_g = True
+    for s_ in fo.OPP_STATS:
+        d = e4[e4.stat == s_].set_index("player_id")
+        for i, r in enumerate(a.itertuples()):
+            if not np.isfinite(mean[s_][i]):
+                continue
+            x = float(f[(f.t == T) & (f.player_id == r.player_id)][s_].iloc[0])
+            ok_e &= near(d.expected[r.player_id], mean[s_][i], 1e-12)
+            ok_a &= d.actual[r.player_id] == x
+            ok_v &= near(d.variance[r.player_id],
+                         mean[s_][i] + mean[s_][i] ** 2 / size[s_], 1e-9)
+            ok_g &= d.game_id[r.player_id] == r.game_id
+    chk("...the expected count is the model's mean for that week", ok_e)
+    chk("...the actual is what he did THAT week, in that stat", ok_a
+        and len({tuple(e4[e4.stat == s_].actual.round(3)) for s_ in fo.SHARED}) == 2)
+    chk("...the variance is the count's own: mean + mean^2 / size, with "
+        "that stat's size", ok_v)
+    chk("...and the game is his game", ok_g and e4.game_id.nunique() == 2)
+    e3 = ea[(ea.t == 202403) & (ea.stat == "targets")].set_index("player_id")
+    x3 = float(f[(f.t == 202403) & (f.player_id == "AAA_WR1")].targets.iloc[0])
+    h3 = History(f[f.t < 202403], 202403)
+    s3 = fs.slate_active(f, h3)
+    chk("...and the earlier week is fitted on ITS history and graded on ITS "
+        "result",
+        e3.actual["AAA_WR1"] == x3
+        and near(e3.expected["AAA_WR1"],
+                 OpportunityModel().means(h3, s3)["targets"]
+                 [list(s3.player_id).index("AAA_WR1")], 1e-12))
+
+    sat = f[~((f.t == T) & (f.player_id == "AAA_WR2"))]
+    hs = History(sat[sat.t < T], T)
+    on_a, on_b = fs.slate_active(sat, hs), fs.slate_candidates(sat, hs)
+    es = fo.expected_vs_actual(OpportunityModel(), sat, [T])
+    et = es[es.stat == "targets"].set_index("player_id")
+    chk("it is graded on the slate of who was ACTIVE: a regular who sat out "
+        "is not in it, and his share has gone to the others",
+        "AAA_WR2" in set(on_b.player_id) and "AAA_WR2" not in set(on_a.player_id)
+        and "AAA_WR2" not in set(es.player_id) and es.actual.notna().all()
+        and near(et.expected["AAA_WR1"],
+                 OpportunityModel().means(hs, on_a)["targets"]
+                 [list(on_a.player_id).index("AAA_WR1")], 1e-12)
+        and et.expected["AAA_WR1"] > e4[e4.stat == "targets"]
+        .set_index("player_id").expected["AAA_WR1"] + 0.1)
+
+    run = fs.walk_forward(f, [OpportunityModel(), fs.LastFour()], weeks=weeks)
+    wl = fo.with_main_line(run, ea, "opportunity")
+    L = run.legs[(run.legs.version == "A") & (run.legs.rung == fs.MAIN)
+                 & run.legs.stat.isin(fo.OPP_STATS)]
+    chk("players with a main line: one row for each such leg, actives known",
+        len(wl) == len(L) > 10 and set(wl.stat) == set(fo.OPP_STATS),
+        (len(wl), len(L)))
+    k = L.set_index(["game_id", "player_id", "stat"])
+    e = ea.set_index(["game_id", "player_id", "stat"])
+    chk("...carrying that leg's line, result and stated chance, and that "
+        "player's expected count",
+        all(k.line[(r.game_id, r.player_id, r.stat)] == r.line
+            and k.actual[(r.game_id, r.player_id, r.stat)] == r.actual
+            and bool(k["over"][(r.game_id, r.player_id, r.stat)]) == r.over
+            and (r.actual > r.line) == r.over
+            and near(k.p_opportunity[(r.game_id, r.player_id, r.stat)], r.said, 1e-12)
+            and near(e.expected[(r.game_id, r.player_id, r.stat)], r.expected, 1e-12)
+            for r in wl.itertuples()))
+    bad = ea.copy()
+    bad.loc[(bad.stat == wl.stat[0]) & (bad.player_id == wl.player_id[0])
+            & (bad.game_id == wl.game_id[0]), "actual"] += 1.0
+    chk("...and it stops if a result does not agree between the two",
+        raises(lambda: fo.with_main_line(run, bad, "opportunity"), RuntimeError,
+               "line up"))
+    who = wl.player_id[0]
+    part = fs.Run(points=run.points, names=run.names, weeks=run.weeks,
+                  legs=run.legs.assign(p_opportunity=run.legs.p_opportunity.where(
+                      run.legs.player_id != who)))
+    wp = fo.with_main_line(part, ea, "opportunity")
+    chk("...a leg the projector did not price is left out, not carried blank",
+        len(wp) == len(wl) - int((wl.player_id == who).sum()) < len(wl)
+        and who not in set(wp.player_id) and wp.said.notna().all())
+    chk("...the same player twice in the expected counts is refused, not "
+        "counted twice",
+        raises(lambda: fo.with_main_line(run, pd.concat([ea, ea]), "opportunity"),
+               Exception, "one-to-one"))
+    w4 = fo.with_main_line(run, ea, "last4_avg")
+    chk("...and for another projector it is still only targets, carries and "
+        "pass attempts, with that projector's stated chance",
+        len(w4) == len(wl) and set(w4.stat) == set(fo.OPP_STATS)
+        and not np.allclose(w4.said, wl.said)
+        and np.array_equal(w4.expected, wl.expected))
+    chk("a week too thin to fit gives no rows, not an error",
+        len(fo.expected_vs_actual(OpportunityModel(), f, [202302])) == 0)
+    chk("...or if a lined player has no expected count",
+        raises(lambda: fo.with_main_line(
+            run, ea[ea.player_id != wl.player_id[0]], "opportunity"),
+            RuntimeError, "line up"))
+
+
 _summary()
 sys.exit(1 if fails else 0)
