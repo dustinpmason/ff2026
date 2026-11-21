@@ -4,15 +4,15 @@ Owned by the simulator thread. Ids are `S1`, `S2`, ... The betting engine's
 backlog is `BACKLOG.md` (ids `B...`) and is never edited from here.
 `SIM-HANDOFF.md` is the brief this build works from.
 
-## State on 2026-11-20 (after S24)
+## State on 2026-11-21 (after S28)
 
 | | |
 |---|---|
-| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). Touchdowns on top of all of it: anytime (rushing or receiving) and passing (S24). **First touchdown is not built, nothing has been set beside a book's line, and there is no script to run on a real slate.** |
-| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_touchdowns.py`, `sim_reverts.py`, this file |
-| Simulator suite | `python3 test_sim.py` → **710 checks, ALL PASS** |
+| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). Touchdowns on top of all of it: anytime (rushing or receiving) and passing (S24). A script that runs all of it on a week not yet played, from files a project thread saves (S28). **First touchdown is not built, nothing has been graded against a book's line, and no shadow run has been made yet.** |
+| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_touchdowns.py`, `ff_sim_live.py`, `sim_live.py`, `sim_record.py` (made by `sim_live.py --record`), `sim_reverts.py`, this file |
+| Simulator suite | `python3 test_sim.py` → **824 checks, ALL PASS** |
 | Engine suite | `python3 test_regression.py` → 1801, untouched. No existing file was edited. |
-| Next | The live-run script, to reach a shadow run (Dustin's order, 2026-11-20). S11, S12, S18, S19, S20 wait until shadow runs have started. |
+| Next | Shadow runs, in a project thread (S28 says how). Then grading them (S29), and the parked calibration items: S11, S12, S18, S19, S20, S25. |
 
 ```bash
 python3 refresh.py
@@ -23,7 +23,10 @@ python3 sim_opportunity.py --current-week 11   # targets, carries, pass attempts
 python3 sim_efficiency.py --current-week 11    # catches and yards; about 4 minutes
 python3 sim_play.py --current-week 11          # chance of playing; about 6 minutes
 python3 sim_touchdowns.py --current-week 11    # touchdowns; about 7 minutes
-python3 sim_reverts.py                         # break every behaviour; about 3 hours
+python3 sim_live.py --week 11 --inputs week11.json odds/*.json   # a shadow run; seconds
+python3 sim_live.py --record --current-week 11 # rebuild the record; about 10 minutes
+python3 sim_reverts.py                         # break every behaviour; about 9 hours in full
+python3 sim_reverts.py --fast 613 614          # ...the live file's reverts only; about 12 s each
 ```
 
 `--current-week` is the NFL week now in progress. On 2026-11-20 that is 11,
@@ -1002,6 +1005,285 @@ added after them). No earlier revert was rerun.
 
 ---
 
+## S28. The live-run script — BUILT 2026-11-21
+
+`ff_sim_live.py` (the work, in the suite) and `sim_live.py` (the command).
+It measures nothing new: it runs the simulator as measured in S13 and S24
+on a week not yet played and sets the result beside that measurement.
+
+```
+python3 sim_live.py --week 11 --inputs week11.json odds/*.json
+python3 sim_live.py --week 11 --inputs week11.json --ladders --out week11.csv odds/*.json
+python3 sim_live.py --record --current-week 11     # rebuild sim_record.py, about 10 minutes
+```
+
+### What goes in
+
+A shadow run happens in a project thread that has the PropLine and
+FantasyPros tools. That thread saves files; this reads them.
+
+1. **One saved `propline_get_odds` response per game** (pulled with
+   `event_id`, `markets` and `bookmakers`): the dict, its text, the file
+   the harness saved, with or without the harness's wrapper round it.
+   Outcomes are paired by the engine's `ff_props.flatten_odds`. Only the
+   lines are kept. **Prices are not read into the run, printed or saved.**
+2. **An inputs file**: the week, each team's starting quarterback, and
+   optionally injury statuses, chances of playing and players to add.
+
+   ```json
+   {"season": 2026, "week": 11,
+    "starters": {"DEN": "Bo Nix", "LV": "Fernando Mendoza"},
+    "statuses": [{"team": "DEN", "player": "Courtland Sutton", "status": "questionable"}],
+    "chances":  [{"team": "LV", "player": "Brock Bowers", "chance": 0.0}],
+    "add":      [{"team": "LV", "player": "Somebody Back", "position": "WR"}]}
+   ```
+
+   A team is its code or its full name. A player is his name, his
+   nflverse id, or `espn:<id>`. A status is `out`, `doubtful`,
+   `questionable`, `listed` (on the report, no game status) or `none`.
+   A status handed in replaces the file's for that player and his chance
+   is then counted from it as from any report; a chance handed in
+   overrides both. Anything else in the file is refused, so a misspelt
+   key cannot quietly lose a hand-in.
+3. **This week's injury report**, which it fetches itself (nflverse).
+4. **The record**, `sim_record.py`: the walk-forward record of this
+   set-up, kept in the repository so a run takes seconds.
+
+### What comes out
+
+For every player with a posted line: his chance of playing and where it
+came from, his projected stat line, and for each posted line the chance
+of over and of under, the books posting it, the record of the band that
+chance falls in, and any caution. Then what was posted for a player it
+could not price, and why. Notes at the top say what the injury file has
+for these teams, which teams have a bye-or-missing last game, what in a
+file was passed over (markets it has no stat for, labels it could not
+read), and how many ladder lines were priced and not shown. By default
+only each book's main line and the anytime touchdown are shown;
+`--ladders` shows every rung, alternate and 2+/3+ touchdown line;
+`--out` saves the lines shown as a table to grade after the games.
+
+- **The slate** is the harness's "list not known" slate, the one the
+  record was measured on: everyone active for the team in one of its last
+  four games, plus anyone added, plus the named starter.
+- **Every number is "if he plays".**
+- **The record beside a line** is read on HIS OWN stand-in rung nearest
+  the posted line: the ladder the harness would give him this week (main
+  line the half point above his eight-game median, the other rungs
+  multiples of that median). So "his main line" is not the book's, and
+  the S21 caution goes by his. A line further off either end of his
+  ladder than half the gap to the next rung has no record. That holds
+  for every stat, passing touchdowns included: a quarterback whose
+  median is one touchdown pass has a record at 0.5 and 1.5 and none at
+  2.5 and up. An anytime touchdown is read on the chance of scoring as
+  stated. Two or more touchdowns has no record.
+- **A player the record does not cover gets no record, and it says so.**
+  The record grades only players the harness gives a stand-in line: four
+  recent games and a role in them (a median of 3 targets, 5 carries or
+  20 pass attempts; a passing role only for the starter).
+- **Standing cautions, printed at the top and on the lines they touch:**
+  what the record covers; the S21 main-line figures, with each stat's own
+  on every line on a player's main line that it puts at 65% or better;
+  **every passing-touchdown line marked "the UNDER is unreliable"
+  (Dustin, 2026-11-21)**; S25.
+- **A player is matched by the book's ESPN id** through the nflverse
+  roster. With no id the roster has, he is matched by name on the two
+  teams' slates if exactly one player has it, and the line says so.
+- **Which team he is priced for.** The team the odds file puts him on,
+  when it says (PropLine's `player_team`), and he must be on that team's
+  slate; if he is not (he has just moved), he is listed under "posted
+  but not priced" with that reason and is priced once he is added. Every
+  outcome for him is pooled first, across books, and an outcome with no
+  id is taken to be the player another outcome gives an id under the
+  same name. If the file puts him on more than one team, or on a team
+  that is not in the game, he is not priced. A name with no id is never
+  enough when two players on these teams share it (a receiver and a
+  linebacker of the same name): that line is not priced. When the file
+  does not say,
+  he is priced for the one slate he is on, unless the roster has him on
+  the other team in this game, in which case he is not priced; on both
+  teams' slates he is not priced. A slate player the roster has on any
+  other team is named in a note at the top, because he is still counted
+  as someone who may play for that team until his chance is handed in
+  as 0.
+- **Adding a player** takes anyone the roster or this season has: by id,
+  or by name when nobody on the team has that name and one player in the
+  league does. So a man who joined this week can be added before the
+  roster file catches up. A starter, a chance or a status must name a
+  player on the team or one added to it.
+
+### It stops, saying what, when
+
+an odds file cannot be read, is not an event response, or has outcomes
+that do not pair up or are not in the shape of one; a team name is
+unknown; a game is in progress, has kicked off, is outside the season,
+or is not in this week (the Wednesday-to-Tuesday week after last week's
+Sunday, from the game dates on file; with no dates to go by, more than
+eight days off, and it prints that this was all it could check); no
+week is given, it is not a whole number from 1 to 22, or it disagrees
+with the inputs; the season is not the newest on file; the inputs hold
+anything it does not know, list a player twice under statuses, chances
+or add, or add a player at a position that is not QB, RB, FB, WR or TE;
+a status is handed in for a player who is on both teams' slates (a
+status goes with the player, so it would count for both: hand in a
+chance for each team); a team in the files has no starter
+named, or the starter is not listed at quarterback (add him with that
+position if he really is starting); a name cannot be placed on its team
+(the roster has him there, or he has played for it this season), two
+players share it, or an id is given for a team the player is not on;
+a status is not one of the five; a chance or a status is handed in for
+someone not on the slate; last week is not on file, or fewer than half
+the teams' games are; a game in the files has already been played; the
+injury file has nobody from these teams this week (unless
+`--allow-no-report`, which prints a warning first); the history is too
+thin; `sim_record.py` is missing, not whole, or was built from other
+model code; or the table cannot be saved. Anything it did not foresee,
+and a failure to load the data or the record at all, also stops it with
+words and not a traceback, under exit code 3 where the others give 2.
+
+### Checked against a real response
+
+One real `propline_get_odds` response was pulled on 2026-11-21 (Las Vegas
+at Denver, DraftKings, passing touchdowns and 2+ touchdowns). The
+engine's `flatten_odds` fits it as it is: an over/under pair comes back
+as one line at its point, an "N+" rung with its number, a 2+ touchdown
+outcome under the player's name, the D/ST row with no id. A trimmed copy
+is in the suite, and the suite runs the real Week 11 slate on it: both
+quarterbacks and every listed player found by id, including one the book
+spells without his "Jr.". The other ten market keys it reads were all in
+that event's own list of markets; their responses were not pulled.
+
+### What is weak
+
+- **Only passing touchdowns and 2+ touchdowns were seen in a real
+  response.** Yardage, receptions, attempts, completions, targets, 3+
+  touchdowns and the anytime touchdown are handled by the same code and
+  tested on made-up boards in the real shape; none has been through a
+  real file. The first shadow run is that test. What it cannot read it
+  counts and says, and does not guess.
+- **The record is on stand-in lines.** Nothing has been graded against a
+  book's line (S3). A book's main line is often not the player's
+  stand-in main line, which is why each line is read on his own nearest
+  rung; how well a stand-in rung's record describes a book's line at the
+  same number is not known.
+- **The record is of a narrower run than a live one**, and the printout
+  says so: it was graded with each team's last game's starter (not the
+  one named), the injury file as it stood (nothing handed in), nobody
+  added, and only for players with a stand-in line who went on to play.
+  The starter differs in about 1 starter-week in 13 (the second review
+  counted 106 of 1,388): a live run gives the passing record to the man
+  named, the record was earned with the man who started the week before.
+- **The injury file can be days behind, and it cannot tell.** On the
+  night of Friday 2026-11-20 nflverse's Week 11 file had 293 players, 9
+  of them out and 6 questionable, which reads like a midweek report and
+  not the league's final one. So at a main run, hand in the statuses the
+  thread can see (FantasyPros) for every game being priced; that is what
+  `statuses` in the inputs is for. The printout gives the file's counts
+  for the teams being priced and names any team with nobody on it.
+- **Nothing checks the matchup against a schedule.** The week is what
+  the inputs say. A game already on file is refused, and so is one whose
+  kickoff is outside this week, but a wrong pairing inside the week
+  would run. The week's dates come from last week's games in the
+  play-by-play file; in Week 1, or without that file, it falls back to
+  "not more than eight days off", which next week's Thursday game can
+  pass from Wednesday on, and a note in the printout says so. A team
+  whose last game is missing from the
+  data cannot be told from a team coming off a bye: both get the same
+  note.
+- **A player back after more than four of his team's games out, or new to
+  the team, is not on the slate** until he is added in the inputs. He
+  shows up under "posted but not priced" with that reason. One case
+  still prices a moved player for his old team: the book does not say
+  which team he is on AND the roster file has not caught up with the
+  move. Every player outcome in the real response carried the team, so
+  this needs both sources to fail at once; the note at the top names
+  him as soon as the roster does.
+- **A player on both teams' slates whom the book does not place stays
+  unpriced.** Nothing in the inputs settles it.
+- **838 of 962 quarterbacks, backs, receivers and tight ends on the 2026
+  roster have an ESPN id** (2026-11-21). The rest can only be matched by
+  name.
+- **A book's anytime touchdown pays on a return or a recovery; the model
+  counts rushing and receiving.**
+- **Saved runs are not yet graded.** `--out` keeps what is needed (S29).
+- **`sim_live.py`'s own argument handling and `--record` writing are not
+  in the suite**; what they call is (`shadow_run`, `build_record`), and
+  the suite checks that the committed record matches the committed code.
+- **The record does not grow by itself.** It is through 2026 Week 10 and
+  stays valid as weeks are played, only older. It must be rebuilt, and
+  committed, whenever one of the five model files changes; until then
+  the script refuses to run. A change to how the record is built or laid
+  out needs `LAYOUT` in `ff_sim_live.py` raised by hand.
+
+### How it was checked
+
+Within the budget: the suite (824 checks, 114 of them new); the leak probe, inside the
+record build, on all 46 weeks; no walk-forward measurement of its own
+(the record is S13's and S24's set-up again; its S21 figures on all nine
+laddered stats are overs 72.2% stated and 66.9% happened on 1,823 legs,
+unders 73.2% and 70.7% on 7,790, and the first review reproduced S13's
+72.0%/65.5% and 72.6%/69.9% from its five-stat subset); reverts for the
+new file only; an independent review, a second pass because the first
+found wrong numbers, a third, narrow one on the fixes because the second
+found one more, and a re-check of the third's findings by the same
+reviewer. That is more review than the budget's one pass; every pass
+found a wrong number, which is the budget's own condition for another.
+
+**The reviews**, each by a reviewer given the code and questions, not
+the reasoning.
+
+- *First pass.* Two kinds of wrong number: a player on both teams'
+  slates was priced for the home team without saying so, and the record
+  was read on the wrong rung. Eight lesser defects. The module was
+  rewritten.
+- *Second pass.* One more wrong number: a traded player who was only on
+  his old team's slate was priced for the old team though the book named
+  the new one. Also passing touchdowns read against other quarterbacks'
+  records, next week's Thursday game passing the eight-day rule, and
+  inputs that should have been refused. It recomputed 629 priced lines
+  with no other mismatch and found no leak.
+- *Third pass, on those fixes only.* About 230 replays of real 2026
+  players who changed teams; 256 passing-touchdown lines for 32 starters
+  with no mismatch in rung, band or caution; 61 week windows over 903
+  real games from 2023 to 2026 with no game refused or let in wrongly. It
+  still found wrong numbers at the edges: the book's team not honoured
+  when one outcome carried the player's id and another did not; a status
+  handed in for a player's old team also counting on his new one; a team
+  outside the game ignored; the eight-day fallback used without saying
+  so; and a roster that had not caught up blocking a legitimate add.
+- *Re-check by the same reviewer.* All of those fixed. It found one case
+  the fix had opened: a line with a bare name was tied to a namesake's
+  id in the same file and priced for the wrong man. That is fixed too: a
+  bare name is tied to an id only when nobody else in the league has the
+  name, and is not priced at all when two players on these teams share
+  it. **This last fix has not been reviewed independently.** It was
+  checked by the suite, by its own reverts, and by rerunning the
+  reviewer's two reproductions, which now print no line for the
+  namesake.
+
+**Reverts** (`sim_reverts.py --fast`, the new file only). 380 reverts of
+`ff_sim_live.py`. One pass of 378: 365 caught, 13 not. Three of the 13
+change nothing and were dropped; nine showed a check that could not
+fail, and each check was added or tightened; one was the namesake case
+above. The 37 entries concerned were then run on the final file: 37
+caught. The other 343 were not rerun after the last edit, which changed
+only how a posted player is matched to a slate row. The runner's
+controls passed in both runs. `--fast` is new: it runs the suite's
+earlier sections once and each revert of this file on the rest; twelve
+entries run both ways gave the same verdicts and the same failing
+checks. The record in `sim_reverts.py` has the detail.
+
+**Fresh clone** (2026-11-21: commit 5f441e8 with these six files laid
+over it). Engine suite 1801, simulator suite 824, `sim_reverts.py
+--check` 993 entries all applying. Sections 1 to 31 of the suite are byte
+for byte as committed. `sim_live.py` on the real Week 11 file ran clean
+and saved 17 lines with no price among them. By hand, since the command
+itself is not in the suite: a broken `sim_record.py`, a missing one, a
+week that disagrees with the inputs and a team with no starter each
+stop it with words.
+
+---
+
 ## Open
 
 | id | what | status |
@@ -1009,7 +1291,7 @@ added after them). No earlier revert was rerun.
 | **S2** | **Settings chosen, not measured: the test's, and now the model's.** | **OPEN.** The model's are eight numbers in `ff_sim_opp.py`: half-lives of 4 games (team volume), 3 (recent share) and 10 (longer-run share); no fit on fewer than 16 rows; the spread of targets and carries measured only on expected counts above 1 (on the history before 2026 Week 9 the targets size is 7.8 with the cut at 0, 8.5 at 1 and 11.3 at 3; carries 6.1, 6.4, 7.2); the spread held between sizes 1 and 500; a team never projected under 1. And one convention: with no start on record in the history, a starter is taken to throw every pass. None was tuned against the test. The test's own settings define the test, not a projection, and every projector is graded by the same test; they do change what it is a test of and how far apart two projectors look. All of them: a role is a median of 3 targets / 5 carries / 20 pass attempts; the line window is 8 games, with no line under 4; rungs at 0.6, 0.8, 1.0, 1.25 and 1.6 times the median; the main line is the half point above the median; slate B looks back 4 of the team's games; no verdict under 30 games; ranges and verdicts at 95%; under five hits or five misses each game counts once in a range; the yardsticks' "share over the line" is pulled half a game toward 50%; which positions get a projection with no role. The role floors are the ones to replace first: with what real boards actually post, once S3 has enough weeks. |
 | **S3** | **Grade against real book lines.** | **OPEN, small sample.** Book lines exist from about 2026-11-06 (about 30 games). The same calibration table on real lines, beside the market's own de-vigged probability, is the Phase 2 test. Worth setting up early so the weeks accumulate. The market's line is a benchmark there, never an input and never a lean. |
 | **S4** | **The opportunity model.** | **FIRST VERSION MEASURED 2026-11-20**, section above. Its open items are S11 to S16. |
-| **S5** | **Version B does not know the roster.** | **NOTED.** It lists a player under every team he was active for in one of that team's last four games, and gives the quarterback line to whoever started that team's last game. So it counts a traded player as "did not play" for his old team and misses him on his new one, and in Weeks 1 to 4 it reaches into last season. A weekly roster file would fix it; `ff_data` does not load one (see "Needs"). Version A is the one a live run is, and it does not have this problem. |
+| **S5** | **Version B does not know the roster.** | **NOTED.** It lists a player under every team he was active for in one of that team's last four games, and gives the quarterback line to whoever started that team's last game. So it counts a traded player as "did not play" for his old team and misses him on his new one, and in Weeks 1 to 4 it reaches into last season. A weekly roster file would fix it; `ff_data` does not load one (see "Needs"). A live run before inactives (S28) is this kind of slate, with the starter named and players added by hand; the traded player shows there on his old team's slate (and on both, if the two teams now meet), and S28 prices him only for the team the book puts him on, once he is on that team's slate. |
 | **S6** | **Slate A is "has a snap row or a stat row", not the inactive list; the starter is "threw his team's first pass".** | **NOTED, and now it matters.** The opportunity model reads the slate, so slate A tells it a little more than an inactive list would: a player who dressed and never took a snap is not on it, so nobody on it is given a share and then sits. How much of the model's gain on slate A is this cannot be measured without an inactive list, which is not on file. A man who dressed and never took a snap is missing rather than a zero. 232 of 24,976 skill-position snap rows had no id to join on; 27 players never have a snap row and appear only in games where they recorded a stat. A starter hurt before his team's first pass play would be read as not having started. |
 | **S7** | **A week is the unit of time.** | **NOTED.** A Thursday game is not used for that Sunday. Stricter than the brief asks, and simple. Postseason games are in neither the history nor the test. |
 | **S8** | **The leak probe sees only what passes through the frame.** | **STANDING RULE.** A projector that carries its own copy of the data, or a constant typed into one that was worked out over all seasons, is invisible to it. So is a result that decides WHO IS ON THE SLATE: that is how the first quarterback rule leaked. Estimate everything inside `project()`, and when adding anything to a slate, ask whether it was knowable before kickoff. |
@@ -1032,6 +1314,8 @@ added after them). No earlier revert was rerun.
 | **S25** | **Touchdown chances are low for regulars and high for fringe players.** | **OPEN, measured.** Anytime, list known: players with a line said 26.0%, scored 29.0% (se 0.5); players without said 8.52%, scored 7.05% (se 0.23). With the report and the list not known, players with a line +1.8 (se 0.5). Passing: over 1.5 said 41.8%, went over 46.8% (list known). Of the 271 touchdowns short on players with a line, too few targets and carries (S11) is 97 (give or take 11) and the rate 173 (give or take 43); on players without a line, of 162 too many, 102 is too many chances and the rest a rushing rate that is too high. One rate for a whole position is the likely cause on the rushing side; not tested. To try, each graded the same way: a position rate that rises with the size of the role; the team's scoring level; the closing total (Dustin's to decide, at the game-script stage). |
 | **S26** | **First touchdown is not built.** | **OPEN.** The brief asks for it. It needs the game-level simulation (every scorer in order) and a first-touchdown result in the frame to grade against; play-by-play has it. |
 | **S27** | **`ff_sim_eff.py` gives a position its own rates from any number of plays.** | **NOTED.** The hole the touchdown review found (S24), in the committed efficiency file: catch rate, yards per catch, yards per carry, completion rate and yards per attempt by position, on one play if that is all there is. Only odd positions are affected (a cornerback's targets; a starter not listed at quarterback would be pulled toward a few trick plays' completion rate). Fix with a floor like S24's when that file is next opened; its reverts then need rerunning. |
+| **S28** | **The live-run script.** | **BUILT 2026-11-21**, section above. Hand-set, none tuned: the S21 caution starts at 65% (the engine thread's figure); a line is read on the player's own stand-in rung nearest it, and has no record further off his ladder than half the gap to the next rung; a week runs from 09:00 UTC on the Wednesday after last week's Sunday for seven days, and with no dates to go by a game more than 8 days off is refused; last week counts as on file when at least half the teams have a game in it. |
+| **S29** | **Grade the shadow runs.** | **OPEN, next after the first runs.** `sim_live.py --out` saves each run's priced lines. Nothing yet joins a saved run to what happened, or sets it beside the book's own price (the saved odds files have the prices; reading them is Phase 2). This is also where S3 gets its first real lines. |
 
 ## Needs from the engine thread
 
@@ -1059,6 +1343,21 @@ For its information, each measured above:
    refreshes itself when older than the engine's six hours. If the engine
    wants injury reports too, the clean home is an `injuries` entry in
    `ff_data.ASSETS`.
+7. **A shadow run needs steps in the project instructions** (the simulator
+   thread does not edit them). In a project thread: for each game, pull
+   `propline_get_odds` with `event_id`, the markets wanted (any of
+   `player_pass_yds`, `player_pass_attempts`, `player_pass_completions`,
+   `player_pass_tds`, `player_rush_yds`, `player_rush_attempts`,
+   `player_reception_yds`, `player_receptions`, `player_reception_targets`,
+   `player_anytime_td`, `player_2plus_td`, `player_3plus_td`) and the
+   bookmakers, and let the harness save it; write the inputs file (S28)
+   with every team's starting quarterback and the injury status of every
+   listed player in those games as FantasyPros has it (the nflverse file
+   can be days behind); run
+   `python3 sim_live.py --week N --inputs FILE --ladders --out wkN.csv
+   <the saved files>` (without `--ladders` only main lines and the
+   anytime touchdown are shown); paste the printout. It is the simulator's shadow output, to
+   be shown beside the engine's, never as a lean.
 
 ## Decided by Dustin
 
@@ -1081,6 +1380,19 @@ For its information, each measured above:
   ONE independent review pass; no second pass unless the first finds a
   wrong number; old reverts are not rerun. Write-ups keep to what was
   measured, what is weak, and what he needs to do.
+- **2026-11-21. S25 is parked** with the other calibration items until
+  shadow runs have started. One exception carried into the live output:
+  **passing-touchdown unders are marked unreliable**, since they are
+  overstated by about 5 points.
+- **2026-11-21. A shadow run happens in a project thread** that has the
+  PropLine and FantasyPros tools. The script's inputs are files that
+  thread saves: a `get_odds` response for the posted lines (through
+  `ff_props.flatten_odds`), the named starting quarterback per team, and
+  any chance of playing handed in (built so a status can be handed in
+  too, since the injury file lags). It prints each player's stat line and
+  the chance of clearing each posted line, with the band's record and the
+  S21 main-line caution, and stops, saying what, when something is
+  missing.
 - **2026-11-20. Past injury reports** are fetched by a simulator file of
   its own (he was offered that or the engine's loader, did not choose,
   and said to go straight on; this was the recommended option).
@@ -1089,4 +1401,5 @@ For its information, each measured above:
 
 None. The probability threshold is his to set from the calibration tables
 in S17 and S24; what those tables do not yet have is a book's line beside
-them (S3) and a run on a real slate (the live-run script, next).
+them (S3). The first shadow runs (S28) and their grading (S29) are where
+that starts.

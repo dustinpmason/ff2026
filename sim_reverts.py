@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py`,
-`ff_sim_eff.py`, `ff_sim_play.py` and `ff_sim_td.py` and see that
-`test_sim.py` notices.
+`ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py` and `ff_sim_live.py` and
+see that `test_sim.py` notices.
 
-    python3 sim_reverts.py            # all of them; about 4 hours on 2 cores
+    python3 sim_reverts.py            # all of them; about 9 hours on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
     python3 sim_reverts.py 8 9 17     # just these, by number (plus the controls)
     python3 sim_reverts.py --show 300 # ...and print which checks failed for each
+    python3 sim_reverts.py --fast 613 614   # `ff_sim_live.py` reverts, about 12 s each
 
 SIM-HANDOFF.md, "Before saying done", item 1: "Break every new check. Remove
 the behaviour and confirm a check fails. A crash counts; a pass does not."
@@ -14,8 +15,9 @@ This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
 How it works. Each entry below is one small edit to `ff_sim.py` (or, for
-the entries made with `mut_opp`, `mut_eff`, `mut_play` and `mut_td`, to
-`ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py` and `ff_sim_td.py`)
+the entries made with `mut_opp`, `mut_eff`, `mut_play`, `mut_td` and
+`mut_live`, to `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`,
+`ff_sim_td.py` and `ff_sim_live.py`)
 that removes or reverses one behaviour. For each, a temporary directory gets the edited
 file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
@@ -26,18 +28,30 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Ten controls run with EVERY pass, including a pass of a few numbered
+Twelve controls run with EVERY pass, including a pass of a few numbered
 reverts, and a pass that fails any of them proves nothing. Two for each
 file: an edit that changes no behaviour must read NOT CAUGHT (so the
 unbroken suite passes here, and the edited copy is the one imported), and
 an edit that breaks something plain must be caught. They are numbers 0 to
-9; the reverts start at 10.
+11; the reverts start at 12.
+
+`--fast` is for the newest file only (`FAST_TARGET`). Its sections are the
+last in the suite and nothing before them imports it, so the earlier part
+of the suite is run once, unbroken, in this process, and each revert runs
+only the rest, in a child forked from that point with the edited file
+first on its path. It refuses to start if a check before the cut fails or
+the file has already been imported, which is what makes a child's verdict
+the same as a full run's. The file's own two controls go the same way; the
+other ten, and the unbroken suite at the end, are run in full as always.
+Before it was first used, twelve entries (the two controls and ten
+reverts) were run both ways: the same verdict and the same failing checks
+for all twelve, in 214 s against 488 s.
 
 An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST RUNS — 2026-11-20, 2 cores. 601 reverts and 10 controls.
+LAST RUNS — 2026-11-20 and 21, 2 cores. 981 reverts and 12 controls.
 
   `ff_sim.py` and `ff_sim_opp.py`, 355 reverts: 355 caught, 0 not, on a
   fresh clone in seven blocks, run before the later files existed.
@@ -60,6 +74,27 @@ LAST RUNS — 2026-11-20, 2 cores. 601 reverts and 10 controls.
   18 caught, 0 not. The other 77 were not rerun after those edits, which
   removed two lines from the chance of a line and replaced one check in
   section 31.
+
+  `ff_sim_live.py`, 380 reverts, in the working copy, with `--fast`. One
+  pass of 378 (2026-11-21): 365 caught, 13 not. Three of the 13 were edits
+  that change nothing and were dropped: a player added who is already on
+  the slate is listed once either way, a status of "none" filed as a row
+  reads the same as no row, and a touchdown line has no push to be put
+  down to. Nine showed a check that could not fail, and each was added or
+  tightened in sections 33 to 36 (an ESPN number of "nan"; the slate's
+  four games exactly; a starter named for a team not playing; what a
+  status handed in leaves alone, twice; the chance of scoring at 0.5; the
+  starter printed before a busier quarterback; the chance of playing on
+  a priced line; an added player's name looked for on his team first).
+  The thirteenth was a name with no id being tied to a namesake's id,
+  which the review found the same hour; that code was changed, its two
+  reverts rewritten and five added. Then the 37 entries concerned (the 28
+  whose text lies in the block that changed, the five new among them, and
+  the nine above) were run once on the final file: 37 caught, 0 not. The
+  other 343 were NOT rerun after that last edit, which changed only how a
+  posted player is matched to a slate row; the suite has only been added
+  to since they ran. Controls and the unbroken suite passed at the end of
+  both runs.
 
   From 2026-11-20 the rule, set by Dustin, is: reverts for new code only,
   run once; earlier ones are not rerun while their file and their
@@ -87,7 +122,7 @@ import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
 TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py",
-           "ff_sim_td.py")
+           "ff_sim_td.py", "ff_sim_live.py")
 SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
@@ -101,9 +136,11 @@ NULL_PLAY = "CONTROL: nothing changed in ff_sim_play.py (must read NOT CAUGHT)"
 BROKEN_PLAY = "CONTROL: ff_sim_play.py's statuses reordered (must be caught)"
 NULL_TD = "CONTROL: nothing changed in ff_sim_td.py (must read NOT CAUGHT)"
 BROKEN_TD = "CONTROL: ff_sim_td.py's stats reordered (must be caught)"
-CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
-NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY, NULL_TD)
-BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY, BROKEN_TD)
+NULL_LIVE = "CONTROL: nothing changed in ff_sim_live.py (must read NOT CAUGHT)"
+BROKEN_LIVE = "CONTROL: ff_sim_live.py's anytime line moved (must be caught)"
+CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY, NULL_TD, NULL_LIVE)
+BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY, BROKEN_TD, BROKEN_LIVE)
 
 M: list = []
 
@@ -128,6 +165,10 @@ def mut_td(name: str, *pairs) -> None:
     M.append((name, pairs, "ff_sim_td.py"))
 
 
+def mut_live(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_live.py"))
+
+
 # ---- controls on this runner itself
 mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
@@ -147,6 +188,8 @@ mut_play(BROKEN_PLAY, ('STATUSES = ("none", "listed", "questionable", "doubtful"
                        'STATUSES = ("listed", "none", "questionable", "doubtful", "out")'))
 mut_td(NULL_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = ("passing_tds",  TD_STAT)'))
 mut_td(BROKEN_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = (TD_STAT, "passing_tds")'))
+mut_live(NULL_LIVE, ("S21_FROM = 0.65", "S21_FROM  = 0.65"))
+mut_live(BROKEN_LIVE, ('    "player_anytime_td": (TD_STAT, 0.5),', '    "player_anytime_td": (TD_STAT, 3.5),'))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -1818,6 +1861,972 @@ mut_td("td pulls: what is listed is the score, not the pull",
        ('            out.append({"t": int(t), **{r: v["k"] for r, v in fit.rate.items()}})',
         '            out.append({"t": int(t), **{r: v["overall"] for r, v in fit.rate.items()}})'))
 
+# ---- S28: the live run (ff_sim_live.py)
+mut_live("live: the Rams are given the Chargers' code",
+         ('"Kansas City Chiefs": "KC", "Los Angeles Rams": "LA",',
+          '"Kansas City Chiefs": "KC", "Los Angeles Rams": "LAC",'))
+mut_live("live: an anytime touchdown is priced at one and a half",
+         ('    "player_anytime_td": (TD_STAT, 0.5),', '    "player_anytime_td": (TD_STAT, 1.5),'))
+mut_live("live: two or more touchdowns is priced as one or more",
+         ('    "player_2plus_td": (TD_STAT, 1.5),', '    "player_2plus_td": (TD_STAT, 0.5),'))
+mut_live("live: three or more touchdowns is priced as two or more",
+         ('    "player_3plus_td": (TD_STAT, 2.5),', '    "player_3plus_td": (TD_STAT, 1.5),'))
+mut_live("live: rushing attempts are read as rushing yards",
+         ('    "player_rush_attempts": ("carries", None),',
+          '    "player_rush_attempts": ("rushing_yards", None),'))
+mut_live("live: targets are read as catches",
+         ('    "player_reception_targets": ("targets", None),',
+          '    "player_reception_targets": ("receptions", None),'))
+mut_live("live: the fingerprint leaves the touchdown model out",
+         ('MODEL_FILES = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py",\n               "ff_sim_td.py")',
+          'MODEL_FILES = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py")'))
+mut_live("live: the S21 caution starts at 70%",
+         ("S21_FROM = 0.65", "S21_FROM = 0.70"))
+mut_live("live: the D/ST is kept as a player",
+         ('NOT_A_PLAYER = re.compile(r"d/st$|^no (touchdown|td) scorer$|^no scorer$", re.I)',
+          'NOT_A_PLAYER = re.compile(r"^no (touchdown|td) scorer$|^no scorer$", re.I)'))
+mut_live("live: the no-scorer row is kept as a player",
+         ('NOT_A_PLAYER = re.compile(r"d/st$|^no (touchdown|td) scorer$|^no scorer$", re.I)',
+          'NOT_A_PLAYER = re.compile(r"d/st$", re.I)'))
+# -- reading files
+mut_live('live: an unreadable odds file is not caught',
+         ('            try:\n                s = Path(s).read_text()\n            except (OSError, UnicodeDecodeError) as e:\n                raise Missing(f"cannot read the odds file {where}: {e}") from e',
+          '            s = Path(s).read_text()'))
+mut_live("live: an odds file that is not JSON is not caught",
+         ("        try:\n            source = json.loads(s)\n        except ValueError as e:\n            raise Missing(f\"{where} is not JSON: {e}\") from e",
+          "        source = json.loads(s)"))
+mut_live("live: the harness's wrapper is not opened",
+         ('    if isinstance(source, list) and source and isinstance(source[0], dict) \\\n            and "text" in source[0]:',
+          '    if False:'))
+mut_live("live: a saved error text is not caught",
+         ("        try:\n            source = json.loads(source[0][\"text\"])\n        except ValueError as e:\n            raise Missing(f\"{where} is a saved tool result whose text is not \"\n                          f\"JSON: {e}\") from e",
+          "        source = json.loads(source[0][\"text\"])"))
+mut_live("live: a response with no bookmakers is let through",
+         ('    if not isinstance(source, dict) or not isinstance(source.get("bookmakers"), list):',
+          '    if not isinstance(source, dict):'))
+mut_live("live: only the home team's name is checked",
+         ('    for side in ("home_team", "away_team"):', '    for side in ("home_team",):'))
+mut_live("live: only the away team's name is checked",
+         ('    for side in ("home_team", "away_team"):', '    for side in ("away_team",):'))
+# -- posted lines
+mut_live("live: the books asked for are ignored",
+         ('        if books and q["book"] not in books:\n            continue\n', ''))
+mut_live("live: a rung is priced at its number, not half a point under",
+         ('            line = float(q["rung_threshold"]) - 0.5', '            line = float(q["rung_threshold"])'))
+mut_live("live: a rung is priced half a point over its number",
+         ('            line = float(q["rung_threshold"]) - 0.5', '            line = float(q["rung_threshold"]) + 0.5'))
+mut_live("live: every line with a point counts as a main line",
+         ('        main = (q["line_type"] == "main" and q["line"] is not None) \\',
+          '        main = (q["line"] is not None) \\'))
+mut_live("live: a rung in a main market counts as a main line",
+         ('        main = (q["line_type"] == "main" and q["line"] is not None) \\',
+          '        main = (q["line_type"] == "main") \\'))
+mut_live("live: an anytime touchdown is a ladder line",
+         ('        main = (q["line_type"] == "main" and q["line"] is not None) \\\n            or q["market"] == "player_anytime_td"',
+          '        main = (q["line_type"] == "main" and q["line"] is not None)'))
+mut_live("live: two or more touchdowns counts as a main line",
+         ('            or q["market"] == "player_anytime_td"', '            or MARKETS[q["market"]][0] == TD_STAT'))
+mut_live("live: a suspended market is not marked",
+         ('                    q["suspended_at"] is not None))', '                    False))'))
+mut_live("live: every market is marked suspended",
+         ('                    q["suspended_at"] is not None))', '                    q["suspended_at"] is None))'))
+mut_live("live: the book's id for the player is dropped",
+         ('        rec.append((q["book"], q["market"], stat, q["player"], q["player_id"],',
+          '        rec.append((q["book"], q["market"], stat, q["player"], None,'))
+# -- inputs
+mut_live("live: an unreadable inputs file is not caught",
+         ("        except OSError as e:\n            raise Missing(f\"cannot read the inputs file {source}: {e}\") from e\n", ""))
+mut_live("live: an inputs file that is not JSON is not caught",
+         ("        except ValueError as e:\n            raise Missing(f\"the inputs file is not JSON: {e}\") from e\n",
+          "        except ZeroDivisionError as e:\n            raise Missing(f\"the inputs file is not JSON: {e}\") from e\n"))
+mut_live("live: inputs with no starters are let through",
+         ('    if not isinstance(source, dict) or not isinstance(source.get("starters"), dict):',
+          '    if not isinstance(source, dict) or source.get("starters") is None:'))
+mut_live("live: a chance over 1 is let through",
+         ("                or not 0.0 <= p <= 1.0:", "                or not 0.0 <= p:"))
+mut_live("live: a chance under 0 is let through",
+         ("                or not 0.0 <= p <= 1.0:", "                or not p <= 1.0:"))
+mut_live("live: a chance of exactly 0 or 1 is refused",
+         ("                or not 0.0 <= p <= 1.0:", "                or not 0.0 < p < 1.0:"))
+mut_live("live: a chance given as true or false is let through",
+         ("        if not isinstance(p, (int, float)) or isinstance(p, bool) \\",
+          "        if not isinstance(p, (int, float)) \\"))
+mut_live("live: a team's full name is not known",
+         ("    if team in TEAM_CODE:\n        return TEAM_CODE[team]\n", ""))
+mut_live("live: a team's code is not known",
+         ("    if team in TEAM_CODE.values():\n        return team\n", ""))
+# -- names
+mut_live("live: a roster player with no ESPN number is given one",
+         ('        has = r[r["espn_id"].notna()]', '        has = r'))
+mut_live("live: an ESPN number is not matched as a whole number",
+         ('        self.espn = {str(e).split(".")[0]: g for e, g in zip(has.espn_id, has.gsis_id)}',
+          '        self.espn = {str(e): g for e, g in zip(has.espn_id, has.gsis_id)}'))
+mut_live("live: a key that is not an ESPN number is looked up anyway",
+         ('        if isinstance(key, str) and key.startswith("espn:"):\n            return self.espn.get(key[5:])',
+          '        if isinstance(key, str):\n            return self.espn.get(key[5:] if key.startswith("espn:") else key)'))
+mut_live("live: a name two players share picks one of them",
+         ("        if len(found) != 1:", "        if len(found) < 1:"))
+mut_live("live: the refusal does not list the players who share the name",
+         ('                + (f" ({sorted(found)})" if found else "")\n', ''))
+# -- the slate
+mut_live("live: a slate for another week than the history's is built",
+         ("    if t != hist.before:\n        raise ValueError(f\"the slate is for {t} and the history stops before \"\n                         f\"{hist.before}\")\n", ""))
+mut_live("live: a team in two games is let through",
+         ("    twice = sorted({tm for tm in teams if teams.count(tm) > 1})", "    twice = []"))
+mut_live("live: a team with no starter named is let through",
+         ("    unnamed = sorted(set(teams) - set(starters))", "    unnamed = []"))
+mut_live("live: the slate reaches back five games",
+         ("            recent = hist.team_recent_players(team, CANDIDATE_LOOKBACK)",
+          "            recent = hist.team_recent_players(team, CANDIDATE_LOOKBACK + 1)"))
+mut_live("live: the slate reaches back three games",
+         ("            recent = hist.team_recent_players(team, CANDIDATE_LOOKBACK)",
+          "            recent = hist.team_recent_players(team, CANDIDATE_LOOKBACK - 1)"))
+mut_live("live: a team with no history is given an empty slate",
+         ("            if not len(recent):\n                raise Missing(f\"{team} has no game in the history\")\n", ""))
+mut_live("live: players added are left off the slate",
+         ("            extra = [(pid, pos) for tm, pid, pos in add if tm == team] + [(qb, None)]",
+          "            extra = [(qb, None)]"))
+mut_live("live: a player added to one team is added to both",
+         ("            extra = [(pid, pos) for tm, pid, pos in add if tm == team] + [(qb, None)]",
+          "            extra = [(pid, pos) for tm, pid, pos in add] + [(qb, None)]"))
+mut_live("live: a starter not on the slate is not put on it",
+         ("            extra = [(pid, pos) for tm, pid, pos in add if tm == team] + [(qb, None)]",
+          "            extra = [(pid, pos) for tm, pid, pos in add if tm == team]"))
+mut_live("live: a player added twice is on the slate twice",
+         ("            for pid in dict.fromkeys(order):", "            for pid in order:"))
+mut_live("live: a position handed in is ignored",
+         ("            pos_of = {pid: pos for pid, pos in extra if pos}", "            pos_of = {}"))
+mut_live("live: a team is listed as its own opponent",
+         ("        for team, opp in ((away, home), (home, away)):", "        for team, opp in ((away, away), (home, home)):"))
+# -- the model
+mut_live("live: the chances handed in do not reach the model",
+         ("            f\"{name}_opp\", chance=PlayChance(reports, given=given))))",
+          "            f\"{name}_opp\", chance=PlayChance(reports))))"))
+mut_live("live: the injury report does not reach the model",
+         ("            f\"{name}_opp\", chance=PlayChance(reports, given=given))))",
+          "            f\"{name}_opp\", chance=PlayChance(None, given=given))))"))
+mut_live("live: the model's name is not the one given",
+         ("    return TouchdownModel(name, efficiency=EfficiencyModel(", "    return TouchdownModel(\"sim\", efficiency=EfficiencyModel("))
+# -- sides
+mut_live("live: a half-point line is treated as a whole number",
+         ("    if float(line) != math.floor(line):", "    if False:"))
+mut_live("live: a whole-number line cannot push",
+         ("    if float(line) != math.floor(line):", "    if True:"))
+mut_live("live: on a whole number, landing on it counts as over",
+         ("    over, at_least = P.p_over(i, stat, line + 0.5), P.p_over(i, stat, line - 0.5)\n    return over, at_least - over, 1.0 - at_least",
+          "    over, at_least = P.p_over(i, stat, line - 0.5), P.p_over(i, stat, line - 0.5)\n    return over, at_least - over, 1.0 - at_least"))
+mut_live("live: on a whole number, landing on it counts as under",
+         ("    return over, at_least - over, 1.0 - at_least", "    return over, at_least - over, 1.0 - over"))
+mut_live("live: the under is the chance of the over",
+         ("        return over, 0.0, 1.0 - over", "        return over, 0.0, over"))
+# -- rungs
+mut_live("live: the rung labels are in the wrong order",
+         ('RUNG_LABELS = ("x0.6", "x0.8", MAIN, "x1.25", "x1.6")', 'RUNG_LABELS = ("x0.8", "x0.6", MAIN, "x1.25", "x1.6")'))
+# -- one run
+mut_live("live: a run with no week goes ahead on week 1",
+         ("    if week is None:\n        raise Missing('no week: pass --week or put \"week\" in the inputs')\n",
+          "    if week is None:\n        week = 1\n"))
+mut_live("live: the week in the inputs wins over the one asked for",
+         ("    week = week if week is not None else inputs.get(\"week\")", "    week = inputs.get(\"week\") or week"))
+mut_live('live: a week that disagrees with the inputs is let through',
+         ('    if inputs.get("week") is not None and inputs["week"] != week:',
+          '    if False:'))
+mut_live("live: a run with no odds files goes ahead",
+         ("    if not len(events):\n        raise Missing(\"no odds files: nothing to price\")\n", ""))
+mut_live("live: the model sees the week being run",
+         ("    hist = History(frame[frame[\"t\"] < t], t)", "    hist = History(frame[frame[\"t\"] <= t], t + 1)"))
+mut_live("live: a missing last week is let through",
+         ("    if week > 1 and newest != tkey(season, week - 1):", "    if False:"))
+mut_live("live: Week 1 is refused for having no last week",
+         ("    if week > 1 and newest != tkey(season, week - 1):", "    if newest != tkey(season, week - 1):"))
+mut_live("live: a last week with one team in four on file is let through",
+         ("        if 2 * had < of:", "        if 8 * had < of:"))
+mut_live("live: a last week with half the teams on file is refused",
+         ("        if 2 * had < of:", "        if 2 * had <= of:"))
+mut_live("live: last week's teams are counted over every season",
+         ("        this_season = hist.frame[hist.frame[\"season\"] == season]", "        this_season = hist.frame"),
+         ("        had = this_season.loc[this_season[\"t\"] == newest, \"team\"].nunique()",
+          "        had = this_season[\"team\"].nunique()"))
+mut_live("live: the home team is taken for the away team",
+         ("    games = [(TEAM_CODE[e[\"away_team\"]], TEAM_CODE[e[\"home_team\"]]) for e in events]",
+          "    games = [(TEAM_CODE[e[\"home_team\"]], TEAM_CODE[e[\"away_team\"]]) for e in events]"))
+mut_live("live: a game already played is priced",
+         ("    if played:\n        raise Missing(f\"{played} already have a game on file for week {week}: \"\n                      f\"that game has been played\")\n", ""))
+mut_live("live: a run with no injury report goes ahead unasked",
+         ("        if not allow_no_report:", "        if False:"))
+mut_live('live: a starter named for a team not playing is looked up',
+         ('    starters = {tm: placed(tm, who) for tm, who in inputs["starters"].items()\n                if tm in playing}',
+          '    starters = {tm: placed(tm, who) for tm, who in inputs["starters"].items()}'))
+mut_live('live: a chance or a status for a team not playing stops the run',
+         ('        for tm, who, value in inputs[kind]:\n            if tm in playing:',
+          '        for tm, who, value in inputs[kind]:\n            if True:'))
+mut_live("live: the players added do not reach the slate",
+         ("    slate = build_slate(hist, season, week, games, starters, names, add)",
+          "    slate = build_slate(hist, season, week, games, starters, names)"))
+mut_live("live: a chance for someone not on the slate is let pass",
+         ("    if stray:\n        raise Missing(f\"a chance or a status was handed in for {stray}, who \"", "    if False:\n        raise Missing(f\"a chance or a status was handed in for {stray}, who \""))
+mut_live("live: a status for someone not on the slate is let pass",
+         ("for tm, pid in {*given, *said}", "for tm, pid in {*given}"))
+mut_live("live: a chance for someone not on the slate is let pass, a status not",
+         ("for tm, pid in {*given, *said}", "for tm, pid in {*said}"))
+mut_live("live: a status that is not one of the five is let through",
+         ("        if row.get(\"status\") not in STATUSES:", "        if row.get(\"status\") is None:"))
+mut_live("live: a status handed in does not reach the report",
+         ("    if said:\n        # A status", "    if False:\n        # A status"))
+mut_live("live: the file's status is kept beside the one handed in",
+         ("            old[~((old[\"t\"] == t) & old[\"player_id\"].isin(ids))],", "            old[~((old[\"t\"] == t + 1) & old[\"player_id\"].isin(ids))],"))
+mut_live("live: a status handed in wipes that player's past reports",
+         ("            old[~((old[\"t\"] == t) & old[\"player_id\"].isin(ids))],", "            old[~(old[\"player_id\"].isin(ids))],"))
+mut_live("live: a status handed in wipes everyone's report for the week",
+         ("            old[~((old[\"t\"] == t) & old[\"player_id\"].isin(ids))],", "            old[~((old[\"t\"] == t))],"))
+mut_live("live: a status handed in is filed under last week",
+         ("            pd.DataFrame([(t, pid, st) for (_, pid), st in said.items()", "            pd.DataFrame([(t - 1, pid, st) for (_, pid), st in said.items()"))
+mut_live("live: a status handed in with no file breaks the run",
+         ("        old = reports if reports is not None else pd.DataFrame(\n            columns=[\"t\", \"player_id\", \"status\"])", "        old = reports"))
+mut_live("live: a chance from a status handed in does not say so",
+         ("    slate.loc[told, \"source\"] = \"counted from the status handed in\"\n", ""))
+mut_live("live: a chance given outright is relabelled as from a status",
+         ("    told = [(tm, pid) in said and src != \"given\"", "    told = [(tm, pid) in said"))
+mut_live("live: the chances handed in do not reach the run's model",
+         ("    model = live_model(reports, given)", "    model = live_model(reports)"))
+mut_live("live: a history too thin to fit is run anyway",
+         ("    if all(math.isnan(P.point(i, s_)) for i in range(len(slate)) for s_ in ALL_STATS):", "    if False:"))
+mut_live("live: the chance beside a player is not the one the model used",
+         ("    slate = slate.assign(chance=ch[\"chance\"].to_numpy(), status=ch[\"status\"].to_numpy(),",
+          "    slate = slate.assign(chance=1.0, status=ch[\"status\"].to_numpy(),"))
+mut_live("live: the report's word beside a player is dropped",
+         ("status=ch[\"status\"].to_numpy(),\n                         source=ch[\"source\"].to_numpy())",
+          "status=\"none\",\n                         source=ch[\"source\"].to_numpy())"))
+mut_live("live: where a chance came from is always 'counted'",
+         ("                         source=ch[\"source\"].to_numpy())", "                         source=\"counted\")"))
+mut_live("live: a team whose newest game is old is not noted",
+         ("        if week > 1 and last != tkey(season, week - 1):", "        if False:"))
+mut_live("live: in Week 1 every team is noted as stale",
+         ("        if week > 1 and last != tkey(season, week - 1):", "        if last != tkey(season, week - 1):"))
+mut_live("live: the books asked for do not reach the reader",
+         ("        L = posted_lines(e, books)", "        L = posted_lines(e)"))
+mut_live("live: names on the slate are matched as spelled",
+         ("        by_name.setdefault((tm, norm_player(nm)), []).append(i)", "        by_name.setdefault((tm, nm), []).append(i)"))
+mut_live("live: a line with no projection is priced as nothing",
+         ("                if math.isnan(expected):", "                if False:"))
+mut_live("live: the expected number on a line is the chance of the over",
+         ("                             expected, over, push, under))", "                             over, over, push, under))"))
+mut_live("live: over and under are swapped on a line",
+         ("                             expected, over, push, under))", "                             expected, under, push, over))"))
+# -- the record
+mut_live('live: the record grades the list-known slate',
+         ('        rec["bands"][stat] = {\n            r: table(fs.graded_legs(run, "live", version="B", stats=[stat],',
+          '        rec["bands"][stat] = {\n            r: table(fs.graded_legs(run, "live", version="A", stats=[stat],'))
+mut_live("live: every rung's table is the pooled one",
+         ('                                    rung=r), True)',
+          '                                    rung=None), True)'))
+mut_live('live: the bands are read on the over, not the side favoured',
+         ('                                    rung=r), True)',
+          '                                    rung=r), False)'))
+mut_live("live: the anytime touchdown is kept on the side favoured",
+         ("        fs.graded_legs(run, \"live\", version=\"B\", stats=[TD_STAT]), False)}",
+          "        fs.graded_legs(run, \"live\", version=\"B\", stats=[TD_STAT]), True)}"))
+mut_live("live: the S21 figures take every rung",
+         ("        rec[\"s21\"][stat] = s21(fs.graded_legs(run, \"live\", version=\"B\",\n                                              stats=[stat], rung=MAIN))",
+          "        rec[\"s21\"][stat] = s21(fs.graded_legs(run, \"live\", version=\"B\",\n                                              stats=[stat]))"))
+mut_live("live: the pooled S21 figures take every rung",
+         ("    rec[\"s21\"][\"all\"] = s21(fs.graded_legs(run, \"live\", version=\"B\",\n                                           stats=laddered, rung=MAIN))",
+          "    rec[\"s21\"][\"all\"] = s21(fs.graded_legs(run, \"live\", version=\"B\",\n                                           stats=laddered))"))
+mut_live("live: the pooled S21 figures grade the list-known slate",
+         ("    rec[\"s21\"][\"all\"] = s21(fs.graded_legs(run, \"live\", version=\"B\",", "    rec[\"s21\"][\"all\"] = s21(fs.graded_legs(run, \"live\", version=\"A\","))
+mut_live("live: the S21 figures count every leg, not those at 65% or better",
+         ("            d = g[(g.side == side) & (g.p_side >= S21_FROM)]", "            d = g[(g.side == side)]"))
+mut_live("live: the S21 figures leave out a leg at exactly 65%",
+         ("            d = g[(g.side == side) & (g.p_side >= S21_FROM)]", "            d = g[(g.side == side) & (g.p_side > S21_FROM + 0.02)]"))
+mut_live("live: overs and unders are pooled in the S21 figures",
+         ("            d = g[(g.side == side) & (g.p_side >= S21_FROM)]", "            d = g[(g.p_side >= S21_FROM)]"))
+mut_live("live: the S21 'happened' is the stated chance",
+         ("                         None if not len(d) else round(float(d.hit.mean()), 4)]",
+          "                         None if not len(d) else round(float(d.p_side.mean()), 4)]"))
+mut_live("live: a band's 'happened' is its stated chance",
+         ("                 None if not r.n else round(float(r.happened), 4), r.read]", "                 None if not r.n else round(float(r.stated), 4), r.read]"))
+mut_live("live: a band's count of legs is its count of games",
+         ("        return [[float(lo), float(hi), int(r.n), int(r.games),", "        return [[float(lo), float(hi), int(r.games), int(r.games),"))
+mut_live("live: a record is made though the leak probe failed",
+         ("    if not probe.clean or run.unverified:", "    if False:"))
+# -- reading the record
+mut_live("live: the top of a band belongs to it, not the next",
+         ("        if b[0] <= p < b[1] or (p == 1.0 and b[1] >= 1.0):", "        if b[0] < p <= b[1] or (p == 1.0 and b[1] >= 1.0):"))
+mut_live("live: a chance of exactly 100% has no band",
+         ("        if b[0] <= p < b[1] or (p == 1.0 and b[1] >= 1.0):", "        if b[0] <= p < b[1]:"))
+mut_live("live: a line with no rung is read on the first table there is",
+         ("    if not rung or not 0.0 <= p <= 1.0:\n        return None\n", "    if not 0.0 <= p <= 1.0:\n        return None\n    rung = rung or MAIN\n"))
+# -- cautions
+mut_live("live: passing-touchdown lines carry no warning",
+         ("    if row.stat == \"passing_tds\":\n        out.append(PASS_TD_UNDER)\n", ""))
+mut_live("live: passing yards carry the passing-touchdown warning",
+         ("    if row.stat == \"passing_tds\":\n        out.append(PASS_TD_UNDER)", "    if row.stat.startswith(\"passing\"):\n        out.append(PASS_TD_UNDER)"))
+mut_live("live: the S21 caution misses a line at exactly 65%",
+         ("max(row.over, row.under) >= S21_FROM:\n        n, stated", "max(row.over, row.under) > S21_FROM:\n        n, stated"))
+mut_live("live: the S21 caution quotes the other side's record",
+         ("    side = \"OVER\" if row.over >= row.under else \"UNDER\"", "    side = \"UNDER\" if row.over >= row.under else \"OVER\""))
+mut_live("live: the S21 caution quotes every stat's record, not this one's",
+         ("        n, stated, happened = record[\"s21\"].get(row.stat, {}).get(side, (0, None, None))",
+          "        n, stated, happened = record[\"s21\"].get(\"all\", {}).get(side, (0, None, None))"))
+mut_live("live: a match by name is not flagged",
+         ("    if row.matched == \"name\":\n        out.append(\"matched by NAME, not by id: check it is the right player\")\n", ""))
+mut_live("live: a suspended market is not flagged",
+         ("    if row.suspended:\n        out.append(f\"SUSPENDED at {row.suspended}\")\n", ""))
+mut_live("live: a push is not flagged",
+         ("    if row.push > 0:\n        out.append(f\"whole-number line: pushes {row.push:.1%}\")\n", ""))
+# -- what is printed
+mut_live("live: a touchdown is read on the side favoured",
+         ("        b, what = band_of(record, TD_STAT, MAIN, row.over), \"scored\"",
+          "        b, what = band_of(record, TD_STAT, MAIN, max(row.over, row.under)), \"scored\""))
+mut_live("live: a line is read on the chance of the over, not the side favoured",
+         ("        b = band_of(record, row.stat, row.rung, max(row.over, row.under))",
+          "        b = band_of(record, row.stat, row.rung, row.over)"))
+mut_live("live: an empty band is printed as a record of nothing",
+         ("    if not n:\n        return f\"said {lo:.0%}-{hi:.0%}{where}: never, in the record\"\n", "    happened = happened or 0.0\n"))
+mut_live("live: the record does not say where it was read",
+         ("    return (f\"said {lo:.0%}-{hi:.0%}{where}: {what} {happened:.1%} of \"", "    return (f\"said {lo:.0%}-{hi:.0%}: {what} {happened:.1%} of \""))
+mut_live("live: the record leaves out how it reads",
+         ("            f\"{n:,} ({read})\")", "            f\"{n:,}\")"))
+mut_live("live: a stat line keeps numbers under a half",
+         ("        if not math.isnan(v) and v >= 0.5:", "        if not math.isnan(v):"))
+mut_live("live: a stat line leaves out the chance of scoring",
+         ("    if not math.isnan(td):\n        bits.append(f\"scores {td:.0%}\")\n", ""))
+mut_live("live: the chance of scoring is the chance of two or more",
+         ("    td = P.p_over(i, TD_STAT, 0.5)", "    td = P.p_over(i, TD_STAT, 1.5)"))
+mut_live("live: the printout says nothing about being a shadow run",
+         ("        \"SHADOW RUN: the simulator's own numbers. Not a lean, no prices; a \"\n        \"posted line is only a benchmark.\",\n", ""))
+mut_live("live: the printout leaves out 'if he plays'",
+         ("        \"Every number is IF HE PLAYS.\",\n", ""))
+mut_live("live: the S21 banner quotes unders as overs",
+         ("        f\"({s21['OVER'][0]:,} legs); unders stated {s21['UNDER'][1]:.1%}, \"", "        f\"({s21['OVER'][0]:,} legs); unders stated {s21['OVER'][1]:.1%}, \""))
+mut_live("live: the passing-touchdown and scoring cautions are left off the top",
+         ("        \"S24. Passing-touchdown UNDERS are unreliable: overstated by about 5 \"\n        \"points. S25. A regular's chance of scoring runs about 2 points low.\",\n", ""))
+mut_live("live: the run's notes are not printed",
+         ("    ] + [\"NOTE. \" + n for n in board.notes] + [\"\"]", "    ] + [\"\"]"))
+mut_live("live: a player with no posted line is printed anyway",
+         ("                if not (everyone or r.player_id in priced or r.starting_qb):", "                if False:"))
+mut_live("live: asking for everyone changes nothing",
+         ("                if not (everyone or r.player_id in priced or r.starting_qb):", "                if not (r.player_id in priced or r.starting_qb):"))
+mut_live("live: a starter with no posted line is left out",
+         ("                if not (everyone or r.player_id in priced or r.starting_qb):", "                if not (everyone or r.player_id in priced):"))
+mut_live("live: players are printed in slate order",
+         ("            for i in sorted(T.index, key=lambda i: (\n                    not S.starting_qb[i], POSITION_ORDER.get(S.position[i], 9), -busy(i))):",
+          "            for i in T.index:"))
+mut_live("live: the starter is not printed first",
+         ("                    not S.starting_qb[i], POSITION_ORDER.get(S.position[i], 9), -busy(i))):",
+          "                    POSITION_ORDER.get(S.position[i], 9), -busy(i))):"))
+mut_live("live: the starter is not marked in print",
+         ("{', starting QB' if r.starting_qb else ''})\"", "{''})\""))
+mut_live("live: the report's word is not printed",
+         ("                    f\"{'' if r.status == 'none' else ', report: ' + r.status})\"", "                    f\"{''})\""))
+mut_live("live: a touchdown is printed as an over and an under",
+         ("                    odds = (f\"yes {row.over:.1%}\" if row.stat == TD_STAT else", "                    odds = (f\"yes {row.over:.1%}\" if False else"))
+mut_live("live: two or more touchdowns is printed as 'to score'",
+         ("                    what = (\"to score\" if row.line == 0.5 else", "                    what = (\"to score\" if True else"))
+mut_live("live: the cautions are not printed under a line",
+         ("                    out += [f\"        ! {f}\" for f in flags_for(record, row)]\n", ""))
+mut_live("live: the record is not printed beside a line",
+         ("                               f\"{record_text(record, row)}\")", "                               f\"\")"))
+mut_live("live: what was not priced is not printed",
+         ("    if board.unmatched:\n        out.append(\"POSTED BUT NOT PRICED\")", "    if False:\n        out.append(\"POSTED BUT NOT PRICED\")"))
+mut_live("live: a player's lines are another player's",
+         ("                mine = L[(L.game_id == gid) & (L.team == team) & (L.player_id == r.player_id)]",
+          "                mine = L[(L.game_id == gid) & (L.team == team)]"))
+mut_live("live: the saved table has no record column",
+         ("    d[\"record\"] = [record_text(record, r) for r in board.lines.itertuples(index=False)]\n", ""))
+mut_live("live: the saved table's cautions are run together",
+         ("    d[\"cautions\"] = [\" | \".join(flags_for(record, r))", "    d[\"cautions\"] = [\"\".join(flags_for(record, r))"))
+mut_live("live: the saved table has the week in the season's place",
+         ("    d.insert(0, \"week\", week)\n    d.insert(0, \"season\", season)", "    d.insert(0, \"week\", season)\n    d.insert(0, \"season\", week)"))
+# -- the whole run
+mut_live("live run: the record is not checked before a run",
+         ("    try:\n        check_record(record)\n        if not inputs:", "    try:\n        if not inputs:"))
+mut_live("live run: a run with no inputs file is not stopped by name",
+         ("        if not inputs:\n            raise Missing(\"no --inputs file: it names the week and each \"\n                          \"team's starting quarterback\")\n", ""))
+mut_live("live run: a stop ends with code 0",
+         ("        return f\"STOPPED. {e}\", 2", "        return f\"STOPPED. {e}\", 0"))
+mut_live("live run: a stop does not say STOPPED",
+         ("        return f\"STOPPED. {e}\", 2", "        return f\"{e}\", 2"))
+mut_live("live run: asking for everyone does not reach the printout",
+         ("    text = render(board, record, everyone=everyone)", "    text = render(board, record)"))
+mut_live("live run: the saved table does not say how many lines",
+         ("        text += f\"\\n\\nsaved {len(board.lines):,} priced lines to {out}\"\n", ""))
+mut_live("live run: the saved table carries the wrong week",
+         ("               int(board.slate.week.iloc[0])).to_csv(out, index=False)", "               int(board.slate.week.iloc[0]) + 1).to_csv(out, index=False)"))
+mut_live("live run: a good run ends with code 2",
+         ("    return text, 0", "    return text, 2"))
+# -- after the review: reading, kickoffs, inputs
+mut_live("live2: only main lines are read from the file",
+         ('        quotes = flatten_odds(event, line_type="")', '        quotes = flatten_odds(event, line_type="main")'))
+mut_live("live2: a file that does not pair up is not caught",
+         ("    try:\n        quotes = flatten_odds(event, line_type=\"\")\n    except ValueError as e:\n        raise Missing(f\"{game_of(event)}: the odds file does not pair up: {e}\") from e",
+          "    quotes = flatten_odds(event, line_type=\"\")"))
+mut_live("live2: a market with no stat is not counted",
+         ("            passed[f\"no stat for {q['market']}\"] += 1\n            continue", "            continue"))
+mut_live("live2: a posted point is ignored for the market's own line",
+         ('        if q["line"] is not None:\n            try:', '        if q["line"] is not None and own is None:\n            try:'))
+mut_live("live2: a point that is not a number is not caught",
+         ("            try:\n                line = float(q[\"line\"])\n            except (TypeError, ValueError):\n                line = float(\"nan\")",
+          "            line = float(q[\"line\"])"))
+mut_live("live2: a label it cannot read is priced at zero",
+         ('            line = float("nan")     # a label', '            line = 0.0     # a label'))
+mut_live("live2: a label it cannot read is not counted",
+         ("            passed[f\"label not read in {q['market']}\"] += 1\n            continue", "            continue"))
+mut_live("live2: what was passed over is not handed on",
+         ('    out.attrs["passed_over"] = dict(passed)', '    out.attrs["passed_over"] = {}'))
+mut_live('live2: every player is said to be on the home team',
+         ('                team = oc.get("player_team")\n',
+          '                team = event.get("home_team")\n'))
+mut_live("live2: a player is listed under the outcome's label, not his name",
+         ('                who = oc.get("description") or oc.get("name")',
+          '                who = oc.get("name")'))
+mut_live("live2: a game is called home at away",
+         ('''    return f"{TEAM_CODE[event['away_team']]} at {TEAM_CODE[event['home_team']]}"''',
+          '''    return f"{TEAM_CODE[event['home_team']]} at {TEAM_CODE[event['away_team']]}"'''))
+mut_live("live2: a game in progress is priced",
+         ('        if e.get("live"):', '        if False:'))
+mut_live("live2: a game that has started is priced",
+         ("        elif kick <= now:", "        elif False:"))
+mut_live("live2: a game kicking off this minute is priced",
+         ("        elif kick <= now:", "        elif kick < now:"))
+mut_live('live2: with no window, a game weeks off is priced',
+         ('        elif window is None and kick > now + pd.Timedelta(days=MAX_DAYS_AHEAD):',
+          '        elif False:'))
+mut_live('live2: a game exactly eight days off is refused',
+         ('        elif window is None and kick > now + pd.Timedelta(days=MAX_DAYS_AHEAD):',
+          '        elif window is None and kick >= now + pd.Timedelta(days=MAX_DAYS_AHEAD):'))
+mut_live("live2: a game nine days off is taken",
+         ("MAX_DAYS_AHEAD = 8", "MAX_DAYS_AHEAD = 9"))
+mut_live("live2: a game eight days off is refused",
+         ("MAX_DAYS_AHEAD = 8", "MAX_DAYS_AHEAD = 7"))
+mut_live("live2: a file with no kickoff time is run without a word",
+         ('            notes.append(f"{game_of(e)}: no kickoff time in the odds file, "',
+          '            (lambda *_: None)(f"{game_of(e)}: no kickoff time in the odds file, "'))
+mut_live("live2: a kickoff time with no zone is not read as UTC",
+         ('            kick = kick.tz_localize("UTC") if kick.tzinfo is None else kick.tz_convert("UTC")',
+          '            kick = kick if kick.tzinfo is None else kick.tz_convert("UTC")'))
+mut_live("live2: a key it does not know is let through",
+         ("    if odd:\n        raise Missing(f\"the inputs have {odd}, which is not one of \"", "    if False:\n        raise Missing(f\"the inputs have {odd}, which is not one of \""))
+mut_live("live2: a week that is not a whole number is let through",
+         ("        if v is not None and (isinstance(v, bool) or not isinstance(v, int)):", "        if False:"))
+mut_live("live2: a season given as true is let through",
+         ("        if v is not None and (isinstance(v, bool) or not isinstance(v, int)):", "        if v is not None and not isinstance(v, int):"))
+mut_live("live2: the week in the inputs is dropped",
+         ("        out[k] = v", "        out[k] = None"))
+mut_live("live2: a team with two starters named is let through",
+         ('        if team_code(team) in out["starters"]:', '        if False:'))
+mut_live("live2: a starter's team is not turned into its code",
+         ('        out["starters"][team_code(team)] = who', '        out["starters"][team] = who'))
+mut_live("live2: rows that are not rows are let through",
+         ("        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):", "        if False:"))
+mut_live("live2: a row with a key it does not know is let through",
+         ('            if set(row) - keys or not {"team", "player"} <= set(row):', '            if not {"team", "player"} <= set(row):'))
+mut_live("live2: a row with no team or no player is let through",
+         ('            if set(row) - keys or not {"team", "player"} <= set(row):', '            if set(row) - keys:'))
+mut_live("live2: a chance given as text is let through",
+         ("                if not isinstance(p, (int, float)) or isinstance(p, bool) \\\n                        or not 0.0 <= p <= 1.0:",
+          "                if p is None or isinstance(p, bool) \\\n                        or not 0.0 <= float(p) <= 1.0:"))
+mut_live("live2: the statuses handed in are dropped on reading",
+         ('                out[kind].append((team, who, row["status"]))', '                pass'))
+mut_live("live2: the chances handed in are dropped on reading",
+         ("                out[kind].append((team, who, float(p)))", "                pass"))
+mut_live("live2: the players added are dropped on reading",
+         ('                out[kind].append((team, who, row.get("position")))', '                pass'))
+mut_live("live2: an added player's position is dropped on reading",
+         ('                out[kind].append((team, who, row.get("position")))', '                out[kind].append((team, who, None))'))
+# -- names and the slate
+mut_live("live2: names are matched as spelled, suffix and all",
+         ("                self.by_name.setdefault((team, norm_player(name)), set()).add(g)",
+          "                self.by_name.setdefault((team, str(name).lower()), set()).add(g)"))
+mut_live("live2: names from the history are not looked in",
+         ("        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),\n                                  (F.player_id, F.name, F.team)):",
+          "        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),):"))
+mut_live("live2: names from the roster are not looked in",
+         ("        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),\n                                  (F.player_id, F.name, F.team)):",
+          "        for ids, names, teams in ((F.player_id, F.name, F.team),):"))
+mut_live("live2: a name is looked for on every team",
+         ("        found = self.by_name.get((team, norm_player(who)), set())",
+          "        found = {g for (tm, nm), gs in self.by_name.items() if nm == norm_player(who) for g in gs}"))
+mut_live('live2: an id is taken for a team he is not on',
+         ('            if (team, got) not in self.on and not (anywhere and got in self.known):',
+          '            if False:'))
+mut_live("live2: an nflverse id is looked up as a name",
+         ("        got = who if GSIS.match(who) else self.from_key(who)", "        got = self.from_key(who)"))
+mut_live("live2: a book's id in the inputs is looked up as a name",
+         ("        got = who if GSIS.match(who) else self.from_key(who)", "        got = who if GSIS.match(who) else None"))
+mut_live("live2: a player with no history has no name",
+         ("                name = hist.last_name(pid) if seen else names.full.get(pid, pid)", "                name = hist.last_name(pid) if seen else pid"))
+mut_live("live2: a player with no history has no position",
+         ("                pos = pos_of.get(pid) or (hist.last_position(pid) if seen\n                                          else names.position.get(pid))",
+          "                pos = pos_of.get(pid) or (hist.last_position(pid) if seen\n                                          else None)"))
+mut_live("live2: a starter who is not a quarterback is let through",
+         ('                if pid == qb and pos != "QB":', '                if False:'))
+mut_live("live2: last week's starter is marked, not the one named",
+         ("                            team, opp, pid, name, pos, pid == qb))", "                            team, opp, pid, name, pos, pid == hist.last_starting_qb(team)))"))
+mut_live("live2: a game is named home at away in the slate",
+         ('                rec.append((season, week, f"{season}_{week:02d}_{away}_{home}",', '                rec.append((season, week, f"{season}_{week:02d}_{home}_{away}",'))
+# -- which record a line is read on
+mut_live("live2: a player with no ladder is read on the main record",
+         ('    if not ladder:\n        return ""', '    if not ladder:\n        return MAIN'))
+mut_live("live2: a line far below his ladder is read on its lowest rung",
+         ("    if not ladder[0][1] - below <= line <= ladder[-1][1] + above:", "    if not line <= ladder[-1][1] + above:"))
+mut_live("live2: a line far above his ladder is read on its highest rung",
+         ("    if not ladder[0][1] - below <= line <= ladder[-1][1] + above:", "    if not ladder[0][1] - below <= line:"))
+mut_live("live2: the room below his ladder is a whole gap",
+         ("    below = (ladder[1][1] - ladder[0][1]) / 2 if len(ladder) > 1 else 0.5", "    below = (ladder[1][1] - ladder[0][1]) if len(ladder) > 1 else 0.5"))
+mut_live("live2: the room above his ladder is a whole gap",
+         ("    above = (ladder[-1][1] - ladder[-2][1]) / 2 if len(ladder) > 1 else 0.5", "    above = (ladder[-1][1] - ladder[-2][1]) if len(ladder) > 1 else 0.5"))
+mut_live("live2: there is no room at all off the ends of his ladder",
+         ("    if not ladder[0][1] - below <= line <= ladder[-1][1] + above:", "    if not ladder[0][1] <= line <= ladder[-1][1]:"))
+mut_live("live2: a one-rung ladder has room of five points",
+         ("    above = (ladder[-1][1] - ladder[-2][1]) / 2 if len(ladder) > 1 else 0.5", "    above = (ladder[-1][1] - ladder[-2][1]) / 2 if len(ladder) > 1 else 5.0"))
+mut_live("live2: of two rungs equally near, the one further from his main line",
+         ("    return min(ladder, key=lambda r: (abs(r[1] - line), far[r[0]]))[0]", "    return min(ladder, key=lambda r: (abs(r[1] - line), -far[r[0]]))[0]"))
+mut_live("live2: every line is read on his main line",
+         ("    return min(ladder, key=lambda r: (abs(r[1] - line), far[r[0]]))[0]", "    return min(ladder, key=lambda r: (far[r[0]], abs(r[1] - line)))[0]"))
+mut_live("live2: two or more touchdowns is read on the anytime record",
+         ('    if stat == TD_STAT and line != 0.5:\n        return "", TWO_PLUS\n', ''))
+mut_live("live2: a player with no stand-in line is read anyway",
+         ('    if not role[FAMILY[stat]]:\n        return "", NO_ROLE\n', ''))
+mut_live("live2: every stat is judged on his touchdown role",
+         ("    if not role[FAMILY[stat]]:", '    if not role["td"]:'))
+mut_live("live2: an anytime touchdown is read on a ladder rung",
+         ('    if stat == TD_STAT:\n        return MAIN, ""\n', ''))
+mut_live("live2: a line off his ladder gives no reason",
+         ('    return rung, "" if rung else OFF_LADDER', '    return rung, ""'))
+# -- the run
+mut_live("live2: any week's report counts as this week's",
+         ('    filed = (reports[(reports["t"] == t) & reports["player_id"].isin(set(slate.player_id))]',
+          '    filed = (reports[reports["player_id"].isin(set(slate.player_id))]'))
+mut_live("live2: a report for other teams counts as these teams'",
+         ('    filed = (reports[(reports["t"] == t) & reports["player_id"].isin(set(slate.player_id))]',
+          '    filed = (reports[(reports["t"] == t)]'))
+mut_live("live2: a run with no report does not say so",
+         ('        notes.append(f"NO INJURY REPORT ON FILE for week {week} for anyone in "',
+          '        (lambda *_: None)(f"NO INJURY REPORT ON FILE for week {week} for anyone in "'))
+mut_live("live2: what the injury file has is not said",
+         ('        notes.append(\n            f"Injury file for these teams: {len(filed)} listed, "',
+          '        (lambda *_: None)(\n            f"Injury file for these teams: {len(filed)} listed, "'))
+mut_live("live2: the injury note counts questionable players as out",
+         ("""            f"{int(n.get('out', 0))} out, {int(n.get('doubtful', 0))} doubtful, \"""",
+          """            f"{int(n.get('questionable', 0))} out, {int(n.get('doubtful', 0))} doubtful, \""""))
+mut_live("live2: the injury note counts chances as statuses",
+         ('''            f"behind the league's report; {len(said)} status"''', '''            f"behind the league's report; {len(given)} status"'''))
+mut_live("live2: teams with nobody on the injury file are not named",
+         ("        if bare:\n            notes.append(", "        if False:\n            notes.append("))
+mut_live("live2: every team is named as having nobody on the injury file",
+         ("        bare = sorted(tm for tm in playing if not (\n            set(slate.player_id[slate.team == tm]) & set(filed.player_id)))",
+          "        bare = sorted(tm for tm in playing)"))
+mut_live("live2: what a file had that was passed over is not noted",
+         ('        for why, n in sorted(L.attrs["passed_over"].items()):', '        for why, n in []:'))
+mut_live('live2: a file with no usable line is passed over in silence',
+         ('            if not books:\n                notes.append(f"{game}: the odds file has no line the "\n                             f"simulator has a stat for")\n            continue',
+          '            continue'))
+mut_live('live2: a book asked for that the file lacks is not named',
+         ('        if absent:\n',
+          '        if False:\n'))
+mut_live('live2: a player on both slates is priced for the home team when the book does not say',
+         ('for tm in ((told,) if told else on) if tm in on]',
+          'for tm in ((told,) if told else on[-1:]) if tm in on]'))
+mut_live('live2: a player on both slates is priced for the away team when the book does not say',
+         ('for tm in ((told,) if told else on) if tm in on]',
+          'for tm in ((told,) if told else on[:1]) if tm in on]'))
+mut_live('live2: a player is looked for on the away team only',
+         ('                on = [tm for tm in (away, home) if (tm, pid) in at]',
+          '                on = [tm for tm in (away,) if (tm, pid) in at]'))
+mut_live('live2: a player with an id not on the slate is matched by name',
+         ('            where.append(hits[0] if len(hits) == 1 else why)',
+          '            hits = hits or [j for tm in (away, home) for j in by_name.get((tm, norm_player(player)), [])]\n            where.append(hits[0] if len(hits) == 1 else why)'))
+mut_live('live2: a player is never matched by name',
+         ('                hits = [j for tm in ((told,) if told else (away, home))\n',
+          '                hits = [j for tm in ()\n'))
+mut_live("live2: a name two slate players share picks the first",
+         ("            where.append(hits[0] if len(hits) == 1 else why)", "            where.append(hits[0] if len(hits) >= 1 else why)"))
+mut_live('live2: a match by name is reported as a match by id',
+         ('            how.append("id" if names.from_key(key) is not None else "name")',
+          '            how.append("id")'))
+mut_live("live2: a player it cannot place is dropped without a word",
+         ('            unmatched.append((game, player, len(g.drop_duplicates(["stat", "line"])), why))',
+          '            (lambda *_: None)((game, player, len(g.drop_duplicates(["stat", "line"])), why))'))
+mut_live("live2: a line posted at two books is counted twice among the unpriced",
+         ('            unmatched.append((game, player, len(g.drop_duplicates(["stat", "line"])), why))',
+          '            unmatched.append((game, player, len(g), why))'))
+mut_live("live2: every player is given the first slate row's role",
+         ("            win, role = meta[i][0], meta[i][1]", "            win, role = meta[i][0], meta[0][1]"))
+mut_live("live2: every player is read on the first slate row's ladder",
+         ("            win, role = meta[i][0], meta[i][1]", "            win, role = meta[0][0], meta[i][1]"))
+mut_live("live2: every stat is read on his targets ladder",
+         ("                                          fs.standin_lines(hist, win, stat))", '                                          fs.standin_lines(hist, win, "targets"))'))
+mut_live("live2: a line with no projection is priced as nothing",
+         ("                if math.isnan(expected):\n                    blank.append(stat)\n                    continue", "                if False:\n                    continue"))
+mut_live("live2: a line with no projection is dropped without a word",
+         ("            for stat, n in sorted(Counter(blank).items()):", "            for stat, n in []:"))
+mut_live("live2: a passer who is not the starter is not told why",
+         ('                    ": he is not the named starter" if FAMILY[stat] == "pass" else "")))', '                    "" if FAMILY[stat] == "pass" else "")))'))
+mut_live("live2: a line counts as main only if every book has it as main",
+         ('                             "main" if (h.kind == "main").any() else "ladder",', '                             "main" if (h.kind == "main").all() else "ladder",'))
+mut_live("live2: the books on a line are not put together",
+         ('                             rung, no_record, " ".join(sorted(set(h.book))),', '                             rung, no_record, sorted(set(h.book))[0],'))
+mut_live("live2: a line is marked suspended at every book that posts it",
+         ('                             " ".join(sorted(set(h.book[h.suspended]))),', '                             " ".join(sorted(set(h.book))),'))
+mut_live("live2: a line is found by id only if every book gave one",
+         ('                             "id" if (h.how == "id").any() else "name",', '                             "id" if (h.how == "id").all() else "name",'))
+mut_live("live2: the chance beside a line is not the player's",
+         ("                             s.position, s.chance, s.source, stat, float(line),", "                             s.position, 1.0, s.source, stat, float(line),"))
+mut_live("live2: the reason for no record is not kept on the line",
+         ("                             rung, no_record, \" \".join(sorted(set(h.book))),", "                             rung, \"\", \" \".join(sorted(set(h.book))),"))
+# -- the record, and reading it
+mut_live("live2: the record does not say which weeks it covers",
+         ('           "first": int(run.weeks[0]), "through": int(run.weeks[-1]),', '           "first": int(run.weeks[0]), "through": int(run.weeks[0]),'))
+mut_live("live2: the record carries another S21 threshold than it used",
+         ('"s21_from": S21_FROM,', '"s21_from": 0.5,'))
+mut_live("live2: a missing record is let through",
+         ("    if not record:\n        raise Missing(f\"there is no record (sim_record.py). {rebuild}\")", "    if not record:\n        return"))
+mut_live("live2: a record from other model code is let through",
+         ('    if record["code"] != code_stamp() or record["s21_from"] != S21_FROM:', '    if record["s21_from"] != S21_FROM:'))
+mut_live("live2: a record with another S21 threshold is let through",
+         ('    if record["code"] != code_stamp() or record["s21_from"] != S21_FROM:', '    if record["code"] != code_stamp():'))
+mut_live("live2: a record in another layout is let through",
+         ('    if set(RECORD_KEYS) - set(record) or record["layout"] != LAYOUT:', '    if set(RECORD_KEYS) - set(record):'))
+mut_live("live2: a record with a part missing is let through",
+         ('    if set(RECORD_KEYS) - set(record) or record["layout"] != LAYOUT:', '    if record.get("layout") != LAYOUT:'))
+mut_live("live2: the S21 caution goes by the book's main line",
+         ("    return row.rung == MAIN and row.stat != TD_STAT", '    return row.kind == "main" and row.stat != TD_STAT'))
+mut_live("live2: the S21 caution is given on touchdowns",
+         ("    return row.rung == MAIN and row.stat != TD_STAT", "    return row.rung == MAIN"))
+mut_live('live2: the S21 caution is never given on a passing touchdown',
+         ('    return row.rung == MAIN and row.stat != TD_STAT',
+          '    return row.rung == MAIN and row.stat not in (TD_STAT, "passing_tds")'))
+mut_live("live2: the S21 caution is given only when the over is favoured",
+         ("    if on_main(row) and max(row.over, row.under) >= S21_FROM:", "    if on_main(row) and row.over >= S21_FROM:"))
+mut_live("live2: the reason for no record is not printed",
+         ('        return f"no record: {row.no_record}"', '        return "no record"'))
+mut_live("live2: a line with no record is looked up anyway",
+         ('    if not row.rung:\n        return f"no record: {row.no_record}"\n', ''))
+mut_live("live2: a table the record lacks is not said to be missing",
+         ('        return "no record: the record has no table for this"', '        return "no record"'))
+mut_live('live2: his main line and his other rungs are named the wrong way round',
+         ('" on his main line" if row.rung == MAIN\n',
+          '" on his main line" if row.rung != MAIN\n'))
+mut_live('live2: the printout does not say what the record covers',
+         ('        "The record covers players with four recent games and a role in "\n        "them, graded with last game\'s starter and nothing handed in. A "\n        "line is read on HIS OWN stand-in rung nearest it: \\"his main "\n        "line\\" is the half point above his eight-game median, not the book\'s.",\n',
+          ''))
+# -- the whole run
+mut_live("live2 run: the week asked for does not reach the run",
+         ("                         week=week, books=books, allow_no_report=allow_no_report)", "                         week=None, books=books, allow_no_report=allow_no_report)"))
+mut_live("live2 run: the books asked for do not reach the run",
+         ("                         week=week, books=books, allow_no_report=allow_no_report)", "                         week=week, books=None, allow_no_report=allow_no_report)"))
+mut_live("live2 run: leave to run without a report does not reach the run",
+         ("                         week=week, books=books, allow_no_report=allow_no_report)", "                         week=week, books=books, allow_no_report=False)"))
+mut_live("live2 run: a book's name has to be typed exactly",
+         ("        books = {str(b).strip().lower() for b in books} if books else None", "        books = set(books) if books else None"))
+mut_live('live2 run: kickoff times are not checked',
+         ('        late = check_kickoffs(\n            events, pd.Timestamp.now(tz="UTC") if now is None else now,\n            week_window(dates, wk) if isinstance(wk, int) else None,\n            asked["season"] or int(frame["season"].max()))',
+          '        late = []'))
+mut_live('live2 run: the time handed in is ignored for the clock',
+         ('            events, pd.Timestamp.now(tz="UTC") if now is None else now,\n',
+          '            events, pd.Timestamp.now(tz="UTC"),\n'))
+mut_live('live2 run: with no time handed in there is no clock',
+         ('            events, pd.Timestamp.now(tz="UTC") if now is None else now,\n',
+          '            events, now,\n'))
+mut_live("live2 run: the note about a missing kickoff time is dropped",
+         ("        board.notes += late\n", ""))
+mut_live("live2 run: ladders are shown unasked",
+         ("        if not ladders:\n            board.lines = ", "        if False:\n            board.lines = "))
+mut_live("live2 run: asking for ladders shows main lines only",
+         ("        if not ladders:\n            board.lines = ", "        if True:\n            board.lines = "))
+mut_live("live2 run: it does not say how many lines it priced and did not show",
+         ("            if hidden:\n                board.notes.append(", "            if False:\n                board.notes.append("))
+mut_live("live2 run: the count of lines not shown counts main lines",
+         ('        hidden = int((board.lines.kind != "main").sum())', '        hidden = int(len(board.lines))'))
+mut_live("live2 run: nothing is saved when asked",
+         ("        if out:\n            try:", "        if False:\n            try:"))
+mut_live("live2 run: a failure to save is not caught by name",
+         ("            except OSError as e:\n                raise Missing(f\"cannot save to {out}: {e}\") from e", "            except ZeroDivisionError as e:\n                raise Missing(f\"cannot save to {out}: {e}\") from e"))
+mut_live("live2 run: a fault it did not foresee is a traceback",
+         ("    except Exception as e:      # noqa", "    except ZeroDivisionError as e:      # noqa"))
+mut_live("live2 run: a fault it did not foresee ends with code 2",
+         ('                f"a file in a shape it does not know."), 3', '                f"a file in a shape it does not know."), 2'))
+# -- after the second review (2026-11-21)
+mut_live('live3: an odds file that is not text is a traceback',
+         ('            except (OSError, UnicodeDecodeError) as e:\n                raise Missing(f"cannot read the odds file',
+          '            except OSError as e:\n                raise Missing(f"cannot read the odds file'))
+mut_live('live3: a response in the wrong shape is a traceback',
+         ('    except (AttributeError, TypeError) as e:\n',
+          '    except ZeroDivisionError as e:\n'))
+mut_live('live3: a response whose books are not books is a traceback',
+         ('    except (AttributeError, TypeError) as e:\n',
+          '    except TypeError as e:\n'))
+mut_live('live3: a response whose markets are not a list is a traceback',
+         ('    except (AttributeError, TypeError) as e:\n',
+          '    except AttributeError as e:\n'))
+mut_live("live3: the week is counted from last week's last game, not its Sunday",
+         ('    sundays = prev[prev.dt.dayofweek == 6]',
+          '    sundays = prev'))
+mut_live("live3: the week is counted from last week's Monday",
+         ('    sundays = prev[prev.dt.dayofweek == 6]',
+          '    sundays = prev[prev.dt.dayofweek == 0]'))
+mut_live('live3: the week starts a day early',
+         ('WEEK_STARTS = pd.Timedelta(days=3, hours=9)',
+          'WEEK_STARTS = pd.Timedelta(days=2, hours=9)'))
+mut_live("live3: the week starts at midnight UTC, inside Tuesday night's game",
+         ('WEEK_STARTS = pd.Timedelta(days=3, hours=9)',
+          'WEEK_STARTS = pd.Timedelta(days=3, hours=0)'))
+mut_live('live3: the week lasts eight days',
+         ('    return start, start + pd.Timedelta(days=7)',
+          '    return start, start + pd.Timedelta(days=8)'))
+mut_live("live3: the window is for the week named, not the one after last week's",
+         ('    prev = pd.to_datetime(dates.loc[dates["week"] == week - 1, "game_date"])',
+          '    prev = pd.to_datetime(dates.loc[dates["week"] == week, "game_date"])'))
+mut_live('live3: with no dates the window is a fault',
+         ('    if dates is None or week <= 1:\n        return None\n    prev',
+          '    if week <= 1:\n        return None\n    prev'))
+mut_live('live3: with no Sunday on file last week there is still a window',
+         ('    if not len(sundays):\n        return None\n',
+          ''))
+mut_live("live3: the week's window is not used",
+         ('        elif window is not None and not window[0] <= kick < window[1]:',
+          '        elif False:'))
+mut_live('live3: the eight-day rule is used with a window too',
+         ('        elif window is None and kick > now + pd.Timedelta(days=MAX_DAYS_AHEAD):',
+          '        elif kick > now + pd.Timedelta(days=MAX_DAYS_AHEAD):'))
+mut_live("live3: a game at the week's first minute is refused",
+         ('not window[0] <= kick < window[1]:',
+          'not window[0] < kick < window[1]:'))
+mut_live("live3: a game at the next week's first minute is taken",
+         ('not window[0] <= kick < window[1]:',
+          'not window[0] <= kick <= window[1]:'))
+mut_live("live3: the refusal names the day after the week's last",
+         ('                          f"{window[1] - pd.Timedelta(days=1):%Y-%m-%d}, going "',
+          '                          f"{window[1]:%Y-%m-%d}, going "'))
+mut_live("live3 run: the week's dates are not used",
+         ('            week_window(dates, wk) if isinstance(wk, int) else None,\n',
+          '            None,\n'))
+mut_live("live3 run: the window goes by the inputs' week only",
+         ('        wk = week if week is not None else asked["week"]',
+          '        wk = asked["week"]'))
+mut_live('live3 run: the window is for the week before',
+         ('            week_window(dates, wk) if isinstance(wk, int) else None,\n',
+          '            week_window(dates, wk - 1) if isinstance(wk, int) else None,\n'))
+mut_live('live3: when the file puts a player on two teams the first is taken',
+         ('            told = next(iter(teams)) if len(teams) == 1 else None\n            if len(teams) > 1 or (told and told not in (away, home)):',
+          '            told = sorted(teams)[0] if teams else None\n            if told and told not in (away, home):'))
+mut_live('live3: an outcome with no id is not taken to be the player another gives an id',
+         ('            if (pid is None and len(same.get(n, ())) == 1\n',
+          '            if (False and len(same.get(n, ())) == 1\n'))
+mut_live('live3: an outcome with no id is tied to an id though the file gives the name two ids',
+         ('            if (pid is None and len(same.get(n, ())) == 1\n',
+          '            if (pid is None and len(same.get(n, ())) >= 1\n'))
+mut_live('live3: the team the book names is not read',
+         ('            teams = puts.get(pid or norm_player(player), set())',
+          '            teams = set()'))
+mut_live('live3: a team outside the game is taken as nothing said',
+         ('            if len(teams) > 1 or (told and told not in (away, home)):',
+          '            told = told if told in (away, home) else None\n            if len(teams) > 1:'))
+mut_live('live3: a player the book puts on another team is priced for the slate he is on',
+         ('for tm in ((told,) if told else on) if tm in on]',
+          'for tm in ((told,) if told in on else on)]'))
+mut_live('live3: a player with no id is looked for on both teams though the book names one',
+         ('                hits = [j for tm in ((told,) if told else (away, home))\n',
+          '                hits = [j for tm in (away, home)\n'))
+mut_live('live3: a player off both slates is said to be on both',
+         ('which team he is on" if len(on) == 2 else',
+          'which team he is on" if len(on) != 2 else'))
+mut_live('live3: a player the book puts elsewhere is given the wrong reason',
+         ('inputs if he is playing." if told else',
+          'inputs if he is playing." if not told else'))
+mut_live('live3: a slate player the roster has elsewhere is not named',
+         ('        self.team = dict(zip(r.gsis_id, r.team))',
+          '        self.team = {}'))
+mut_live('live3: ...he is named though his chance was handed in',
+         ('            and (tm, pid) not in given and (tm, pid) not in said)',
+          '            and (tm, pid) not in said)'))
+mut_live('live3: ...he is named though his status was handed in',
+         ('            and (tm, pid) not in given and (tm, pid) not in said)',
+          '            and (tm, pid) not in given)'))
+mut_live('live3: a slate player the roster does not have is taken to have left',
+         ('            if names.team.get(pid) not in (None, tm)',
+          '            if names.team.get(pid, "?") not in (None, tm)'))
+mut_live('live3: a book asked for is named as absent though the file has it',
+         ('        absent = sorted(set(books or ()) - set(L.book))',
+          '        absent = sorted(set(books or ()))'))
+mut_live('live3: with books asked for, the no-line note is given as well',
+         ('            if not books:\n                notes.append(f"{game}: the odds file has no line the "',
+          '            if True:\n                notes.append(f"{game}: the odds file has no line the "'))
+mut_live('live3: a passing-touchdown line is read line by line, not on his rung',
+         ('    rung = nearest_rung(line, ladder)',
+          '    rung = f"line {line:g}" if stat == "passing_tds" else nearest_rung(line, ladder)'))
+mut_live('live3: the record keeps no table for passing touchdowns',
+         ('    laddered = [s for s in ALL_STATS if s != TD_STAT]',
+          '    laddered = [s for s in ALL_STATS if s not in (TD_STAT, "passing_tds")]'))
+mut_live("live3: the record's layout is the old one",
+         ('LAYOUT = 3\n',
+          'LAYOUT = 2\n'))
+mut_live('live3: a push line where neither side reaches half says there is no table',
+         ('    if b is None and row.stat != TD_STAT and max(row.over, row.under) < 0.5:',
+          '    if False:'))
+mut_live('live3: any line with no table is put down to a push',
+         ('    if b is None and row.stat != TD_STAT and max(row.over, row.under) < 0.5:',
+          '    if b is None and row.stat != TD_STAT:'))
+mut_live('live3: any week is taken from the inputs',
+         ('    if out["week"] is not None and not 1 <= out["week"] <= 22:',
+          '    if False:'))
+mut_live('live3: week 0 is taken from the inputs',
+         ('not 1 <= out["week"] <= 22:',
+          'not 0 <= out["week"] <= 22:'))
+mut_live('live3: Week 1 is refused in the inputs',
+         ('not 1 <= out["week"] <= 22:',
+          'not 2 <= out["week"] <= 22:'))
+mut_live('live3: week 23 is taken from the inputs',
+         ('not 1 <= out["week"] <= 22:',
+          'not 1 <= out["week"] <= 23:'))
+mut_live('live3: week 22 is refused in the inputs',
+         ('not 1 <= out["week"] <= 22:',
+          'not 1 <= out["week"] <= 21:'))
+mut_live('live3: any position is taken for an added player',
+         ('                if row.get("position") is not None and row["position"] not in ADD_AT:',
+          '                if False:'))
+mut_live('live3: a fullback cannot be added',
+         ('ADD_AT = ("QB", "RB", "FB", "WR", "TE")',
+          'ADD_AT = ("QB", "RB", "WR", "TE")'))
+mut_live('live3: a kicker can be added',
+         ('ADD_AT = ("QB", "RB", "FB", "WR", "TE")',
+          'ADD_AT = ("QB", "RB", "FB", "WR", "TE", "K")'))
+mut_live('live3: a player listed twice is taken, the last standing',
+         ('                if key in into:',
+          '                if False:'))
+mut_live('live3: a week that is not a whole number in range is run',
+         ('    if isinstance(week, bool) or not isinstance(week, int) or not 1 <= week <= 22:',
+          '    if False:'))
+mut_live('live3: a week of True is run as Week 1',
+         ('    if isinstance(week, bool) or not isinstance(week, int) or not 1 <= week <= 22:',
+          '    if not isinstance(week, int) or not 1 <= week <= 22:'))
+mut_live('live3: a week and a half is run',
+         ('    if isinstance(week, bool) or not isinstance(week, int) or not 1 <= week <= 22:',
+          '    if isinstance(week, bool) or not 1 <= week <= 22:'))
+mut_live('live3: week 0 is run',
+         ('    if isinstance(week, bool) or not isinstance(week, int) or not 1 <= week <= 22:',
+          '    if isinstance(week, bool) or not isinstance(week, int) or not 0 <= week <= 22:'))
+mut_live('live3: any season is run',
+         ('    if season != newest_season and not (season == newest_season + 1 and week == 1):',
+          '    if False:'))
+mut_live('live3: next season is run for any week',
+         ('    if season != newest_season and not (season == newest_season + 1 and week == 1):',
+          '    if season != newest_season and not (season == newest_season + 1):'))
+mut_live("live3: next season's Week 1 is refused",
+         ('    if season != newest_season and not (season == newest_season + 1 and week == 1):',
+          '    if season != newest_season:'))
+mut_live('live3: a man who left in an earlier season is still found on his old team',
+         ('        F = hist.frame[hist.frame["season"] == season]',
+          '        F = hist.frame'))
+mut_live("live3: this season's games are not used to place a player",
+         ('        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),\n                                  (F.player_id, F.name, F.team)):',
+          '        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),):'))
+mut_live('live3: the roster is not used to place a player',
+         ('        for ids, names, teams in ((r.gsis_id, r.full_name, r.team),\n                                  (F.player_id, F.name, F.team)):',
+          '        for ids, names, teams in ((F.player_id, F.name, F.team),):'))
+mut_live('live3: the roster is not asked when the book is silent',
+         ('            if len(hits) == 1 and not told:',
+          '            if False:'))
+mut_live('live3: the roster overrules the book',
+         ('            if len(hits) == 1 and not told:',
+          '            if len(hits) == 1:'))
+mut_live('live3: a roster team outside this game stops him being priced',
+         ('                if there in (away, home) and there != his:',
+          '                if there is not None and there != his:'))
+mut_live("live3: he is refused though the roster has him on the slate's team",
+         ('                if there in (away, home) and there != his:',
+          '                if there in (away, home):'))
+# -- after the third review (2026-11-21)
+mut_live('live4: a team the book names that is no team it knows is dropped',
+         ('                team = TEAM_CODE.get(team, team) if isinstance(team, str) and team else None',
+          '                team = TEAM_CODE.get(team) if isinstance(team, str) and team else None'))
+mut_live('live4: a defence is listed as a player',
+         ('                if not isinstance(who, str) or NOT_A_PLAYER.search(who.strip()):\n                    continue\n                key = oc.get',
+          '                if not isinstance(who, str):\n                    continue\n                key = oc.get'))
+mut_live('live4: an empty id is kept as an id',
+         ('                seen[(who, key if isinstance(key, str) and key else None, team)] = None',
+          '                seen[(who, key, team)] = None'))
+mut_live('live4: a player on two teams in the file is said to be on a team outside the game',
+         ('            if len(teams) > 1 or (told and told not in (away, home)):',
+          '            if told and told not in (away, home):'))
+mut_live('live4: the team a player with no id is on is looked for under his id',
+         ('                puts.setdefault(person(player, key) or norm_player(player), set()).add(team)',
+          '                puts.setdefault(names.from_key(key) or norm_player(player), set()).add(team)'))
+mut_live('live4: a player with no id is looked for on either slate though the file names his team',
+         ('                       + (f"{told}\'s slate, where the odds file has him"\n                          if told else "either slate"))',
+          '                       + "either slate")'))
+mut_live('live4: a game outside the season is taken',
+         ('        elif season is not None and not (',
+          '        elif False and not ('))
+mut_live('live4: the season starts in September',
+         ('pd.Timestamp(f"{season}-08-01", tz="UTC") <= kick',
+          'pd.Timestamp(f"{season}-09-01", tz="UTC") <= kick'))
+mut_live('live4: the season runs into March',
+         ('< pd.Timestamp(f"{season + 1}-03-01", tz="UTC")):',
+          '<= pd.Timestamp(f"{season + 1}-03-01", tz="UTC")):'))
+mut_live('live4: the season ends with its own year',
+         ('< pd.Timestamp(f"{season + 1}-03-01", tz="UTC")):',
+          '< pd.Timestamp(f"{season}-12-31", tz="UTC")):'))
+mut_live('live4: the season is asked after the eight-day rule',
+         ('        elif season is not None and not (',
+          '        elif window is not None and season is not None and not ('))
+mut_live('live4: it does not say the eight-day rule was all it had',
+         ('    notes = [] if window is not None else [NO_WINDOW]',
+          '    notes = []'))
+mut_live('live4: it says the eight-day rule was used though there was a window',
+         ('    notes = [] if window is not None else [NO_WINDOW]',
+          '    notes = [NO_WINDOW]'))
+mut_live('live4 run: the season is not handed to the kickoff check',
+         ('            asked["season"] or int(frame["season"].max()))',
+          '            None)'))
+mut_live('live4: a player can be added only to a team he is already on',
+         ('    add = [(tm, names.find(tm, who, anywhere=True), pos)',
+          '    add = [(tm, names.find(tm, who), pos)'))
+mut_live('live4: a player added twice is taken',
+         ('    if len(added) != len(add):',
+          '    if False:'))
+mut_live('live4: a starter may be anyone in the league',
+         ('            if (tm, names.find(tm, who, anywhere=True)) in added:',
+          '            if True:'))
+mut_live('live4: a starter just added to the team is refused',
+         ('            if (tm, names.find(tm, who, anywhere=True)) in added:',
+          '            if False:'))
+mut_live('live4: an id from another team is taken though he is not being added',
+         ('            if (team, got) not in self.on and not (anywhere and got in self.known):',
+          '            if (team, got) not in self.on and not (got in self.known):'))
+mut_live('live4: an id is taken for an added player nobody has heard of',
+         ('            if (team, got) not in self.on and not (anywhere and got in self.known):',
+          '            if (team, got) not in self.on and not anywhere:'))
+mut_live('live4: a name from another team is taken though he is not being added',
+         ('        if anywhere and not found:',
+          '        if not found:'))
+mut_live("live4: an added player's name is looked for in the league before his team",
+         ('        if anywhere and not found:',
+          '        if anywhere:'))
+mut_live('live4: a status for a player on two slates is taken for both',
+         ('        if also:\n            raise Missing(\n                f"a status was handed in for',
+          '        if False:\n            raise Missing(\n                f"a status was handed in for'))
+mut_live('live4: a status is refused for a player on one slate',
+         ('        also = sorted(set(slate.team[slate.player_id == pid]) - {tm})',
+          '        also = sorted(set(slate.team[slate.player_id == pid]))'))
+# -- after the re-check of the third review (2026-11-21)
+mut_live('live5: a bare name is tied to an id though a namesake is in the league',
+         ('                    and names.any_name.get(n, set()) <= same[n]):',
+          '                    and True):'))
+mut_live('live5: a bare name is priced though a namesake is on these teams',
+         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
+          '                if False and {g for tm in ((told,) if told else (away, home))'))
+mut_live("live5: a namesake is looked for on the player's own team only",
+         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
+          '                if len(hits) == 1 and {g for tm in (slate.team.iloc[hits[0]],)'))
+mut_live('live5: a namesake on the other team stands in the way though the file names the team',
+         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
+          '                if len(hits) == 1 and {g for tm in (away, home)'))
+mut_live('live5: a player is his own namesake',
+         ('                                       } - {slate.player_id.iloc[hits[0]]}:',
+          '                                       }:'))
+
 
 def run_one(i: int):
     name, pairs, target = M[i]
@@ -1852,23 +2861,136 @@ def run_one(i: int):
 CHECK_ONLY = False
 SHOW = False
 
+#: `--fast`. The newest file's sections are the last in the suite, and
+#: nothing before them imports it. So the suite's earlier part is run ONCE,
+#: unbroken, and each revert of that file runs only the rest, in a child
+#: process forked from that point with the edited file first on its path.
+FAST_TARGET = "ff_sim_live.py"
+FAST_CUT = "# S28 — the live run (ff_sim_live.py)"
+
+
+def _verdict(i, name, text, err=""):
+    lines = text.strip().splitlines()
+    if "checks run" not in text:
+        return i, name, "NO SUMMARY", (err or (lines or ["?"])[-1])[:150]
+    if lines[-1].strip() == "ALL PASS":
+        return i, name, "NOT CAUGHT", ""
+    fails = [ln.strip()[6:70] for ln in lines if ln.startswith("  FAIL")]
+    return i, name, "caught", f"{len(fails)} failed: " + " | ".join(fails[:2])
+
+
+def fast_run(ids, report):
+    """Run the reverts `ids` (all of `FAST_TARGET`) the fast way; `report`
+    is called with each result as it comes. Refuses, by raising, unless the
+    earlier part of the suite passes whole and has not imported the file:
+    that is what makes a child's verdict the same as a full run's."""
+    import atexit
+    import contextlib
+    import io
+    import time
+    import traceback
+    cut = TEST.index(FAST_CUT)
+    head = TEST[:cut]
+    tail = "\n" * head.count("\n") + TEST[cut:]       # keep the line numbers
+    g = {"__name__": "__main__", "__file__": str(REPO / "test_sim.py")}
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        exec(compile(head, "test_sim.py", "exec"), g)
+    atexit.unregister(g["_summary"])
+    module = FAST_TARGET[:-3]
+    if g["fails"] or module in sys.modules or not g["ran"]:
+        raise RuntimeError(
+            f"--fast cannot be used: before the cut {len(g['fails'])} checks "
+            f"failed of {len(g['ran'])}, and {module} "
+            f"{'WAS' if module in sys.modules else 'was not'} imported")
+    code = compile(tail, "test_sim.py", "exec")
+    queue, running, res = list(ids), {}, []
+
+    def start(i):
+        name, pairs, target = M[i]
+        s = SRC[target]
+        for old, new in pairs:
+            if s.count(old) != 1:
+                return (i, name, "BAD REVERT", f"{s.count(old)} matches for {old[:50]!r}")
+            s = s.replace(old, new)
+        d = pathlib.Path(tempfile.mkdtemp(prefix="sim_revert_"))
+        for f in REPO.glob("*.py"):
+            if f.name not in (target, "test_sim.py"):
+                os.symlink(f, d / f.name)
+        (d / target).write_text(s)
+        sys.stdout.flush()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                out = open(d / "_out.txt", "w")
+                os.dup2(out.fileno(), 1)
+                os.dup2(out.fileno(), 2)
+                sys.stdout = sys.stderr = out
+                sys.path.insert(0, str(d))
+                os.chdir(d)
+                try:
+                    exec(code, g)
+                except SystemExit:
+                    pass
+                except BaseException:               # noqa: BLE001
+                    traceback.print_exc()
+                    g["_summary"]()
+                out.flush()
+            finally:
+                os._exit(0)
+        running[pid] = (i, name, d, time.time())
+        return None
+
+    while queue or running:
+        while queue and len(running) < (os.cpu_count() or 2):
+            bad = start(queue.pop(0))
+            if bad:
+                res.append(bad)
+                report(bad)
+        for pid, (i, name, d, t0) in list(running.items()):
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if not done and time.time() - t0 > 900:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                r = (i, name, "NO SUMMARY", "timed out after 900 s")
+            elif not done:
+                continue
+            else:
+                r = _verdict(i, name, (d / "_out.txt").read_text())
+            del running[pid]
+            shutil.rmtree(d, ignore_errors=True)
+            res.append(r)
+            report(r)
+        time.sleep(0.1)
+    return res
+
 
 def main() -> int:
     global CHECK_ONLY, SHOW
     args = [a for a in sys.argv[1:]]
     CHECK_ONLY = "--check" in args
     SHOW = "--show" in args
+    fast = "--fast" in args and not CHECK_ONLY
     only = [int(a) for a in args if a.isdigit()] or list(range(len(M)))
     # The controls run with EVERY pass, however few reverts were asked for.
     # Without them a broken environment, where the unbroken suite fails
     # too, reads as "caught".
     only = sorted(set(only) | set(CONTROLS))
     res = []
+
+    def report(r):
+        if SHOW or (r[2] not in ("caught", "applies") and r[1] not in NULLS):
+            print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
+
+    quick = [i for i in only if fast and M[i][2] == FAST_TARGET]
     with cf.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
-        for r in ex.map(run_one, only):
+        for r in ex.map(run_one, [i for i in only if i not in quick]):
             res.append(r)
-            if SHOW or (r[2] not in ("caught", "applies") and r[1] not in NULLS):
-                print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
+            report(r)
+    if quick:
+        res += fast_run(quick, report)
     # The unbroken suite once more, AFTER everything else: if the machine
     # went wrong part-way (a full disk, a dead cache), every revert after
     # that point "failed" for that reason and not because it was caught.
