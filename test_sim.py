@@ -4236,5 +4236,530 @@ def _():
         and pr.max() <= 1 and pr.std() > 0.1)
 
 
+# ===========================================================================
+# S24 — touchdowns (ff_sim_td.py)
+# ===========================================================================
+ft = TouchdownModel = None
+
+
+@section("29. touchdowns — it loads")
+def _():
+    global ft, TouchdownModel
+    import ff_sim_td
+    ft, TouchdownModel = ff_sim_td, ff_sim_td.TouchdownModel
+    chk("it adds passing and anytime touchdowns to the efficiency model's "
+        "eight stats", ft.TD_STATS == ("passing_tds", "anytime_tds")
+        and ft.ALL_STATS == (*fe.EFF_STATS, "passing_tds", "anytime_tds"))
+
+
+# The test's own typed copy.
+TD_GRID = (20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1280.0, 2560.0, 5120.0, 10240.0)
+TD_COLS = {"td_per_target": ("receiving_tds", "targets"),
+           "td_per_carry": ("rushing_tds", "carries"),
+           "td_per_attempt": ("passing_tds", "attempts")}
+TD_MIN_POS = 200.0
+
+
+def td_league():
+    """(frame, lines): the efficiency league with touchdowns DRAWN on its
+    catches, carries and completions. Scoring differs by role and by team."""
+    f, lines = eff_league()
+    rng = np.random.default_rng(23)
+    catch_td = dict(WR1=0.16, WR2=0.07, TE=0.20, RB=0.05, QB=0.0, QB2=0.0)
+    run_td = dict(RB=0.07, QB=0.12, WR1=0.03, WR2=0.0, TE=0.0, QB2=0.0)
+    for i in f.index:
+        role = f.at[i, "player_id"].split("_")[1]
+        up = TEAM_LEAN[f.at[i, "team"]]
+        f.at[i, "receiving_tds"] = float(rng.binomial(
+            int(f.at[i, "receptions"]), min(catch_td[role] * (3 * up - 2), 0.9)
+            if 3 * up - 2 > 0 else 0.0))
+        f.at[i, "rushing_tds"] = float(rng.binomial(
+            int(f.at[i, "carries"]), run_td[role] * up))
+        f.at[i, "passing_tds"] = float(rng.binomial(
+            int(f.at[i, "completions"]), 0.02 + 0.30 * (up - 0.8)))
+    f[TD_STAT] = f.rushing_tds + f.receiving_tds
+    return f, lines
+
+
+def hand_rate(F, nc, dc, grid, half_life=16.0):
+    """One pulled rate learned from a history, with plain loops."""
+    w = 0.5 ** (1.0 / half_life)
+    rows = list(F.sort_values(["player_id", "t"], kind="stable").itertuples())
+    overall = sum(getattr(r, nc) for r in rows) / sum(getattr(r, dc) for r in rows)
+    pn, pd_ = {}, {}
+    for r in rows:
+        if r.position is not None:
+            pn[r.position] = pn.get(r.position, 0.0) + getattr(r, nc)
+            pd_[r.position] = pd_.get(r.position, 0.0) + getattr(r, dc)
+    by_pos = {q: pn[q] / pd_[q] for q in pn if pd_[q] >= TD_MIN_POS}
+    before, num_now, den_now, cur = [], {}, {}, object()
+    for r in rows:
+        if r.player_id != cur:
+            cur, sn, sd = r.player_id, 0.0, 0.0
+        before.append((sn, sd))
+        sn, sd = w * sn + getattr(r, nc), w * sd + getattr(r, dc)
+        num_now[cur], den_now[cur] = sn, sd
+    used = [(getattr(r, nc), getattr(r, dc), b, by_pos.get(r.position, overall))
+            for r, b in zip(rows, before) if getattr(r, dc) > 0]
+    miss = {k: sum((x - d * ((bn + k * nm) / (bd + k))) ** 2
+                   for x, d, (bn, bd), nm in used) for k in grid}
+    return dict(k=min(grid, key=lambda v: (miss[v], v)), miss=miss, overall=overall,
+                by_pos=by_pos, num_now=num_now, den_now=den_now, rows=len(used),
+                thin={q: pn[q] / pd_[q] for q in pn if 0 < pd_[q] < TD_MIN_POS})
+
+
+def hand_td(F, slate):
+    """Expected touchdowns for a slate and what they are built from, from
+    the by-hand opportunity fit and by-hand touchdown rates."""
+    base = by_hand_parts(F, slate)
+    rate = {r_: hand_rate(F, nc, dc, TD_GRID) for r_, (nc, dc) in TD_COLS.items()}
+    rows = list(slate.itertuples())
+
+    def q(name, r):
+        o = rate[name]
+        return ((o["num_now"].get(r.player_id, 0.0)
+                 + o["k"] * o["by_pos"].get(r.position, o["overall"]))
+                / (o["den_now"].get(r.player_id, 0.0) + o["k"]))
+
+    recv = [m * q("td_per_target", r) for m, r in zip(base["mean"]["targets"], rows)]
+    rush = [m * q("td_per_carry", r) for m, r in zip(base["mean"]["carries"], rows)]
+    thrown = [m * q("td_per_attempt", r) for m, r in zip(base["mean"]["attempts"], rows)]
+    return dict(base=base, rate=rate, recv=recv, rush=rush, thrown=thrown,
+                anytime=[a + b for a, b in zip(recv, rush)])
+
+
+@section("30. touchdowns — what it learns and what it projects, by hand")
+def _():
+    f, lines = td_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    m = TouchdownModel()
+    fit = m.fit(h)
+    for rate, (nc, dc) in TD_COLS.items():
+        r, o = fit.rate[rate], hand_rate(h.frame, nc, dc, TD_GRID)
+        chk(f"{rate}: the pull it picks, how each candidate pull scored, the "
+            f"position rates and every player's leaning totals match a "
+            f"long-hand re-derivation",
+            r["k"] == o["k"] and tuple(r["miss"]) == TD_GRID
+            and all(near(r["miss"][k_] / o["miss"][k_], 1.0, 1e-9) for k_ in TD_GRID)
+            and near(r["overall"], o["overall"], 1e-12)
+            and set(r["by_pos"]) == set(o["by_pos"])
+            and all(near(r["by_pos"][q_], o["by_pos"][q_], 1e-12) for q_ in o["by_pos"])
+            and set(r["num_now"]) == set(o["num_now"])
+            and all(near(r["num_now"][q_], o["num_now"][q_], 1e-9)
+                    and near(r["den_now"][q_], o["den_now"][q_], 1e-9)
+                    for q_ in o["num_now"]), (r["k"], o["k"]))
+    hk = {r_: hand_rate(h.frame, nc, dc, TD_GRID) for r_, (nc, dc) in TD_COLS.items()}
+    chk("(the fixture is worth it: no pull sits at an end of the list, and "
+        "each end would have been a worse pick)",
+        all(TD_GRID[0] < hk[r_]["k"] < TD_GRID[-1]
+            and hk[r_]["miss"][hk[r_]["k"]] < min(hk[r_]["miss"][TD_GRID[0]],
+                                                  hk[r_]["miss"][TD_GRID[-1]])
+            for r_ in TD_COLS), {r_: hk[r_]["k"] for r_ in TD_COLS})
+    chk("(...and it has positions on both sides of the 200 a position needs "
+        "for a rate of its own: receivers' targets and backs' carries are "
+        "over it; tight ends' targets, quarterbacks' carries and receivers' "
+        "carries are under it, with raw rates far from the all-player one)",
+        set(hk["td_per_target"]["by_pos"]) == {"WR"}
+        and set(hk["td_per_carry"]["by_pos"]) == {"RB"}
+        and set(hk["td_per_attempt"]["by_pos"]) == {"QB"}
+        and {"TE", "RB"} <= set(hk["td_per_target"]["thin"])
+        and {"QB", "WR"} <= set(hk["td_per_carry"]["thin"])
+        and abs(hk["td_per_target"]["thin"]["TE"] - hk["td_per_target"]["overall"]) > 0.02
+        and abs(hk["td_per_carry"]["thin"]["WR"] - hk["td_per_carry"]["overall"]) > 0.02,
+        (hk["td_per_target"]["thin"], hk["td_per_carry"]["thin"]))
+
+    def te_targets(total):
+        d = h.frame.copy()
+        te = d.index[d.position == "TE"]
+        d.loc[te, "targets"] = 5.0
+        d.loc[te[0], "targets"] = total - 5.0 * (len(te) - 1)
+        return History(d, T)
+
+    at200, at199 = te_targets(200.0), te_targets(199.0)
+    chk("a position with exactly 200 targets in the history has a rate of "
+        "its own, its touchdowns over its targets; with 199 it has none",
+        float(at200.frame.targets[at200.frame.position == "TE"].sum()) == 200.0
+        and near(TouchdownModel().fit(at200).rate["td_per_target"]["by_pos"]["TE"],
+                 float(h.frame.receiving_tds[h.frame.position == "TE"].sum()) / 200.0, 1e-12)
+        and "TE" not in TouchdownModel().fit(at199).rate["td_per_target"]["by_pos"]
+        and float(at199.frame.targets[at199.frame.position == "TE"].sum()) == 199.0)
+
+    nopos = h.frame.copy()
+    nopos["position"] = nopos.position.where(nopos.player_id != "DDD_WR1", None)
+    hn = History(nopos, T)
+    fn = TouchdownModel().fit(hn)
+    chk("a player with no position on file is judged against the all-player "
+        "rate: the pull, every position's rate and every candidate's score "
+        "still match the long-hand ones",
+        all(fn.rate[r_]["k"] == (o := hand_rate(hn.frame, nc, dc, TD_GRID))["k"]
+            and set(fn.rate[r_]["by_pos"]) == set(o["by_pos"])
+            and all(near(fn.rate[r_]["by_pos"][q_], o["by_pos"][q_], 1e-12)
+                    for q_ in o["by_pos"])
+            and all(near(fn.rate[r_]["miss"][k_] / o["miss"][k_], 1.0, 1e-9)
+                    for k_ in TD_GRID) for r_, (nc, dc) in TD_COLS.items())
+        and fn.rate["td_per_target"]["miss"] != fit.rate["td_per_target"]["miss"])
+
+    a = fs.slate_active(f, h)
+    new = a[a.player_id == "AAA_WR2"].assign(player_id="NEWMAN", name="NEWMAN")
+    odd = a[a.player_id == "BBB_TE"].assign(player_id="KICKER", name="KICKER",
+                                            position="K")
+    blank = a[a.player_id == "DDD_TE"].assign(player_id="NOPOS", name="NOPOS",
+                                              position=None)
+    full = pd.concat([a, new, odd, blank], ignore_index=True)
+    got, want = m.parts(h, full), hand_td(h.frame, full)
+    var = m.variances(h, full)
+    idx = {p_: i for i, p_ in enumerate(full.player_id)}
+    size = want["base"]["size"]
+    rt, tt, tc = m.rates(h, full), hk["td_per_target"], hk["td_per_carry"]
+    own = tt["num_now"]["AAA_WR1"] / tt["den_now"]["AAA_WR1"]
+    newte = a[a.player_id == "CCC_TE"].assign(player_id="NEWTE", name="NEWTE")
+    newrb = a[a.player_id == "CCC_RB"].assign(player_id="NEWRB", name="NEWRB")
+    rs = m.rates(h, pd.concat([full, newte, newrb], ignore_index=True))
+    chk("(the long-hand slate exercises what it should: a first-game player "
+        "is given his position's rate where the position has one, and the "
+        "all-player rate where it is too thin to; an unseen or missing "
+        "position the all-player one; and a receiver's own rate sits "
+        "between his raw rate and his position's)",
+        near(rt["td_per_target"][idx["NEWMAN"]], tt["by_pos"]["WR"], 1e-12)
+        and near(rt["td_per_carry"][idx["NEWMAN"]], tc["overall"], 1e-12)
+        and near(rs["td_per_target"][-2], tt["overall"], 1e-12)
+        and near(rs["td_per_carry"][-1], tc["by_pos"]["RB"], 1e-12)
+        and near(rt["td_per_target"][idx["KICKER"]], tt["overall"], 1e-12)
+        and near(rt["td_per_target"][idx["NOPOS"]], tt["overall"], 1e-12)
+        and near(rt["td_per_carry"][idx["NOPOS"]], tc["overall"], 1e-12)
+        and abs(tt["by_pos"]["WR"] - tt["overall"]) > 1e-4
+        and abs(tc["by_pos"]["RB"] - tc["overall"]) > 1e-4
+        and min(tt["by_pos"]["WR"], own) < rt["td_per_target"][idx["AAA_WR1"]]
+        < max(tt["by_pos"]["WR"], own) and abs(own - tt["by_pos"]["WR"]) > 0.01
+        and set(rt) == set(TD_COLS),
+        (rt["td_per_target"][idx["AAA_WR1"]], own, tt["by_pos"]["WR"], tt["overall"]))
+    chk("expected passing touchdowns are his expected attempts times his "
+        "pulled rate, by hand", same(got["mean"]["passing_tds"], want["thrown"])
+        and got["mean"]["passing_tds"][idx["BBB_QB"]] > 0.3
+        and math.isnan(got["mean"]["passing_tds"][idx["AAA_WR1"]]))
+    chk("expected anytime touchdowns are his targets times one rate plus his "
+        "carries times another, by hand", same(got["mean"][TD_STAT], want["anytime"])
+        and got["mean"][TD_STAT][idx["NEWMAN"]] > 0
+        and got["mean"][TD_STAT][idx["KICKER"]] > 0)
+    chk("...built from a receiving part spread as his targets are and a "
+        "rushing part spread as his carries are",
+        same(got["td"][TD_STAT][0][0], want["recv"])
+        and same(got["td"][TD_STAT][1][0], want["rush"])
+        and near(got["td"][TD_STAT][0][1], size["targets"], 1e-6)
+        and near(got["td"][TD_STAT][1][1], size["carries"], 1e-6)
+        and near(got["td"]["passing_tds"][0][1], size["attempts"], 1e-6)
+        and len({round(size[s_], 6) for s_ in ("targets", "carries", "attempts")}) == 3)
+    chk("the variance it reports is each part's own, added",
+        same(var[TD_STAT], [x + x * x / size["targets"] + y + y * y / size["carries"]
+                            for x, y in zip(want["recv"], want["rush"])], 1e-7)
+        and same(var["passing_tds"], [x + x * x / size["attempts"]
+                                      for x in want["thrown"]], 1e-7))
+    eff_parts = EfficiencyModel().parts(h, full)
+    chk("everything the efficiency model gives passes through unchanged: "
+        "expected numbers, variances, and what they are built from",
+        all(same(got["mean"][s_], eff_parts["mean"][s_]) for s_ in fe.EFF_STATS)
+        and all(same(var[s_], EfficiencyModel().variances(h, full)[s_])
+                for s_ in fe.EFF_STATS)
+        and set(got) == set(eff_parts) | {"td"})
+
+    P, E = m.project(h, full), EfficiencyModel().project(h, full)
+    i, q, b = idx["AAA_WR1"], idx["BBB_QB"], idx["CCC_RB"]
+    chk("...and so do their single numbers and chances",
+        all(P.point(j, s_) == E.point(j, s_) and P.p_over(j, s_, ln) == E.p_over(j, s_, ln)
+            for j, s_, ln in ((i, "receptions", 4.5), (i, "receiving_yards", 55.5),
+                              (b, "rushing_yards", 60.5), (b, "carries", 12.5),
+                              (q, "passing_yards", 220.5), (q, "completions", 19.5))))
+    chk("its single number for a touchdown stat is the expected count",
+        P.point(b, TD_STAT) == got["mean"][TD_STAT][b]
+        and P.point(q, "passing_tds") == got["mean"]["passing_tds"][q])
+    for who, j in (("a back", b), ("a receiver", i)):
+        x, y = want["recv"][j], want["rush"][j]
+        none = ((size["targets"] / (size["targets"] + x)) ** size["targets"]
+                * (size["carries"] / (size["carries"] + y)) ** size["carries"])
+        two = sum(nb_pmf(u, x, size["targets"]) * nb_pmf(v, y, size["carries"])
+                  for u in range(40) for v in range(40) if u + v >= 2)
+        chk(f"the chance {who} scores is one minus the chance of no receiving "
+            f"and no rushing touchdown; of two or more, the double sum over "
+            f"both counts", near(P.p_over(j, TD_STAT, 0.5), 1.0 - none, 1e-9)
+            and near(P.p_over(j, TD_STAT, 1.5), two, 1e-9)
+            and 0.02 < P.p_over(j, TD_STAT, 0.5) < 0.98, (P.p_over(j, TD_STAT, 0.5),
+                                                         1.0 - none))
+    chk("the chance of a passing-touchdown line is the count's chance of "
+        "MORE than it, spread as his attempts are",
+        near(P.p_over(q, "passing_tds", 1.5),
+             nb_tail(1, want["thrown"][q], size["attempts"]), 1e-9)
+        and near(P.p_over(q, "passing_tds", 0.5),
+                 nb_tail(0, want["thrown"][q], size["attempts"]), 1e-9))
+    chk("landing exactly on a whole-number line is not over it; any count "
+        "beats a line below zero",
+        P.p_over(q, "passing_tds", 1.0) == P.p_over(q, "passing_tds", 1.5)
+        < P.p_over(q, "passing_tds", 0.5) < P.p_over(q, "passing_tds", -0.5) == 1.0
+        and P.p_over(q, "passing_tds", -1.0) == 1.0
+        and P.p_over(q, "passing_tds", 0.0) == P.p_over(q, "passing_tds", 0.5)
+        and P.p_over(b, TD_STAT, 1.0) == P.p_over(b, TD_STAT, 1.5)
+        and P.p_over(b, TD_STAT, 0.0) == P.p_over(b, TD_STAT, 0.5)
+        and P.p_over(b, TD_STAT, -0.5) == 1.0)
+    for ln in (6.5, 20.5, 30.5):
+        far = sum(nb_pmf(u, want["thrown"][q], size["attempts"])
+                  for u in range(int(ln) + 1, 400))
+        x, y = want["recv"][b], want["rush"][b]
+        both = sum(nb_pmf(u, x, size["targets"])
+                   * sum(nb_pmf(v, y, size["carries"])
+                         for v in range(max(int(ln) + 1 - u, 0), 300))
+                   for u in range(300))
+        chk(f"a line as far out as {ln} is priced as exactly as a near one, "
+            f"for one count and for the sum of two",
+            near(P.p_over(q, "passing_tds", ln) / far, 1.0, 1e-6) and far > 0
+            and near(P.p_over(b, TD_STAT, ln) / both, 1.0, 1e-6) and both > 0,
+            (P.p_over(q, "passing_tds", ln), far, P.p_over(b, TD_STAT, ln), both))
+    ladders = [[P.p_over(j, s_, k_ + 0.5) for k_ in range(60)]
+               for j, s_ in ((b, TD_STAT), (i, TD_STAT), (q, "passing_tds"))]
+    chk("no chance it states is below zero or above one, however far the "
+        "line, and a higher line is never likelier",
+        all(0.0 <= v_ <= 1.0 for lad in ladders for v_ in lad)
+        and all(lad[n_ + 1] < lad[n_] for lad in ladders for n_ in range(59))
+        and all(0.0 <= P.p_over(j, TD_STAT, 500.5) < 1e-100 for j in range(len(full))
+                if not math.isnan(got["mean"][TD_STAT][j])))
+    grid = [ft._TdLines(None, {"mean": {TD_STAT: np.array([m0 + m1])},
+                               "td": {TD_STAT: [(np.array([m0]), r0),
+                                                (np.array([m1]), r1)]}}
+                        ).p_over(0, TD_STAT, n_ - 0.5)
+            for m0 in (0.05, 1.0, 8.0, 60.0) for m1 in (0.05, 1.0, 8.0, 60.0)
+            for r0 in (3.0, 8.0, 500.0) for r1 in (3.0, 40.0, 500.0) for n_ in (1, 2, 3, 5)]
+    chk("...nor does rounding ever carry a chance over one, even for a "
+        "player expected an absurd sixty touchdowns",
+        len(grid) == 576 and all(0.0 <= v_ <= 1.0 for v_ in grid) and max(grid) == 1.0
+        and min(grid) < 0.01, (min(grid), max(grid)))
+    chk("a line that is not a number is refused by name, for a player with "
+        "a projection and for one without",
+        raises(lambda: P.p_over(q, "passing_tds", float("nan")), ValueError,
+               "passing_tds line must be a number")
+        and raises(lambda: P.p_over(b, TD_STAT, float("inf")), ValueError,
+                   "anytime_tds line must be a number")
+        and raises(lambda: P.p_over(i, "passing_tds", float("nan")), ValueError,
+                   "must be a number"))
+    chk("the chances it states add up to the expected count",
+        all(near(sum(P.p_over(j, s_, k_ + 0.5) for k_ in range(12)),
+                 got["mean"][s_][j], 1e-6)
+            for j, s_ in ((b, TD_STAT), (i, TD_STAT), (q, "passing_tds"))))
+    chk("it gives a receiver no passing touchdowns, and has no number for a "
+        "stat nobody projects",
+        math.isnan(P.p_over(i, "passing_tds", 0.5)) and math.isnan(P.point(i, "passing_tds"))
+        and math.isnan(P.p_over(i, "passing_tds", -0.5))
+        and math.isnan(P.point(i, "first_td")) and math.isnan(P.p_over(i, "first_td", 0.5)))
+
+    def only(n, col, *more):
+        d = h.frame.copy()
+        keep = d.index[d[col] > 0][:n]
+        for c in (col, *more):
+            d[c] = d[c].where(d.index.isin(keep), 0.0)
+        return History(d, T)
+
+    for col, more, word in (("targets", ("receiving_tds",), "target"),
+                            ("carries", ("rushing_tds",), "carry"),
+                            ("attempts", ("passing_tds",), "pass attempt")):
+        tm = TouchdownModel()
+        chk(f"sixteen games with a {word} are enough to learn its touchdown "
+            f"rate from; fifteen are not, and it says which",
+            tm.fit(only(16, col, *more)).ok
+            and not TouchdownModel().fit(only(15, col, *more)).ok
+            and f"15 player-games with a {word} " in TouchdownModel().fit(
+                only(15, col, *more)).why)
+    thin = TouchdownModel()
+    th = only(15, "attempts", "passing_tds")
+    chk("...and then it says nothing at all, for any stat, and every rate "
+        "is blank",
+        all(np.isnan(thin.parts(th, a)["mean"][s_]).all() for s_ in ft.ALL_STATS)
+        and all(np.isnan(v_).all() for v_ in thin.rates(th, a).values())
+        and math.isnan(thin.project(th, a).p_over(0, TD_STAT, 0.5))
+        and math.isnan(thin.project(th, a).p_over(0, "receptions", 2.5)))
+    changed = f[f.t < T].copy()
+    changed.loc[changed.player_id == "AAA_WR1", "receiving_tds"] = 0.0
+    hc = History(changed, T)
+    used = TouchdownModel()
+    used.fit(h)
+    chk("a model that has fitted one history fits another afresh, even one "
+        "that stops at the same week",
+        used.fit(hc) is not used.fit(h) and used.fit(h) is used.fit(h)
+        and used.fit(hc).rate["td_per_target"]["num_now"]["AAA_WR1"] == 0.0
+        and fit.rate["td_per_target"]["num_now"]["AAA_WR1"] > 0)
+
+    eff = EfficiencyModel("e", opportunity=OpportunityModel("o", lines=lines))
+    on = TouchdownModel("with_lines", efficiency=eff)
+    chk("it sits on the efficiency model it is given; with none it makes "
+        "its own, named after itself",
+        on.eff is eff and on.name == "with_lines" and TouchdownModel().name == "touchdowns"
+        and not same(on.parts(h, full)["mean"][TD_STAT], got["mean"][TD_STAT])
+        and TouchdownModel("abc").eff.name == "abc_efficiency")
+
+
+@section("31. touchdowns — through the harness, and real data")
+def _():
+    f, _ = td_league()
+    T = 202404
+    h = History(f[f.t < T], T)
+    a = fs.slate_active(f, h)
+    run = fs.walk_forward(f, [TouchdownModel(), fs.LastFour()], weeks=[202403, T])
+    L = run.legs[run.legs.version == "A"]
+    chk("through the harness it prices every stat there is, touchdowns "
+        "included",
+        L.p_touchdowns.notna().all() and set(L.stat) == set(ft.ALL_STATS)
+        and (L.stat == TD_STAT).sum() > 5 and (L.stat == "passing_tds").sum() > 2)
+    hw = run.points[(run.points.version == "A") & (run.points.player_id == "CCC_RB")
+                    & (run.points.stat == TD_STAT) & (run.points.week == 4)]
+    at = list(a.player_id).index("CCC_RB")
+    chk("...and the number the harness records is the long-hand one",
+        len(hw) == 1 and near(float(hw.pt_touchdowns.iloc[0]),
+                              hand_td(h.frame, a)["anytime"][at], 1e-9))
+    sat = f[~((f.t == T) & (f.player_id == "AAA_WR2"))]
+    sp = fs.walk_forward(sat, [TouchdownModel()], weeks=[T]).points
+    sp = sp[(sp.stat == TD_STAT) & (sp.team == "AAA")]
+    ab = sp[sp.version == "A"].merge(sp[sp.version == "B"], on=["game_id", "player_id"],
+                                     suffixes=("_a", "_b"))
+    chk("its touchdown numbers differ between the two slates when a regular "
+        "sits out: his teammates are expected more with him known to be out",
+        len(ab) >= 3 and (ab.pt_touchdowns_a > ab.pt_touchdowns_b + 1e-6).any()
+        and not (ab.pt_touchdowns_a < ab.pt_touchdowns_b - 1e-9).any(),
+        ab[["player_id", "pt_touchdowns_a", "pt_touchdowns_b"]].to_dict("records")[:3])
+    probe = fs.leak_probe(f, [TouchdownModel()], [202403, T])
+    chk("the leak probe finds nothing reaching it through the harness",
+        probe.clean and probe.outputs["touchdowns"] > 300, probe.describe()[:100])
+    ea = fe.expected_vs_actual(TouchdownModel(), f, [T], stats=ft.TD_STATS)
+    parts = TouchdownModel().parts(h, a)
+    d = ea[ea.stat == TD_STAT].set_index("player_id")
+    chk("the efficiency model's expected-beside-actual table works on it: "
+        "each player's expected touchdowns, what he scored that week, and "
+        "the chance it gives of beating its own number",
+        set(ea.stat) == set(ft.TD_STATS)
+        and all(near(d.expected[r.player_id], parts["mean"][TD_STAT][i], 1e-12)
+                and d.actual[r.player_id] == float(
+                    f[(f.t == T) & (f.player_id == r.player_id)][TD_STAT].iloc[0])
+                for i, r in enumerate(a.itertuples()))
+        and near(d.said_above["CCC_RB"], TouchdownModel().project(h, a).p_over(
+            at, TD_STAT, parts["mean"][TD_STAT][at]), 1e-12)
+        and (ea.stat == "passing_tds").sum() == int(a.starting_qb.sum()))
+    pv = ft.parts_vs_actual(TouchdownModel(), f, [202403, T])
+    one = pv[pv.t == T].reset_index(drop=True)
+    hw_ = hand_td(h.frame, a)
+    Pa = TouchdownModel().project(h, a)
+    now = f[f.t == T].set_index("player_id")
+    chk("the table of expected beside actual has one row per week and active "
+        "player with a number, in slate order, saying who he is",
+        list(one.player_id) == list(a.player_id) and list(one.team) == list(a.team)
+        and list(one.position) == list(a.position)
+        and list(one.starter) == list(a.starting_qb) and set(pv.t) == {202403, T}
+        and list(one.game_id) == list(a.game_id) and len(pv) > len(one) > 12)
+    chk("...what it expected of him is the long-hand number, column by "
+        "column: targets, carries, attempts, and each kind of touchdown",
+        same(one.e_targets, hw_["base"]["mean"]["targets"])
+        and same(one.e_carries, hw_["base"]["mean"]["carries"])
+        and same(one.e_attempts, hw_["base"]["mean"]["attempts"])
+        and same(one.e_rec_td, hw_["recv"]) and same(one.e_rush_td, hw_["rush"])
+        and same(one.e_pass_td, hw_["thrown"])
+        and not same(one.e_rec_td, one.e_rush_td))
+    chk("...the chances are of one or more and of two or more",
+        same(one.p1, [Pa.p_over(j, TD_STAT, 0.5) for j in range(len(a))])
+        and same(one.p2, [Pa.p_over(j, TD_STAT, 1.5) for j in range(len(a))])
+        and (one.p1 > one.p2).all())
+    chk("...and what he did is that week's, for that player",
+        all(list(one[c]) == [float(now.at[q_, c]) for q_ in one.player_id]
+            for c in ("targets", "carries", "attempts", "receiving_tds",
+                      "rushing_tds", "passing_tds", TD_STAT))
+        and one[TD_STAT].sum() > 0 and one.passing_tds.sum() > 0
+        and list(pv[pv.t == 202403][TD_STAT]) == [
+            float(f[(f.t == 202403) & (f.player_id == q_)][TD_STAT].iloc[0])
+            for q_ in pv[pv.t == 202403].player_id])
+    thin_week = ft.parts_vs_actual(TouchdownModel(), f, [202302, T])
+    h2 = History(f[f.t < 202302], 202302)
+    chk("...a player it has no number for is left out, not shown as a blank: "
+        "a week whose history is too thin to fit gives no rows at all",
+        np.isnan(TouchdownModel().parts(h2, fs.slate_active(f, h2))["mean"][TD_STAT]).all()
+        and len(fs.slate_active(f, h2)) > 12
+        and set(thin_week.t) == {T} and len(thin_week) == len(one)
+        and thin_week.p1.notna().all() and thin_week.e_rec_td.notna().all())
+    pk = ft.pulls_picked(TouchdownModel(), f, [202301, 202403, T])
+    chk("the pulls picked are listed week by week, each the long-hand pick on "
+        "the history before that week; a week with too little history is "
+        "left out",
+        list(pk.t) == [202403, T] and list(pk.columns) == ["t", *TD_COLS]
+        and all(pk[r_].iloc[1] == hand_rate(h.frame, nc, dc, TD_GRID)["k"]
+                and pk[r_].iloc[0] == hand_rate(f[f.t < 202403], nc, dc, TD_GRID)["k"]
+                for r_, (nc, dc) in TD_COLS.items()), pk.to_dict("records"))
+    wl = fe.with_main_line(run, fe.expected_vs_actual(
+        TouchdownModel(), f, [202403, T], stats=ft.TD_STATS), "touchdowns",
+        stats=ft.TD_STATS)
+    chk("...and so does its table of players with a line: an anytime line "
+        "is always a half", set(wl.stat) == set(ft.TD_STATS)
+        and (wl[wl.stat == TD_STAT].line == 0.5).all() and len(wl) > 8)
+
+    frame = REAL.get("frame")
+    if frame is None:
+        frame = fs.load_frame()
+    wk = fs.test_weeks(frame)[-2:]
+    rr = fs.walk_forward(frame, [TouchdownModel()], weeks=wk)
+    ra = rr.legs[(rr.legs.version == "A") & rr.legs.stat.isin(ft.TD_STATS)]
+    pv = ra.p_touchdowns.to_numpy(dtype=float)
+    chk("on real weeks it prices every touchdown leg, between 0 and 1",
+        not np.isnan(pv).any() and pv.min() >= 0 and pv.max() <= 1 and len(ra) > 300,
+        len(ra))
+    hr = History(frame[frame.t < wk[-1]], wk[-1])
+    sa = fs.slate_active(frame, hr)
+    rm = TouchdownModel()
+    rfit, rt = rm.fit(hr), rm.rates(hr, sa)
+    pos = sa.position.to_numpy()
+    chk("on real history the pull picked for each rate is inside the list",
+        all(TD_GRID[0] < rfit.rate[r_]["k"] < TD_GRID[-1] for r_ in TD_COLS),
+        {r_: rfit.rate[r_]["k"] for r_ in TD_COLS})
+    chk("...and the rates are football: a receiver scores on a few targets "
+        "in a hundred, a back on a few carries in a hundred, a starter "
+        "throws a touchdown on four or five attempts in a hundred",
+        0.02 < np.median(rt["td_per_target"][pos == "WR"]) < 0.08
+        and 0.015 < np.median(rt["td_per_carry"][pos == "RB"]) < 0.06
+        and 0.03 < rt["td_per_attempt"][sa.starting_qb.to_numpy()].min()
+        and rt["td_per_attempt"][sa.starting_qb.to_numpy()].max() < 0.07,
+        (np.median(rt["td_per_target"][pos == "WR"]),
+         np.median(rt["td_per_carry"][pos == "RB"])))
+    starters = sa[sa.starting_qb.to_numpy()]
+    odd = pd.concat([starters.iloc[:1].assign(position="RB"),
+                     sa[pos == "WR"].iloc[:1].assign(position="CB"),
+                     sa[pos == "WR"].iloc[:1].assign(player_id="NOBODY", position="DE")],
+                    ignore_index=True)
+    ro = rm.rates(hr, odd)
+    chk("on real history only a position with 200 of the thing has its own "
+        "rate: quarterbacks alone for pass attempts; backs, receivers and "
+        "tight ends for targets; no lineman or cornerback for anything",
+        set(rfit.rate["td_per_attempt"]["by_pos"]) == {"QB"}
+        and {"RB", "WR", "TE"} <= set(rfit.rate["td_per_target"]["by_pos"])
+        and {"RB", "QB"} <= set(rfit.rate["td_per_carry"]["by_pos"])
+        and not {"CB", "DE", "DT", "OT", "T", "G", "C", "LB", "S", "P", "K"} & set().union(
+            *(rfit.rate[r_]["by_pos"] for r_ in TD_COLS)),
+        {r_: sorted(rfit.rate[r_]["by_pos"]) for r_ in TD_COLS})
+    chk("...so a starter listed at running back is pulled toward the "
+        "all-player rate of touchdown passes, which is a quarterback's, and "
+        "a cornerback or a new defensive end is given the all-player rate "
+        "per target, not one catch's worth",
+        0.03 < ro["td_per_attempt"][0] < 0.07
+        and near(rfit.rate["td_per_attempt"]["overall"]
+                 / rfit.rate["td_per_attempt"]["by_pos"]["QB"], 1.0, 0.02)
+        and near(ro["td_per_target"][2], rfit.rate["td_per_target"]["overall"], 1e-12)
+        and 0.02 < ro["td_per_target"][1] < 0.12
+        and 0.03 < rfit.rate["td_per_target"]["overall"] < 0.07,
+        (ro["td_per_attempt"][0], ro["td_per_target"][1], ro["td_per_target"][2]))
+    pm = rm.parts(hr, sa)["mean"]
+    pr_ = rm.project(hr, sa)
+    best = int(np.nanargmax(pm[TD_STAT]))
+    chk("...the likeliest scorer on the slate is likely but not certain, "
+        "and a real starter is expected one to two and a half touchdown "
+        "passes",
+        0.4 < pr_.p_over(best, TD_STAT, 0.5) < 0.85
+        and 0.8 < pm["passing_tds"][sa.starting_qb.to_numpy()].min()
+        and pm["passing_tds"][sa.starting_qb.to_numpy()].max() < 2.6,
+        (pr_.p_over(best, TD_STAT, 0.5), pm["passing_tds"][sa.starting_qb.to_numpy()].max()))
+    lp = fs.leak_probe(frame, [TouchdownModel()], wk[-1:])
+    chk("the leak probe finds nothing reaching it through the harness, on "
+        "real data", lp.clean, lp.describe()[:100])
+
+
 _summary()
 sys.exit(1 if fails else 0)

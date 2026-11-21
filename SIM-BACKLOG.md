@@ -4,15 +4,15 @@ Owned by the simulator thread. Ids are `S1`, `S2`, ... The betting engine's
 backlog is `BACKLOG.md` (ids `B...`) and is never edited from here.
 `SIM-HANDOFF.md` is the brief this build works from.
 
-## State on 2026-11-20 (after S13)
+## State on 2026-11-20 (after S24)
 
 | | |
 |---|---|
-| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). **Nothing yet projects touchdowns, nothing has been set beside a book's line, and there is no script to run on a real slate.** |
-| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_reverts.py`, this file |
-| Simulator suite | `python3 test_sim.py` → **657 checks, ALL PASS** |
+| Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). Touchdowns on top of all of it: anytime (rushing or receiving) and passing (S24). **First touchdown is not built, nothing has been set beside a book's line, and there is no script to run on a real slate.** |
+| Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_touchdowns.py`, `sim_reverts.py`, this file |
+| Simulator suite | `python3 test_sim.py` → **710 checks, ALL PASS** |
 | Engine suite | `python3 test_regression.py` → 1801, untouched. No existing file was edited. |
-| Next | Touchdowns, then the live-run script, to reach a shadow run (Dustin's order, 2026-11-20). S11, S12, S18, S19, S20 wait until shadow runs have started. |
+| Next | The live-run script, to reach a shadow run (Dustin's order, 2026-11-20). S11, S12, S18, S19, S20 wait until shadow runs have started. |
 
 ```bash
 python3 refresh.py
@@ -22,6 +22,7 @@ python3 sim_baseline.py --current-week 11      # the yardsticks; about 2 minutes
 python3 sim_opportunity.py --current-week 11   # targets, carries, pass attempts; about 4 minutes
 python3 sim_efficiency.py --current-week 11    # catches and yards; about 4 minutes
 python3 sim_play.py --current-week 11          # chance of playing; about 6 minutes
+python3 sim_touchdowns.py --current-week 11    # touchdowns; about 7 minutes
 python3 sim_reverts.py                         # break every behaviour; about 3 hours
 ```
 
@@ -772,6 +773,233 @@ working copy's. No earlier revert was rerun: `ff_sim.py`, `ff_sim_opp.py`,
 `ff_sim_eff.py` and sections 1 to 24 of the suite are byte for byte the
 committed ones.
 
+## S24. Touchdowns — MEASURED 2026-11-20
+
+`ff_sim_td.py`. `TouchdownModel` sits on the efficiency model, passes its
+eight stats through untouched, and adds two: `anytime_tds` (a player's
+rushing plus receiving touchdowns, which is how an anytime prop settles)
+and `passing_tds` (the named starter's). Three rates per player
+(touchdowns per target, per carry, per pass attempt), each his own totals
+leaning on the newest and pulled toward his position's rate; how hard to
+pull is picked each week on the history, as for catches and yards. A
+position has a rate of its own only on 200 or more targets, carries or
+attempts in the history; a thinner one takes the all-player rate. A
+player's receiving touchdowns are spread as his targets are and his
+rushing touchdowns as his carries; the chance he scores is one minus the
+chance of none of either. To put it on the chance-of-playing model:
+`TouchdownModel("td", efficiency=EfficiencyModel("eff",
+opportunity=ChanceOpportunity("opp", chance=PlayChance(reports))))`.
+
+### What was measured (`sim_touchdowns.py`, run 2026-11-20)
+
+46 weeks, 2024 Week 1 to 2026 Week 10, 694 games. An anytime line is
+always a half (did he score), one leg a player-game. Passing touchdowns
+have a short ladder of stand-in lines, 0.5 to 4.5.
+
+**Brier score, gap to knowing nothing** (its size in standard errors in
+brackets; knowing nothing scores 0.206 on anytime, 0.239 on the passing
+main line):
+
+| | list known: game-log | simulator | list NOT known: game-log | as it was | with the report |
+|---|---|---|---|---|---|
+| anytime touchdown (7,177 / 6,931 legs) | −0.0018 (1.0) | **−0.0112 (10.4)** | −0.0018 (1.0) | −0.0075 (6.5) | **−0.0116 (10.5)** |
+| passing TDs, main line (1,211 / 1,117) | −0.0088 (2.2) | **−0.0177 (4.6)** | −0.0091 (2.2) | −0.0181 (4.7) | −0.0181 (4.7) |
+| passing TDs, every rung (3,023 / 2,817) | −0.0027 (1.1) | **−0.0100 (3.7)** | −0.0030 (1.2) | −0.0098 (3.5) | −0.0098 (3.5) |
+
+1. **It beats knowing nothing and the game-log model on both stats, on
+   both slates.** Head to head with the game-log model on the same legs,
+   list known: anytime −0.0094 (se 0.0013); passing main line −0.0089 (se
+   0.0028); passing every rung −0.0073 (se 0.0019). List not known:
+   anytime −0.0057 (se 0.0016) as it was and −0.0098 (se 0.0013) with the
+   report; passing main line −0.0090 (se 0.0028); every rung −0.0068 (se
+   0.0020). The gain over knowing nothing is real and small: about 5% off
+   the know-nothing score on anytime.
+2. **With the list not known the chance of playing matters for anytime**
+   (−0.0075 without it, −0.0116 with; head to head −0.0041, se 0.0006)
+   and changes nothing for passing touchdowns.
+3. **The game-log model's anytime chances are badly spread**: where it
+   said 0 to 10% they scored 16.7%, where it said 60 to 70%, 48.3%. The
+   simulator's come in ABOVE what it said in every band of 100
+   player-games or more: by 2 to 5 points with the list known, by 1 to 3
+   with the report and the list not known (four of those five bands are
+   inside their own range and read "as stated"; see "What is weak"). As
+   it was, with the list not known, the bands from 10% to 60% come in 5
+   to 10 points above.
+4. **The pull is steady, and a regular's rate is still partly his own.**
+   It mixes in 160 of the position's targets in 20 weeks, 320 in 25 and
+   640 in 1; 160 carries in all 46; 320 pass attempts in all 46. By
+   arithmetic, with the 16-game half-life a player's leaning total can be
+   at most 23.6 games' worth: a receiver on 8 targets a game has at most
+   189 behind him, so his rate is 37% his own at a pull of 320 and 54% at
+   160; a back on 15 carries, 69% at 160; a starter on 34 attempts, 71%
+   at 320.
+
+### What is weak
+
+- **It is low on the regulars and high on the fringe, and the two cancel
+  (S25).** Anytime, list known, every active quarterback, back, receiver
+  and tight end (17,642 player-games): said 15.63%, scored 15.98% (+0.35,
+  se 0.24). That is two opposite errors. The 7,171 with a line: said
+  26.0%, scored 29.0% (+3.0, se 0.5). The 10,471 without: said 8.52%,
+  scored 7.05% (−1.47, se 0.23); quarterbacks −2.74 (se 0.79), backs
+  −2.46 (se 0.53), receivers −1.45 (se 0.38), tight ends −0.19 (se 0.41).
+  **The players a prop is written on are the ones it is low on.** With
+  the report and the list not known, which is nearer a main run: said
+  27.4%, scored 29.2% (+1.8, se 0.5); by band 10-20% said 16.5% scored
+  17.3%, 20-30% 24.8% and 27.2%, 30-40% 34.2% and 35.3%, 40-50% 44.2%
+  and 46.8%, 50-60% 53.7% and 56.6%; backs +2.2 (se 1.0), receivers +0.8
+  (se 0.8), tight ends +3.2 (se 1.2), quarterbacks +2.8 (se 2.5).
+  Where the gap comes from, list known (section 5; "give or take" is
+  the spread over redraws of the games). Players with a line: 2,284
+  touchdowns expected, 2,555 scored, 271 short. Too few targets and
+  carries account for 97 of it (give or take 11; this is S11, parked),
+  the rate for 173 (give or take 43): they scored 4.89 times per 100
+  targets where it expected 4.60, and 3.70 per 100 carries where it
+  expected 3.40. It is not the same at every position: for receivers the
+  chances are the larger part (38 against 27, give or take 30); for
+  backs, tight ends and quarterbacks the rate is (65, 50 and 30).
+  Players without a line go the other way, 963 expected and 801 scored,
+  and there it is mostly too MANY chances (102 of the 162) and a rushing
+  rate that is too high (2.91 per 100 carries seen, 3.58 expected;
+  quarterbacks 186 rushing touchdowns expected and 140 scored, backs 195
+  and 141). Their receiving rate is right (4.58 seen, 4.51 expected).
+  So a position's one rushing rate is too low for its regulars and too
+  high for its fringe; for receiving that shows for the regulars only.
+  Why is not tested.
+- **Passing touchdowns run low in the middle of the ladder.** List known:
+  over 0.5 said 72.2%, went over 74.6% (+2.4, se 1.6); over 1.5, 41.8% and
+  46.8% (+5.1, se 1.6); over 2.5, 20.8% and 25.3% (+4.5, se 1.8); over
+  3.5, +0.6; over 4.5, −2.0 (se 1.4). List not known it is the same or a
+  little worse (over 1.5 +5.6, over 2.5 +5.2). With the list known,
+  named starters were expected 1,949 touchdown passes and threw 2,018,
+  and that too is two opposite errors: the 1,211 starts with a passing
+  line, 1,722 expected and 1,837 thrown, nearly all of it rate (4.82 per
+  100 attempts against 4.54 expected); the 177 without, 228 expected and
+  181 thrown. Starters with a role are short 0.095 a game with the list
+  known and 0.113 with it not known. On the main line the unders it put
+  at 60% or better came in under what it said: 811 legs, stated 71.7%, happened 67.1% (−4.6, se 1.7) with the
+  list known, 757 legs and −4.7 with it not known; the overs came in
+  above, on few legs (116, +6.3, se 4.0; and 94, +10.4, se 4.3). **At 0.5,
+  1.5 and 2.5 the game-log model's chances are nearer what happened**
+  (over 1.5: said 47.5%, went over 46.8%), though it scores worse
+  overall. On these stand-in lines a main-line passing-touchdown UNDER
+  from the simulator is overstated.
+- **Nothing about the offence or the opponent.** A player's rate is his
+  own and his position's. A good offence shows up only through his own
+  past touchdowns, and where on the field his touches come is not read at
+  all. The closing total would be the obvious input; it is out by
+  Dustin's decision of 2026-11-20 until the game-script stage.
+- **FIRST TOUCHDOWN is not built (S26).** The brief asks for it. It needs
+  every scorer in the game put in order, which is the game-level
+  simulation, and the harness has no first-touchdown result to grade.
+- **Two or more touchdowns is priced but barely checked.** No stand-in
+  line grades it. Beside results, list known, the same 17,642: said
+  2.35%, happened 2.70% (+0.35, se 0.12); players with a line 4.86% and
+  5.83% (+0.97, se 0.27); where it said 10% or more (782 player-games),
+  14.6% and 17.1% (se 1.3). The shortfall is on the players with a
+  line, as it is for one-or-more; without a line it is right (0.63% and
+  0.56%).
+- **A player's rushing and receiving touchdowns are added as unrelated**,
+  and each is spread exactly as his targets or carries are. Argued, not
+  measured beyond the line above.
+- **The 200 a position needs is a step.** Tight ends' carries passed 200
+  in the history at 2025 Week 10, and that week every tight end's rate
+  per carry went from the all-player 3.4 per 100 to tight ends' own (7.2
+  now; by the reviewer's count about half of those carries and
+  touchdowns are one player's). The reviewer put the largest move in a
+  chance at about 3 points.
+- **A whole team has to be on the slate, and the starter named** (for the
+  live-run script to enforce). The model shares a team's targets and
+  carries among whoever is listed: a receiver listed alone is given all
+  of them. With no starter named, every passing number is blank and
+  nothing says why. The plain model does not check that the slate is for
+  the week its history stops at; the chance-of-playing model does.
+- **The efficiency model's position rates have the hole this stage's
+  review found here (S27).** `ff_sim_eff.py` gives a position its own
+  catch rate, yards per catch and so on from any number of plays. It
+  matters only for odd positions (a cornerback's targets, a non-
+  quarterback's passes); the four skill positions are not touched.
+- **Stand-in lines, and no prices.** An anytime "yes" at a book carries a
+  wide margin. Nothing here says any of these chances beats a price.
+- **Everything the opportunity model gets wrong is still in these
+  numbers.**
+
+### How it was checked
+
+Within the budget set on 2026-11-20: the suite (710 checks, 53 of them
+new); the leak probe on all 46 weeks (1,384,731 outputs identical; it
+cannot see the reports); the walk-forward measurement above; reverts for
+the new file only (95 in the end; see below); and an independent review.
+
+**The review found a wrong number, so there was a second pass.** The
+first pass reran the measurement (every figure matched, no leak) and
+re-derived the model's numbers by plain loops on a real week to 1e-15.
+What it found:
+
+- **A position's rate was taken at face value on any number of plays.**
+  A cornerback with targets was given a scoring chance of exactly 0 on
+  three graded legs (his position had never scored) and scored on one; a
+  defensive tackle was given 42%; a starter listed at running back would
+  have been expected 6.2 touchdown passes. Fixed: a position needs 200
+  of the thing for its own rate. The suite checks it on the fixture, at
+  exactly 200 and 199, and on real history. The score table above is the
+  same to four decimals before and after.
+- **"Over everyone it is about right" hid two opposite errors**, and the
+  write-up blamed too few chances first when the rate is the larger part
+  (173 of 271). Both are now measured in the script (section 5) and
+  stated above. A sentence blaming a thin first season was not supported
+  (by the reviewer's count 2024 and 2025 differ by 1.1 points, se 1.1)
+  and is gone.
+- **A chance could come out a hair below zero** (−2e-16) far out on the
+  ladder, which the harness refuses, and a far line lost precision.
+  Chances are now added from the top: exact, never negative. A line that
+  is not a number is refused by name.
+- **The table behind the "where it is off" figures was in the script,
+  untested.** It is now `ff_sim_td.parts_vs_actual`, checked by hand in
+  the suite and covered by reverts. The splits made from it (who had a
+  line; chances against rate) are still worked out in the script, which
+  the suite does not import; the second pass rebuilt them independently
+  and matched every figure.
+- Smaller: figures quoted without their slate; "players" for
+  player-games; sections 5 and 6 counted punters and linemen (now the
+  four skill positions, 1,747 other player-games left out and said so).
+
+**The second pass** was kept to the fixes and the rewritten write-up. It
+found no wrong number: 54,000 chances against brute-force sums (worst
+error 4e-14, none outside 0 to 1), the position floor recounted, every
+figure in sections 5 and 6 rebuilt on all 19,389 rows. It did find
+claims and a test to fix, and **those fixes have not been reviewed**:
+
+- "One rate for a position is too low for its regulars and too high for
+  its fringe" was stated as fact and is false for receiving on the
+  fringe. The split for players without a line is now printed and the
+  paragraph above says what it shows.
+- The check that a player with no number is left out of the table could
+  not fail. Replaced; the revert that had slipped past it is now caught.
+- The 173 against 97 carried no error (now printed: give or take 43 and
+  11), and the passing total pooled two opposite errors (now split).
+- The label on players without a line said "not enough recent games";
+  8,850 of the 10,471 had the games and not the role.
+
+**Reverts, each run once on the file as it then stood.** One pass of all
+95 after the first review's fixes: 93 caught, 2 not. One was an edit
+that changed nothing (a guard the rewritten chance had made redundant;
+guard and entry dropped). The other was the check above that could not
+fail. The 18 entries those two edits touch were then run again: 18
+caught. The other 77 were not rerun after those two edits. An earlier
+pass on the code before the first review's fixes was stopped at 55 of 69
+(54 caught; the one not caught was an edit that changed nothing, and
+was dropped).
+
+Fresh clone at commit 7175346 with the two new files and three changed
+ones added: engine suite 1801, simulator suite 710, every revert entry
+applies (611), `sim_touchdowns.py` output identical to the working
+copy's. No engine file and no earlier simulator module was edited:
+`ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py` and the
+four earlier measurement scripts are byte for byte the committed ones,
+and sections 1 to 28 of the suite are unchanged (the new sections are
+added after them). No earlier revert was rerun.
+
 ---
 
 ## Open
@@ -800,6 +1028,10 @@ committed ones.
 | **S21** | **Calibration pooled over all rungs hides opposite errors by rung.** | **OPEN, measured; found by the engine thread 2026-11-20 and reproduced here.** Simulator as it was, list known, catches and yards, favoured side: on the main line a stated 65-70% came in 61.1%, 70-75% 67.9%, 75-80% 72.6%; on the x0.6 rung the same bands came in 72.6%, 74.0%, 80.3%. Main-line legs it put at 65% or better: overs 920 legs, stated 72.5%, happened 67.5% (se 1.8); unders 5,874 legs, 73.5% against 68.6% (se 0.7). With the chance of playing, list not known: overs 72.0% against 65.5%, unders 72.6% against 69.9%. The game-log model's confident main-line overs: 69.7% stated, 57.9% happened. So every pooled calibration table in this file flatters the main line, which is the rung most like a posted line. `sim_play.py` section 5 prints the table rung by rung; `sim_opportunity.py` and `sim_efficiency.py` do not yet. A threshold must be read from the main-line row, and better from real posted lines (S3). |
 | **S22** | **Parked until shadow runs start (Dustin, 2026-11-20):** S11, S12, S18, S19, S20. | **WAITING.** |
 | **S23** | **The chance of playing is 27 points too high in Week 1.** | **OPEN, measured.** Said 76.6%, played 49.5% on 1,642 listed player-games; from Week 2 on, 72.2% against 72.3%. The count treats a team's games as one run across seasons. Fix: count season-openers apart (there are two seasons of them to count on by 2026), or do not carry a list across a season at all. Does not touch a shadow run started mid-season. |
+| **S24** | **Touchdowns.** | **FIRST VERSION MEASURED 2026-11-20**, section above. Hand-set numbers, none tuned against the test: the efficiency model's 16-game half-life on a player's own totals and its floor of 16 games with an opportunity; the list the pull is picked from (20 to 10,240, ten values); 200 targets, carries or attempts before a position has a rate of its own. Open items S25, S26, S27. |
+| **S25** | **Touchdown chances are low for regulars and high for fringe players.** | **OPEN, measured.** Anytime, list known: players with a line said 26.0%, scored 29.0% (se 0.5); players without said 8.52%, scored 7.05% (se 0.23). With the report and the list not known, players with a line +1.8 (se 0.5). Passing: over 1.5 said 41.8%, went over 46.8% (list known). Of the 271 touchdowns short on players with a line, too few targets and carries (S11) is 97 (give or take 11) and the rate 173 (give or take 43); on players without a line, of 162 too many, 102 is too many chances and the rest a rushing rate that is too high. One rate for a whole position is the likely cause on the rushing side; not tested. To try, each graded the same way: a position rate that rises with the size of the role; the team's scoring level; the closing total (Dustin's to decide, at the game-script stage). |
+| **S26** | **First touchdown is not built.** | **OPEN.** The brief asks for it. It needs the game-level simulation (every scorer in order) and a first-touchdown result in the frame to grade against; play-by-play has it. |
+| **S27** | **`ff_sim_eff.py` gives a position its own rates from any number of plays.** | **NOTED.** The hole the touchdown review found (S24), in the committed efficiency file: catch rate, yards per catch, yards per carry, completion rate and yards per attempt by position, on one play if that is all there is. Only odd positions are affected (a cornerback's targets; a starter not listed at quarterback would be pulled toward a few trick plays' completion rate). Fix with a floor like S24's when that file is next opened; its reverts then need rerunning. |
 
 ## Needs from the engine thread
 
@@ -841,7 +1073,8 @@ For its information, each measured above:
   known.
 - **2026-11-20. Priority is a shadow run:** a script he can run on a real
   slate that prints each player's stat line and the chance of clearing
-  each posted line. Order: S13 (done), touchdowns, the live-run script.
+  each posted line. Order: S13 (done), touchdowns (done, S24), the
+  live-run script.
   S11, S12, S18, S19, S20 wait until shadow runs have started.
 - **2026-11-20. Testing budget per stage:** the suite, the leak probe, the
   walk-forward measurement, reverts for the new code only (run once), and
@@ -855,6 +1088,5 @@ For its information, each measured above:
 ## Decisions waiting for Dustin
 
 None. The probability threshold is his to set from the calibration tables
-in S17; what those tables do not yet have is a book's line beside them
-(S3), touchdowns, and a slate that matches what he knows at his main run
-(S13).
+in S17 and S24; what those tables do not yet have is a book's line beside
+them (S3) and a run on a real slate (the live-run script, next).

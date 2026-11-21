@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py`,
-`ff_sim_eff.py` and `ff_sim_play.py` and see that `test_sim.py` notices.
+`ff_sim_eff.py`, `ff_sim_play.py` and `ff_sim_td.py` and see that
+`test_sim.py` notices.
 
-    python3 sim_reverts.py            # all of them; about 3 hours on 2 cores
+    python3 sim_reverts.py            # all of them; about 4 hours on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
     python3 sim_reverts.py 8 9 17     # just these, by number (plus the controls)
     python3 sim_reverts.py --show 300 # ...and print which checks failed for each
@@ -13,9 +14,9 @@ This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
 How it works. Each entry below is one small edit to `ff_sim.py` (or, for
-the entries made with `mut_opp`, `mut_eff` and `mut_play`, to
-`ff_sim_opp.py`, `ff_sim_eff.py` and `ff_sim_play.py`) that removes or
-reverses one behaviour. For each, a temporary directory gets the edited
+the entries made with `mut_opp`, `mut_eff`, `mut_play` and `mut_td`, to
+`ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py` and `ff_sim_td.py`)
+that removes or reverses one behaviour. For each, a temporary directory gets the edited
 file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
 revert was NOT CAUGHT. Anything else is caught.
@@ -25,18 +26,18 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Eight controls run with EVERY pass, including a pass of a few numbered
+Ten controls run with EVERY pass, including a pass of a few numbered
 reverts, and a pass that fails any of them proves nothing. Two for each
 file: an edit that changes no behaviour must read NOT CAUGHT (so the
 unbroken suite passes here, and the edited copy is the one imported), and
 an edit that breaks something plain must be caught. They are numbers 0 to
-7; the reverts start at 8.
+9; the reverts start at 10.
 
 An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST RUNS — 2026-11-20, 2 cores. 506 reverts and 8 controls.
+LAST RUNS — 2026-11-20, 2 cores. 601 reverts and 10 controls.
 
   `ff_sim.py` and `ff_sim_opp.py`, 355 reverts: 355 caught, 0 not, on a
   fresh clone in seven blocks, run before the later files existed.
@@ -48,6 +49,17 @@ LAST RUNS — 2026-11-20, 2 cores. 506 reverts and 8 controls.
   each run once. The first pass was 61 reverts, 58 caught; the three not
   caught were edits that changed nothing and were dropped (see
   SIM-BACKLOG, S13); the rest were added or rewritten after the review.
+
+  `ff_sim_td.py`, 95 reverts, in the working copy. One pass of all 95
+  after the first review's fixes: 93 caught, 2 not. One of the two was an
+  edit that changed nothing (a guard the rewritten chance made redundant;
+  the guard and the entry were dropped). The other was real: the check
+  that a player with no number is left out of the table could not fail,
+  and was replaced. Then the 18 entries those two edits touch (every
+  entry in the chance of a line, and the table one) were run once more:
+  18 caught, 0 not. The other 77 were not rerun after those edits, which
+  removed two lines from the chance of a line and replaced one check in
+  section 31.
 
   From 2026-11-20 the rule, set by Dustin, is: reverts for new code only,
   run once; earlier ones are not rerun while their file and their
@@ -74,7 +86,8 @@ import sys
 import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
-TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py")
+TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py",
+           "ff_sim_td.py")
 SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
@@ -86,9 +99,11 @@ NULL_EFF = "CONTROL: nothing changed in ff_sim_eff.py (must read NOT CAUGHT)"
 BROKEN_EFF = "CONTROL: ff_sim_eff.py's stats reordered (must be caught)"
 NULL_PLAY = "CONTROL: nothing changed in ff_sim_play.py (must read NOT CAUGHT)"
 BROKEN_PLAY = "CONTROL: ff_sim_play.py's statuses reordered (must be caught)"
-CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7)
-NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY)
-BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY)
+NULL_TD = "CONTROL: nothing changed in ff_sim_td.py (must read NOT CAUGHT)"
+BROKEN_TD = "CONTROL: ff_sim_td.py's stats reordered (must be caught)"
+CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY, NULL_TD)
+BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY, BROKEN_TD)
 
 M: list = []
 
@@ -109,6 +124,10 @@ def mut_play(name: str, *pairs) -> None:
     M.append((name, pairs, "ff_sim_play.py"))
 
 
+def mut_td(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_td.py"))
+
+
 # ---- controls on this runner itself
 mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
@@ -126,6 +145,8 @@ mut_play(NULL_PLAY, ('STATUSES = ("none", "listed", "questionable", "doubtful", 
                      'STATUSES = ("none",  "listed", "questionable", "doubtful", "out")'))
 mut_play(BROKEN_PLAY, ('STATUSES = ("none", "listed", "questionable", "doubtful", "out")',
                        'STATUSES = ("listed", "none", "questionable", "doubtful", "out")'))
+mut_td(NULL_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = ("passing_tds",  TD_STAT)'))
+mut_td(BROKEN_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = (TD_STAT, "passing_tds")'))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -1541,6 +1562,261 @@ mut_play("play check: 'played' is read from the first week asked for",
 mut_play("play check: the chance sees the week it is checked on",
          ("        hist = History(frame[frame.t < t], t)\n        slate = slate_candidates(frame, hist)",
           "        hist = History(frame[frame.t <= t], t + 1)\n        slate = slate_candidates(frame, History(frame[frame.t < t], t))"))
+
+# ---- S24: touchdowns (ff_sim_td.py)
+mut_td("td: receiving touchdowns per target counts rushing ones",
+       ('    "td_per_target": ("receiving_tds", "targets"),',
+        '    "td_per_target": ("rushing_tds", "targets"),'))
+mut_td("td: rushing touchdowns per carry counts receiving ones",
+       ('    "td_per_carry": ("rushing_tds", "carries"),',
+        '    "td_per_carry": ("receiving_tds", "carries"),'))
+mut_td("td: touchdown passes are counted per completion",
+       ('    "td_per_attempt": ("passing_tds", "attempts"),',
+        '    "td_per_attempt": ("passing_tds", "completions"),'))
+mut_td("td: targets use the carry rate and carries the target rate",
+       ('ANYTIME_PARTS = (("targets", "td_per_target"), ("carries", "td_per_carry"))',
+        'ANYTIME_PARTS = (("targets", "td_per_carry"), ("carries", "td_per_target"))'))
+mut_td("td: an anytime touchdown leaves rushing out",
+       ('ANYTIME_PARTS = (("targets", "td_per_target"), ("carries", "td_per_carry"))',
+        'ANYTIME_PARTS = (("targets", "td_per_target"),)'))
+mut_td("td: an anytime touchdown leaves receiving out",
+       ('ANYTIME_PARTS = (("targets", "td_per_target"), ("carries", "td_per_carry"))',
+        'ANYTIME_PARTS = (("carries", "td_per_carry"),)'))
+mut_td("td: the two parts are reported rushing first",
+       ('ANYTIME_PARTS = (("targets", "td_per_target"), ("carries", "td_per_carry"))',
+        'ANYTIME_PARTS = (("carries", "td_per_carry"), ("targets", "td_per_target"))'))
+mut_td("td: passing touchdowns use the rushing rate",
+       ('PASSING = ("attempts", "td_per_attempt")', 'PASSING = ("attempts", "td_per_carry")'))
+mut_td("td: passing touchdowns come from his carries",
+       ('PASSING = ("attempts", "td_per_attempt")', 'PASSING = ("carries", "td_per_attempt")'))
+mut_td("td: its list of stats leaves the touchdowns out",
+       ("ALL_STATS = (*EFF_STATS, *TD_STATS)", "ALL_STATS = EFF_STATS"))
+mut_td("td: the lightest pull on the list is lighter",
+       ("TD_SHRINK_GRID = (20.0, 40.0,", "TD_SHRINK_GRID = (10.0, 40.0,"))
+mut_td("td: the heaviest pull on the list is heavier",
+       ("                  5120.0, 10240.0)", "                  5120.0, 20480.0)"))
+mut_td("td: one pull in the middle of the list is moved",
+       ("80.0, 160.0, 320.0,", "80.0, 200.0, 320.0,"))
+# -- the fit
+mut_td("td: a second history gets the first one's fit",
+       ("        if self._last[0] is hist:", "        if self._last[0] is not None:"))
+mut_td("td: nothing is remembered between calls",
+       ("        fit.ok = True\n        self._last = (hist, fit)", "        fit.ok = True"))
+mut_td("td: games without the opportunity count as games with it",
+       ("            had = (den > 0).to_numpy()", "            had = (den >= 0).to_numpy()"))
+mut_td("td: sixteen games are not enough",
+       ("            if int(had.sum()) < MIN_RATE_ROWS:",
+        "            if int(had.sum()) <= MIN_RATE_ROWS:"))
+mut_td("td: eight games are enough",
+       ("            if int(had.sum()) < MIN_RATE_ROWS:", "            if int(had.sum()) < 8:"))
+mut_td("td: a thin history is named by its column, not in words",
+       ('                           f"{ONE[den_col]} in the history; needs {MIN_RATE_ROWS}")',
+        '                           f"{den_col} in the history; needs {MIN_RATE_ROWS}")'))
+mut_td("td: a thin history is fitted anyway",
+       ("                self._last = (hist, fit)\n                return fit\n", ""))
+mut_td("td: the all-player rate is a mean of game rates",
+       ("            overall = float(num.sum() / den.sum())",
+        "            overall = float((num[den > 0] / den[den > 0]).mean())"))
+mut_td("td: in the fit every position is pulled to the all-player rate",
+       ("            norm = F.position.map(by_pos).fillna(overall).to_numpy(dtype=float)",
+        "            norm = F.position.map({}).fillna(overall).to_numpy(dtype=float)"))
+mut_td("td: a player with no position breaks the fit",
+       ("            norm = F.position.map(by_pos).fillna(overall).to_numpy(dtype=float)",
+        "            norm = F.position.map(by_pos).to_numpy(dtype=float)"))
+mut_td("td: touchdowns lean on the newest twice as hard",
+       ("leaning_sum(num, F.player_id, HALF_LIFE_RATE)",
+        "leaning_sum(num, F.player_id, HALF_LIFE_RATE / 2)"))
+mut_td("td: opportunities lean on the newest twice as hard",
+       ("leaning_sum(den, F.player_id, HALF_LIFE_RATE)",
+        "leaning_sum(den, F.player_id, HALF_LIFE_RATE / 2)"))
+mut_td("td: totals do not lean at all",
+       ("leaning_sum(num, F.player_id, HALF_LIFE_RATE)", "leaning_sum(num, F.player_id, 1e9)"),
+       ("leaning_sum(den, F.player_id, HALF_LIFE_RATE)", "leaning_sum(den, F.player_id, 1e9)"))
+mut_td("td: a player's totals run on into the next player's",
+       ("leaning_sum(num, F.player_id, HALF_LIFE_RATE)", "leaning_sum(num, F.season * 0, HALF_LIFE_RATE)"),
+       ("leaning_sum(den, F.player_id, HALF_LIFE_RATE)", "leaning_sum(den, F.season * 0, HALF_LIFE_RATE)"))
+mut_td("td: the pull is scored by absolute miss",
+       ("            miss = {k: float(((x - d * pulled(nb, db, norm[had], k)) ** 2).sum())",
+        "            miss = {k: float(np.abs(x - d * pulled(nb, db, norm[had], k)).sum())"))
+mut_td("td: the pull is scored on rates, a one-target game counting as much as a ten",
+       ("            miss = {k: float(((x - d * pulled(nb, db, norm[had], k)) ** 2).sum())",
+        "            miss = {k: float(((x / d - pulled(nb, db, norm[had], k)) ** 2).sum())"))
+mut_td("td: the pull is scored with the game being scored already counted",
+       ("            nb, db = num_before.to_numpy()[had], den_before.to_numpy()[had]",
+        "            nb, db = num_before.to_numpy()[had] + x, den_before.to_numpy()[had] + d"))
+mut_td("td: the worst pull is picked",
+       ("                k=min(TD_SHRINK_GRID, key=miss.get), miss=miss,",
+        "                k=max(TD_SHRINK_GRID, key=miss.get), miss=miss,"))
+mut_td("td: the lightest pull is always picked",
+       ("                k=min(TD_SHRINK_GRID, key=miss.get), miss=miss,",
+        "                k=TD_SHRINK_GRID[0], miss=miss,"))
+mut_td("td: a player's touchdowns and opportunities are stored swapped",
+       ("                num_now=num_now.to_dict(), den_now=den_now.to_dict())",
+        "                num_now=den_now.to_dict(), den_now=num_now.to_dict())"))
+mut_td("td: a good fit is marked unusable",
+       ("        fit.ok = True\n", "        fit.ok = False\n"))
+# -- rates for a slate
+mut_td("td: a thin history gives a rate of zero, not none",
+       ("                out[rate] = np.full(n, np.nan)", "                out[rate] = np.zeros(n)"))
+mut_td("td: an unseen position is pulled to zero",
+       ('            norm = np.array([r["by_pos"].get(p, r["overall"]) for p in pos],',
+        '            norm = np.array([r["by_pos"].get(p, 0.0) for p in pos],'))
+mut_td("td: on the slate every position is pulled to the all-player rate",
+       ('            norm = np.array([r["by_pos"].get(p, r["overall"]) for p in pos],',
+        '            norm = np.array([r["overall"] for p in pos],'))
+mut_td("td: his own touchdowns are ignored",
+       ('            own_num = np.array([r["num_now"].get(p, 0.0) for p in pid], dtype=float)',
+        '            own_num = np.array([0.0 for p in pid], dtype=float)'))
+mut_td("td: his own opportunities are ignored",
+       ('            own_den = np.array([r["den_now"].get(p, 0.0) for p in pid], dtype=float)',
+        '            own_den = np.array([0.0 for p in pid], dtype=float)'))
+mut_td("td: the pull used is not the one picked",
+       ('            out[rate] = pulled(own_num, own_den, norm, r["k"])',
+        '            out[rate] = pulled(own_num, own_den, norm, TD_SHRINK_GRID[0])'))
+mut_td("td: every player is given his position's rate",
+       ('            out[rate] = pulled(own_num, own_den, norm, r["k"])',
+        '            out[rate] = norm'))
+# -- parts and variances
+mut_td("td: passing touchdowns are spread as targets are",
+       ('        td = {"passing_tds": [(mean[opp] * rt[rate], size[opp])],',
+        '        td = {"passing_tds": [(mean[opp] * rt[rate], size["targets"])],'))
+mut_td("td: rushing touchdowns are spread as targets are",
+       ("              TD_STAT: [(mean[o] * rt[r], size[o]) for o, r in ANYTIME_PARTS]}",
+        '              TD_STAT: [(mean[o] * rt[r], size["targets"]) for o, r in ANYTIME_PARTS]}'))
+mut_td("td: the expected count is the opportunities, not opportunities times rate",
+       ("              TD_STAT: [(mean[o] * rt[r], size[o]) for o, r in ANYTIME_PARTS]}",
+        "              TD_STAT: [(mean[o], size[o]) for o, r in ANYTIME_PARTS]}"))
+mut_td("td: the expected count is the first part's alone",
+       ("            mean[stat] = sum(m for m, _ in pieces)", "            mean[stat] = pieces[0][0]"))
+mut_td("td: the efficiency model's parts are dropped",
+       ('        return {**p, "mean": mean, "td": td}', '        return {"mean": mean, "td": td}'))
+mut_td("td: what the touchdowns are built from is not reported",
+       ('        return {**p, "mean": mean, "td": td}', '        return {**p, "mean": mean}'))
+mut_td("td: the efficiency model's variances are dropped",
+       ("        out = dict(self.eff.variances(hist, slate))", "        out = {}"))
+mut_td("td: the variance is the count's alone, as if nothing varied game to game",
+       ("            out[stat] = sum(m + m ** 2 / r for m, r in pieces)",
+        "            out[stat] = sum(m for m, r in pieces)"))
+mut_td("td: the variance is the first part's alone",
+       ("            out[stat] = sum(m + m ** 2 / r for m, r in pieces)",
+        "            out[stat] = [m + m ** 2 / r for m, r in pieces][0]"))
+# -- chances
+mut_td("td: a touchdown stat's single number is asked of the efficiency model",
+       ('        return float(self.p["mean"][stat][i])', "        return self.under.point(i, stat)"))
+mut_td("td: yards and catches are not passed through",
+       ("        if stat not in TD_STATS:\n            return self.under.p_over(i, stat, line)\n",
+        "        if stat not in self.p[\"mean\"]:\n            return self.under.p_over(i, stat, line)\n"))
+mut_td("td: an efficiency model handed in is ignored",
+       ("        self.eff = efficiency if efficiency is not None else EfficiencyModel(\n            f\"{name}_efficiency\")",
+        "        self.eff = EfficiencyModel(\n            f\"{name}_efficiency\")"))
+mut_td("td: its own efficiency model is not named after it",
+       ('            f"{name}_efficiency")', '            "efficiency")'))
+mut_td("td: the name given is dropped",
+       ("        self.name = name\n        self.eff", "        self.name = \"touchdowns\"\n        self.eff"))
+mut_td("td: it claims not to depend on who is active",
+       ("    uses_actives = True\n\n    def __init__(self, name: str = \"touchdowns\",",
+        "    uses_actives = False\n\n    def __init__(self, name: str = \"touchdowns\","))
+mut_td("td: the chances are priced on another slate's parts",
+       ("        return _TdLines(self.eff.project(hist, slate), self.parts(hist, slate))",
+        "        return _TdLines(self.eff.project(hist, slate), self.parts(hist, slate.iloc[::-1]))"))
+# -- after the review: thin positions, chances added from the top, the tables
+mut_td("td: a position with one catch has a rate of its own",
+       ("            own = pos_den >= MIN_POSITION_UNITS", "            own = pos_den > 0"))
+mut_td("td: exactly 200 of the thing is not enough for a position",
+       ("            own = pos_den >= MIN_POSITION_UNITS", "            own = pos_den > MIN_POSITION_UNITS"))
+mut_td("td: a position has its own rate from 100",
+       ("MIN_POSITION_UNITS = 200.0", "MIN_POSITION_UNITS = 100.0"))
+mut_td("td: a position needs 2000 for its own rate",
+       ("MIN_POSITION_UNITS = 200.0", "MIN_POSITION_UNITS = 2000.0"))
+mut_td("td: a line that is not a number is priced, not refused",
+       ('        if not math.isfinite(line):\n            raise ValueError(f"a {stat} line must be a number; got {line!r}")\n', ""))
+mut_td("td: the refusal does not say which stat's line",
+       ('            raise ValueError(f"a {stat} line must be a number; got {line!r}")',
+        '            raise ValueError(f"a line must be a number; got {line!r}")'))
+mut_td("td: landing on a whole-number line counts as over it",
+       ("        n = math.floor(line) + 1        # the fewest", "        n = math.ceil(line)        # the fewest"))
+mut_td("td: a half line is the chance of two more than it",
+       ("        n = math.floor(line) + 1        # the fewest", "        n = math.floor(line) + 2        # the fewest"))
+mut_td("td: the spread of the count ignores how his opportunities vary",
+       ('        (m0, r0), *more = [(float(m[i]), r) for m, r in self.p["td"][stat]]',
+        '        (m0, r0), *more = [(float(m[i]), 100 * r) for m, r in self.p["td"][stat]]'))
+mut_td("td: the count is priced at twice its expected number",
+       ('        (m0, r0), *more = [(float(m[i]), r) for m, r in self.p["td"][stat]]',
+        '        (m0, r0), *more = [(2 * float(m[i]), r) for m, r in self.p["td"][stat]]'))
+mut_td("td: only the first part is counted",
+       ("        for m1, r1 in more:", "        for m1, r1 in []:"))
+mut_td("td: the first part getting there alone is left out",
+       ("        p = float(nbinom.sf(n - 1, r0, r0 / (r0 + m0)))", "        p = 0.0"))
+mut_td("td: the first part alone has to beat the line by one more",
+       ("        p = float(nbinom.sf(n - 1, r0, r0 / (r0 + m0)))",
+        "        p = float(nbinom.sf(n, r0, r0 / (r0 + m0)))"))
+mut_td("td: the second part has to make one more than the rest",
+       ("                        * nbinom.sf(n - 1 - k, r1, r1 / (r1 + m1))).sum())",
+        "                        * nbinom.sf(n - k, r1, r1 / (r1 + m1))).sum())"))
+mut_td("td: the second part only has to get there by itself",
+       ("                        * nbinom.sf(n - 1 - k, r1, r1 / (r1 + m1))).sum())",
+        "                        * nbinom.sf(n - 1, r1, r1 / (r1 + m1))).sum())"))
+mut_td("td: the first part's counts stop one short",
+       ("            k = np.arange(n)\n            p += float(", "            k = np.arange(n - 1)\n            p += float("))
+mut_td("td: the second part is spread as the first is",
+       ("                        * nbinom.sf(n - 1 - k, r1, r1 / (r1 + m1))).sum())",
+        "                        * nbinom.sf(n - 1 - k, r0, r0 / (r0 + m1))).sum())"))
+mut_td("td: the chance returned is of NOT clearing the line",
+       ("        return min(p, 1.0)      # can round", "        return 1.0 - min(p, 1.0)      # can round"))
+mut_td("td: rounding can carry a chance over one",
+       ("        return min(p, 1.0)      # can round", "        return p      # can round"))
+mut_td("td: a player with no projection is certain to clear any line",
+       ("        return min(p, 1.0)      # can round", "        return min(1.0, p)      # can round"))
+# -- expected beside actual
+mut_td("td table: the model sees the week it is set beside",
+       ("        hist = History(frame[frame.t < t], t)\n        slate = slate_active(frame, hist)\n        p = model.parts(hist, slate)",
+        "        hist = History(frame[frame.t <= t], t + 1)\n        slate = slate_active(frame, History(frame[frame.t < t], t))\n        p = model.parts(hist, slate)"))
+mut_td("td table: it lists who had been playing, not who was active",
+       ("        slate = slate_active(frame, hist)\n        p = model.parts(hist, slate)",
+        "        slate = __import__('ff_sim').slate_candidates(frame, hist)\n        p = model.parts(hist, slate)"))
+mut_td("td table: what he did is read from the first week asked for",
+       ('        did = frame[frame.t == t].set_index(["game_id", "player_id"])',
+        '        did = frame[frame.t == weeks[0]].set_index(["game_id", "player_id"])'))
+mut_td("td table: a player with no number is kept",
+       ('                "passing_tds", TD_STAT)}})[ok])', '                "passing_tds", TD_STAT)}}))'))
+mut_td("td table: 'no number' is judged on passing touchdowns",
+       ('        ok = ~np.isnan(p["mean"][TD_STAT])', '        ok = ~np.isnan(p["mean"]["passing_tds"])'))
+mut_td("td table: expected targets and carries are swapped",
+       ('            "e_targets": p["mean"]["targets"], "e_carries": p["mean"]["carries"],',
+        '            "e_targets": p["mean"]["carries"], "e_carries": p["mean"]["targets"],'))
+mut_td("td table: expected attempts are expected completions",
+       ('            "e_attempts": p["mean"]["attempts"],', '            "e_attempts": p["mean"]["completions"],'))
+mut_td("td table: receiving and rushing touchdowns are swapped",
+       ('            "e_rec_td": p["td"][TD_STAT][0][0], "e_rush_td": p["td"][TD_STAT][1][0],',
+        '            "e_rec_td": p["td"][TD_STAT][1][0], "e_rush_td": p["td"][TD_STAT][0][0],'))
+mut_td("td table: expected passing touchdowns are the anytime number",
+       ('            "e_pass_td": p["mean"]["passing_tds"],', '            "e_pass_td": p["mean"][TD_STAT],'))
+mut_td("td table: the chance of one or more is of two or more",
+       ('            "p1": [P.p_over(i, TD_STAT, 0.5) if ok[i] else np.nan',
+        '            "p1": [P.p_over(i, TD_STAT, 1.5) if ok[i] else np.nan'))
+mut_td("td table: the chance of two or more is of three or more",
+       ('            "p2": [P.p_over(i, TD_STAT, 1.5) if ok[i] else np.nan',
+        '            "p2": [P.p_over(i, TD_STAT, 2.5) if ok[i] else np.nan'))
+mut_td("td table: nobody is marked as the starter",
+       ('            "starter": slate["starting_qb"].to_numpy(),',
+        '            "starter": np.zeros(len(slate), dtype=bool),'))
+mut_td("td table: the team column is the opponent",
+       ('            "team": slate["team"].to_numpy(),', '            "team": slate["opponent"].to_numpy(),'))
+mut_td("td table: touchdowns scored are the rushing ones only",
+       ('                "passing_tds", TD_STAT)}})[ok])',
+        '                "passing_tds")}, TD_STAT: did["rushing_tds"].reindex(at).to_numpy(dtype=float)})[ok])'))
+# -- the pulls picked
+mut_td("td pulls: the pick for a week sees that week",
+       ("        fit = model.fit(History(frame[frame.t < t], t))",
+        "        fit = model.fit(History(frame[frame.t <= t], t + 1))"))
+mut_td("td pulls: a week with too little history is kept",
+       ("        if fit.ok:\n            out.append(", "        if True:\n            out.append("))
+mut_td("td pulls: the week is not recorded",
+       ('            out.append({"t": int(t), **{r: v["k"] for r, v in fit.rate.items()}})',
+        '            out.append({"t": int(weeks[0]), **{r: v["k"] for r, v in fit.rate.items()}})'))
+mut_td("td pulls: what is listed is the score, not the pull",
+       ('            out.append({"t": int(t), **{r: v["k"] for r, v in fit.rate.items()}})',
+        '            out.append({"t": int(t), **{r: v["overall"] for r, v in fit.rate.items()}})'))
 
 
 def run_one(i: int):
