@@ -10,9 +10,9 @@ backlog is `BACKLOG.md` (ids `B...`) and is never edited from here.
 |---|---|
 | Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). Touchdowns on top of all of it: anytime (rushing or receiving) and passing (S24). A script that runs all of it on a week not yet played, from files a project thread saves (S28). **First touchdown is not built, nothing has been graded against a book's line, and no shadow run has been made yet.** |
 | Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_touchdowns.py`, `ff_sim_live.py`, `sim_live.py`, `sim_record.py` (made by `sim_live.py --record`), `sim_reverts.py`, this file |
-| Simulator suite | `python3 test_sim.py` → **824 checks, ALL PASS** |
+| Simulator suite | `python3 test_sim.py` → **839 checks, ALL PASS** |
 | Engine suite | `python3 test_regression.py` → 1801, untouched. No existing file was edited. |
-| Next | Shadow runs, in a project thread (S28 says how). Then grading them (S29), and the parked calibration items: S11, S12, S18, S19, S20, S25. |
+| Next | More shadow runs, in a project thread (S28 says how; the first was 2026-11-21). Then grading them (S29), and the parked calibration items: S11, S12, S18, S19, S20, S25. |
 
 ```bash
 python3 refresh.py
@@ -1013,9 +1013,12 @@ on a week not yet played and sets the result beside that measurement.
 
 ```
 python3 sim_live.py --week 11 --inputs week11.json odds/*.json
-python3 sim_live.py --week 11 --inputs week11.json --ladders --out week11.csv odds/*.json
+python3 sim_live.py --week 11 --inputs week11.json --ladders --out shadow_2026_wk11.csv odds/*.json
 python3 sim_live.py --record --current-week 11     # rebuild sim_record.py, about 10 minutes
 ```
+
+A saved run goes in the repository root as `shadow_<season>_wk<N>.csv`
+(Dustin, 2026-11-21).
 
 ### What goes in
 
@@ -1028,14 +1031,16 @@ FantasyPros tools. That thread saves files; this reads them.
    Outcomes are paired by the engine's `ff_props.flatten_odds`. Only the
    lines are kept. **Prices are not read into the run, printed or saved.**
 2. **An inputs file**: the week, each team's starting quarterback, and
-   optionally injury statuses, chances of playing and players to add.
+   optionally injury statuses, chances of playing, players to add, and
+   aliases.
 
    ```json
    {"season": 2026, "week": 11,
     "starters": {"DEN": "Bo Nix", "LV": "Fernando Mendoza"},
     "statuses": [{"team": "DEN", "player": "Courtland Sutton", "status": "questionable"}],
     "chances":  [{"team": "LV", "player": "Brock Bowers", "chance": 0.0}],
-    "add":      [{"team": "LV", "player": "Somebody Back", "position": "WR"}]}
+    "add":      [{"team": "LV", "player": "Somebody Back", "position": "WR"}],
+    "aliases":  [{"team": "TB", "name": "Kenneth Gainwell", "player": "Kenny Gainwell"}]}
    ```
 
    A team is its code or its full name. A player is his name, his
@@ -1043,8 +1048,10 @@ FantasyPros tools. That thread saves files; this reads them.
    `questionable`, `listed` (on the report, no game status) or `none`.
    A status handed in replaces the file's for that player and his chance
    is then counted from it as from any report; a chance handed in
-   overrides both. Anything else in the file is refused, so a misspelt
-   key cannot quietly lose a hand-in.
+   overrides both. An alias is for a name a book posts with no id that
+   the data does not have: the book's name, the team, and the player it
+   is. Anything else in the file is refused, so a misspelt key cannot
+   quietly lose a hand-in.
 3. **This week's injury report**, which it fetches itself (nflverse).
 4. **The record**, `sim_record.py`: the walk-forward record of this
    set-up, kept in the repository so a run takes seconds.
@@ -1088,7 +1095,24 @@ only each book's main line and the anytime touchdown are shown;
   (Dustin, 2026-11-21)**; S25.
 - **A player is matched by the book's ESPN id** through the nflverse
   roster. With no id the roster has, he is matched by name on the two
-  teams' slates if exactly one player has it, and the line says so.
+  teams' rosters and slates if exactly one player there has it, and the
+  line says so. A name the data does not have at all is matched through
+  an alias in the inputs, and the line says that too. An alias applies
+  only where the book gives no usable id, in its own team's game; its
+  team stands for the team said when the file names none; and the run
+  stops if the alias's name is already another player's on either team,
+  or the file gives that name someone else's id.
+- **A posted player who is not on his team's slate makes his teammates'
+  numbers too high if he plays**, because the work that would be his is
+  shared among them (in the first real run, adding two Pittsburgh
+  receivers took DK Metcalf from 59.8 receiving yards to about 50). The
+  run says so four ways: a note at the top, a line under the team, the
+  reason beside his name under "posted but not priced", and a caution
+  on every line of that team in the saved table. The team is every team
+  in the game that the odds file, an alias or the roster says has him
+  and whose slate does not. It covers quarterbacks, backs, receivers and
+  tight ends, including one posted only in a market or by a book the
+  run does not read. It goes once he is added, or handed a chance.
 - **Which team he is priced for.** The team the odds file puts him on,
   when it says (PropLine's `player_team`), and he must be on that team's
   slate; if he is not (he has just moved), he is listed under "posted
@@ -1195,11 +1219,21 @@ that event's own list of markets; their responses were not pulled.
   shows up under "posted but not priced" with that reason. One case
   still prices a moved player for his old team: the book does not say
   which team he is on AND the roster file has not caught up with the
-  move. Every player outcome in the real response carried the team, so
-  this needs both sources to fail at once; the note at the top names
-  him as soon as the roster does.
+  move. Most player outcomes carry the team (all 21 in the first real
+  response; in the three-game run one player, Gainwell, came with neither
+  id nor team from every book), so this needs both sources to fail at
+  once; the note at the top names him as soon as the roster does.
 - **A player on both teams' slates whom the book does not place stays
-  unpriced.** Nothing in the inputs settles it.
+  unpriced**, unless the book gives no id for him either, when an alias
+  naming his team settles it.
+- **An alias is taken at its word about the team.** If it names a team
+  the roster no longer has the player on, he is priced for the team
+  named; the note about slate players the roster has elsewhere is the
+  only warning.
+- **The "too high" caution does not say by how much**, and cannot be
+  given for a posted name the run cannot place at all (that reason says
+  so conditionally). It is attached to a team, not to the players whose
+  share is actually inflated.
 - **838 of 962 quarterbacks, backs, receivers and tight ends on the 2026
   roster have an ESPN id** (2026-11-21). The rest can only be matched by
   name.
@@ -1284,6 +1318,66 @@ stop it with words.
 
 ---
 
+### After the first real run (2026-11-21)
+
+The engine thread ran `sim_live.py` on three Week 11 games (TB at DET, LV
+at DEN, PIT at PHI; twelve markets; DraftKings, FanDuel, BetMGM). Clean:
+1,599 lines, no price in the printout or the table, every market type
+read correctly except targets, which no book posted. It showed three
+things to fix, and they are fixed in `ff_sim_live.py`:
+
+1. **A book's spelling the data does not have** could not be settled from
+   the inputs. Every book posted "Kenneth Gainwell" with no id and no
+   team; the data has "Kenny Gainwell". New input `aliases` (above).
+   Replayed on the Week 11 data: without the alias his lines are listed
+   as not priced and the reason names the alias; with it they are priced
+   as his own, the same numbers his id gives.
+2. **A posted player not on the slate gave no hint that his teammates'
+   numbers were too high.** Now said four ways (above). Replayed: with
+   Pittman and Roman Wilson posted and off Pittsburgh's slate, Metcalf
+   shows 59.8 receiving yards under a "PIT'S NUMBERS ARE TOO HIGH" line;
+   with both added, 50.7 and no caution. (Dustin's run had 49.1; his
+   added players and statuses were not the same as this replay's.)
+3. **A posted name on a team's roster and not on its slate** printed "no
+   one player of that name on either slate". A name with no id is now
+   looked for on the two teams' rosters as well as their slates.
+   Replayed: "Dont'e Thornton Jr." prints "on LV's roster but not on the
+   slate ... Add him in the inputs if he is playing", and prices once
+   added by name.
+
+**Checked.** The suite: 839 checks (15 more than before the change, with
+several older ones tightened). Reverts, `sim_reverts.py --fast`: every
+revert of `ff_sim_live.py`, 436 of them, run once on the final file:
+434 caught, 2 not. Of the two, one was an edit that changes nothing and was dropped; the other showed a check that could not fail (a slate player of no known position), which was added, and that revert was then caught. The runner's controls passed.
+No leak probe or walk-forward: no model file changed, so the record
+stands as built.
+
+**Reviewed** once, and its findings re-checked by the same reviewer.
+- The review reproduced the three cases and compared the old and new
+  code on 4,629 no-id lines over eight real games: no line changed team,
+  player or number. It found two wrong numbers at the edges: an alias
+  could be pointed at a name that already belongs to another player on
+  the field and price his line for the wrong man; and a stale or split
+  team tag in the odds file hid the "too high" caution. It also found
+  the caution on the wrong team when the file's tag named the opponent,
+  "on X's roster" said of a team the player had only played for, and
+  wording that did not fit a quarterback.
+- All fixed. The re-check found no wrong number: 727 off-slate postings
+  over 32 boards all cautioned on the roster's team, none while on that
+  slate, no defender or kicker flagged, and the 4,629-line comparison
+  still unchanged. It found the caution still missing when the book
+  gives no id as well as a wrong tag, and an alias refused when it
+  names one of two real namesakes.
+- Those two are fixed as well, and the code that places a posted player
+  was gathered into one function used for both read and unread markets.
+  **That last round has not been seen by the reviewer.** It was checked
+  by the suite, the reverts above, the reviewer's own comparison script
+  rerun on the final file (4,629 lines, none changed, new or lost), and the replays in 1 to 3.
+
+**Weak.** All but the LV at DEN board are hand-built from real names and
+ids; the three games' saved responses are in the project thread, not
+here. The first run on them with these fixes is the real test.
+
 ## Open
 
 | id | what | status |
@@ -1315,7 +1409,7 @@ stop it with words.
 | **S26** | **First touchdown is not built.** | **OPEN.** The brief asks for it. It needs the game-level simulation (every scorer in order) and a first-touchdown result in the frame to grade against; play-by-play has it. |
 | **S27** | **`ff_sim_eff.py` gives a position its own rates from any number of plays.** | **NOTED.** The hole the touchdown review found (S24), in the committed efficiency file: catch rate, yards per catch, yards per carry, completion rate and yards per attempt by position, on one play if that is all there is. Only odd positions are affected (a cornerback's targets; a starter not listed at quarterback would be pulled toward a few trick plays' completion rate). Fix with a floor like S24's when that file is next opened; its reverts then need rerunning. |
 | **S28** | **The live-run script.** | **BUILT 2026-11-21**, section above. Hand-set, none tuned: the S21 caution starts at 65% (the engine thread's figure); a line is read on the player's own stand-in rung nearest it, and has no record further off his ladder than half the gap to the next rung; a week runs from 09:00 UTC on the Wednesday after last week's Sunday for seven days, and with no dates to go by a game more than 8 days off is refused; last week counts as on file when at least half the teams have a game in it. |
-| **S29** | **Grade the shadow runs.** | **OPEN, next after the first runs.** `sim_live.py --out` saves each run's priced lines. Nothing yet joins a saved run to what happened, or sets it beside the book's own price (the saved odds files have the prices; reading them is Phase 2). This is also where S3 gets its first real lines. |
+| **S29** | **Grade the shadow runs.** | **OPEN, next.** Runs are saved in the repository root as `shadow_<season>_wk<N>.csv`. The first (Week 11, three games, 2026-11-21) had 1,599 priced lines, 872 of them with NO record: 404 off the player's stand-in ladder, 338 for a player with no role, 130 two-plus touchdowns. So over half of what a book posts cannot yet be set beside a record, and grading against real lines is the only way those get one. Lines priced while a posted teammate was off the slate carry "too high if ..." in `cautions` and should be graded apart. `sim_live.py --out` saves each run's priced lines. Nothing yet joins a saved run to what happened, or sets it beside the book's own price (the saved odds files have the prices; reading them is Phase 2). This is also where S3 gets its first real lines. |
 
 ## Needs from the engine thread
 
@@ -1344,7 +1438,10 @@ For its information, each measured above:
    wants injury reports too, the clean home is an `injuries` entry in
    `ff_data.ASSETS`.
 7. **A shadow run needs steps in the project instructions** (the simulator
-   thread does not edit them). In a project thread: for each game, pull
+   thread does not edit them). **This can wait (Dustin, 2026-11-21): he
+   is running shadows from a pasted prompt for now.** When it is written,
+   add: a posted name the run cannot place needs an alias in the inputs,
+   and a "TOO HIGH" note means add the players it names and run again. In a project thread: for each game, pull
    `propline_get_odds` with `event_id`, the markets wanted (any of
    `player_pass_yds`, `player_pass_attempts`, `player_pass_completions`,
    `player_pass_tds`, `player_rush_yds`, `player_rush_attempts`,
@@ -1393,6 +1490,16 @@ For its information, each measured above:
   the chance of clearing each posted line, with the band's record and the
   S21 main-line caution, and stops, saying what, when something is
   missing.
+- **2026-11-21. After the first real shadow run** (the engine thread, three
+  Week 11 games, twelve markets, three books: clean, 1,599 lines, no
+  price in the printout or the table; every market read correctly
+  except targets, which no book posted): fix three things before
+  anything else. An "aliases" input for a book's spelling the data does
+  not have; say that a posted player's teammates' numbers are too high
+  until he is added or ruled out; say that a posted name is on a team's
+  roster and can be added. Shadow runs are saved to the repository root
+  as `shadow_<season>_wk<N>.csv`. The project-instruction steps (item 7
+  under "Needs") can wait.
 - **2026-11-20. Past injury reports** are fetched by a simulator file of
   its own (he was offered that or the engine's loader, did not choose,
   and said to go straight on; this was the recommended option).

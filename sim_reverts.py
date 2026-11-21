@@ -51,7 +51,7 @@ An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST RUNS — 2026-11-20 and 21, 2 cores. 981 reverts and 12 controls.
+LAST RUNS — 2026-11-20 and 21, 2 cores. 1,036 reverts and 12 controls.
 
   `ff_sim.py` and `ff_sim_opp.py`, 355 reverts: 355 caught, 0 not, on a
   fresh clone in seven blocks, run before the later files existed.
@@ -74,6 +74,15 @@ LAST RUNS — 2026-11-20 and 21, 2 cores. 981 reverts and 12 controls.
   18 caught, 0 not. The other 77 were not rerun after those edits, which
   removed two lines from the chance of a line and replaced one check in
   section 31.
+
+  `ff_sim_live.py` after the first real run (aliases, the roster's names,
+  the teammates caution), 2026-11-21, with `--fast`: ALL of the file's
+  reverts, 436, in one pass on the final file: 434 caught, 2 not. One of
+  the two changes nothing (taking the alias's own player out of a set he
+  is then tested against) and was dropped; the other showed that no check
+  had a slate player of no known position, which was added, and that
+  revert was run again and caught. 435 stand. This pass supersedes the one
+  below, which is kept as the record of how the file's reverts were built.
 
   `ff_sim_live.py`, 380 reverts, in the working copy, with `--fast`. One
   pass of 378 (2026-11-21): 365 caught, 13 not. Three of the 13 were edits
@@ -2235,7 +2244,8 @@ mut_live("live: a player's lines are another player's",
 mut_live("live: the saved table has no record column",
          ("    d[\"record\"] = [record_text(record, r) for r in board.lines.itertuples(index=False)]\n", ""))
 mut_live("live: the saved table's cautions are run together",
-         ("    d[\"cautions\"] = [\" | \".join(flags_for(record, r))", "    d[\"cautions\"] = [\"\".join(flags_for(record, r))"))
+         ('    d["cautions"] = [" | ".join(flags_for(record, r, board.off_slate.get(r.team, ())))',
+          '    d["cautions"] = [" ".join(flags_for(record, r, board.off_slate.get(r.team, ())))'))
 mut_live("live: the saved table has the week in the season's place",
          ("    d.insert(0, \"week\", week)\n    d.insert(0, \"season\", season)", "    d.insert(0, \"week\", season)\n    d.insert(0, \"season\", week)"))
 # -- the whole run
@@ -2432,18 +2442,16 @@ mut_live('live2: a player on both slates is priced for the away team when the bo
          ('for tm in ((told,) if told else on) if tm in on]',
           'for tm in ((told,) if told else on[:1]) if tm in on]'))
 mut_live('live2: a player is looked for on the away team only',
-         ('                on = [tm for tm in (away, home) if (tm, pid) in at]',
-          '                on = [tm for tm in (away,) if (tm, pid) in at]'))
+         ('            on = [tm for tm in (away, home) if (tm, pid) in at]',
+          '            on = [tm for tm in (away,) if (tm, pid) in at]'))
 mut_live('live2: a player with an id not on the slate is matched by name',
-         ('            where.append(hits[0] if len(hits) == 1 else why)',
-          '            hits = hits or [j for tm in (away, home) for j in by_name.get((tm, norm_player(player)), [])]\n            where.append(hits[0] if len(hits) == 1 else why)'))
+         ('            if len(hits) == 1:\n                return hits[0], "", by, set(), pid',
+          '            hits = hits or [j for tm in (away, home) for j in by_name.get((tm, norm_player(player)), [])]\n            if len(hits) == 1:\n                return hits[0], "", by, set(), pid'))
 mut_live('live2: a player is never matched by name',
-         ('                hits = [j for tm in ((told,) if told else (away, home))\n',
-          '                hits = [j for tm in ()\n'))
-mut_live("live2: a name two slate players share picks the first",
-         ("            where.append(hits[0] if len(hits) == 1 else why)", "            where.append(hits[0] if len(hits) >= 1 else why)"))
+         ('                pid = next(iter(found)) if len(found) == 1 else None',
+          '                pid = None'))
 mut_live('live2: a match by name is reported as a match by id',
-         ('            how.append("id" if names.from_key(key) is not None else "name")',
+         ('            how.append(by)',
           '            how.append("id")'))
 mut_live("live2: a player it cannot place is dropped without a word",
          ('            unmatched.append((game, player, len(g.drop_duplicates(["stat", "line"])), why))',
@@ -2469,8 +2477,9 @@ mut_live("live2: the books on a line are not put together",
          ('                             rung, no_record, " ".join(sorted(set(h.book))),', '                             rung, no_record, sorted(set(h.book))[0],'))
 mut_live("live2: a line is marked suspended at every book that posts it",
          ('                             " ".join(sorted(set(h.book[h.suspended]))),', '                             " ".join(sorted(set(h.book))),'))
-mut_live("live2: a line is found by id only if every book gave one",
-         ('                             "id" if (h.how == "id").any() else "name",', '                             "id" if (h.how == "id").all() else "name",'))
+mut_live('live2: a line is found by id only if every book gave one',
+         ('                             "id" if (h.how == "id").any() else\n',
+          '                             "id" if (h.how == "id").all() else\n'))
 mut_live("live2: the chance beside a line is not the player's",
          ("                             s.position, s.chance, s.source, stat, float(line),", "                             s.position, 1.0, s.source, stat, float(line),"))
 mut_live("live2: the reason for no record is not kept on the line",
@@ -2609,32 +2618,34 @@ mut_live('live3 run: the window is for the week before',
          ('            week_window(dates, wk) if isinstance(wk, int) else None,\n',
           '            week_window(dates, wk - 1) if isinstance(wk, int) else None,\n'))
 mut_live('live3: when the file puts a player on two teams the first is taken',
-         ('            told = next(iter(teams)) if len(teams) == 1 else None\n            if len(teams) > 1 or (told and told not in (away, home)):',
-          '            told = sorted(teams)[0] if teams else None\n            if told and told not in (away, home):'))
+         ('            told = next(iter(teams)) if len(teams) == 1 else None\n',
+          '            told = sorted(teams)[0] if teams else None\n'),
+         ('            odd = len(teams) > 1 or bool(told and told not in (away, home))',
+          '            odd = bool(told and told not in (away, home))'))
 mut_live('live3: an outcome with no id is not taken to be the player another gives an id',
-         ('            if (pid is None and len(same.get(n, ())) == 1\n',
-          '            if (False and len(same.get(n, ())) == 1\n'))
+         ('            if len(same.get(n, ())) == 1 and names.any_name.get(n, set()) <= same[n]:',
+          '            if False:'))
 mut_live('live3: an outcome with no id is tied to an id though the file gives the name two ids',
-         ('            if (pid is None and len(same.get(n, ())) == 1\n',
-          '            if (pid is None and len(same.get(n, ())) >= 1\n'))
+         ('            if len(same.get(n, ())) == 1 and names.any_name',
+          '            if len(same.get(n, ())) >= 1 and names.any_name'))
 mut_live('live3: the team the book names is not read',
-         ('            teams = puts.get(pid or norm_player(player), set())',
+         ('            teams = puts.get(pid or n, set())',
           '            teams = set()'))
 mut_live('live3: a team outside the game is taken as nothing said',
-         ('            if len(teams) > 1 or (told and told not in (away, home)):',
-          '            told = told if told in (away, home) else None\n            if len(teams) > 1:'))
+         ('            odd = len(teams) > 1 or bool(told and told not in (away, home))',
+          '            told = told if told in (away, home) else None\n            odd = len(teams) > 1'))
 mut_live('live3: a player the book puts on another team is priced for the slate he is on',
          ('for tm in ((told,) if told else on) if tm in on]',
           'for tm in ((told,) if told in on else on)]'))
 mut_live('live3: a player with no id is looked for on both teams though the book names one',
-         ('                hits = [j for tm in ((told,) if told else (away, home))\n',
-          '                hits = [j for tm in (away, home)\n'))
+         ('                found = (named(n, (told,)) if told else set()) or named(n, (away, home))',
+          '                found = named(n, (away, home))'))
 mut_live('live3: a player off both slates is said to be on both',
-         ('which team he is on" if len(on) == 2 else',
-          'which team he is on" if len(on) != 2 else'))
+         ('                elif len(on) == 2:',
+          '                elif len(on) != 2:'))
 mut_live('live3: a player the book puts elsewhere is given the wrong reason',
-         ('inputs if he is playing." if told else',
-          'inputs if he is playing." if not told else'))
+         ('                elif told:\n                    why = (f"{says} has him on',
+          '                elif not told:\n                    why = (f"{says} has him on'))
 mut_live('live3: a slate player the roster has elsewhere is not named',
          ('        self.team = dict(zip(r.gsis_id, r.team))',
           '        self.team = {}'))
@@ -2732,11 +2743,11 @@ mut_live('live3: the roster overrules the book',
          ('            if len(hits) == 1 and not told:',
           '            if len(hits) == 1:'))
 mut_live('live3: a roster team outside this game stops him being priced',
-         ('                if there in (away, home) and there != his:',
-          '                if there is not None and there != his:'))
+         ('                    if has in (away, home) and has != his:',
+          '                    if has is not None and has != his:'))
 mut_live("live3: he is refused though the roster has him on the slate's team",
-         ('                if there in (away, home) and there != his:',
-          '                if there in (away, home):'))
+         ('                    if has in (away, home) and has != his:',
+          '                    if has in (away, home):'))
 # -- after the third review (2026-11-21)
 mut_live('live4: a team the book names that is no team it knows is dropped',
          ('                team = TEAM_CODE.get(team, team) if isinstance(team, str) and team else None',
@@ -2747,15 +2758,12 @@ mut_live('live4: a defence is listed as a player',
 mut_live('live4: an empty id is kept as an id',
          ('                seen[(who, key if isinstance(key, str) and key else None, team)] = None',
           '                seen[(who, key, team)] = None'))
-mut_live('live4: a player on two teams in the file is said to be on a team outside the game',
-         ('            if len(teams) > 1 or (told and told not in (away, home)):',
-          '            if told and told not in (away, home):'))
+mut_live('live4: a player the file puts on two teams is treated as if it said nothing',
+         ('            odd = len(teams) > 1 or bool(told and told not in (away, home))',
+          '            odd = bool(told and told not in (away, home))'))
 mut_live('live4: the team a player with no id is on is looked for under his id',
-         ('                puts.setdefault(person(player, key) or norm_player(player), set()).add(team)',
+         ('                puts.setdefault(person(player, key)[0] or norm_player(player), set()).add(team)',
           '                puts.setdefault(names.from_key(key) or norm_player(player), set()).add(team)'))
-mut_live('live4: a player with no id is looked for on either slate though the file names his team',
-         ('                       + (f"{told}\'s slate, where the odds file has him"\n                          if told else "either slate"))',
-          '                       + "either slate")'))
 mut_live('live4: a game outside the season is taken',
          ('        elif season is not None and not (',
           '        elif False and not ('))
@@ -2812,20 +2820,194 @@ mut_live('live4: a status is refused for a player on one slate',
           '        also = sorted(set(slate.team[slate.player_id == pid]))'))
 # -- after the re-check of the third review (2026-11-21)
 mut_live('live5: a bare name is tied to an id though a namesake is in the league',
-         ('                    and names.any_name.get(n, set()) <= same[n]):',
-          '                    and True):'))
-mut_live('live5: a bare name is priced though a namesake is on these teams',
-         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
-          '                if False and {g for tm in ((told,) if told else (away, home))'))
-mut_live("live5: a namesake is looked for on the player's own team only",
-         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
-          '                if len(hits) == 1 and {g for tm in (slate.team.iloc[hits[0]],)'))
-mut_live('live5: a namesake on the other team stands in the way though the file names the team',
-         ('                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))',
-          '                if len(hits) == 1 and {g for tm in (away, home)'))
-mut_live('live5: a player is his own namesake',
-         ('                                       } - {slate.player_id.iloc[hits[0]]}:',
-          '                                       }:'))
+         (' and names.any_name.get(n, set()) <= same[n]:',
+          ' and True:'))
+mut_live('live5: a bare name is priced for one of two namesakes on these teams',
+         ('                several = len(found) > 1\n                pid = next(iter(found)) if len(found) == 1 else None',
+          '                several = False\n                pid = min(found) if found else None'))
+mut_live('live5: a bare name is looked for on the slates only, not the rosters',
+         ('                    for g in [*names.by_name.get((tm, n), ()),\n                              *(slate',
+          '                    for g in [\n                              *(slate'))
+mut_live('live5: a bare name is looked for on the rosters only, not the slates',
+         ('                              *(slate.player_id.iloc[j] for j in by_name.get((tm, n), []))]}',
+          '                              ]}'))
+mut_live('live5: two namesakes are told apart only when there are three',
+         ('                several = len(found) > 1\n',
+          '                several = len(found) > 2\n'))
+# -- aliases, the roster's names, and the teammates caution (2026-11-21)
+mut_live('live6: aliases are not a key the inputs know',
+         ('INPUT_KEYS = {"season", "week", "starters", "statuses", "chances", "add", "aliases"}',
+          'INPUT_KEYS = {"season", "week", "starters", "statuses", "chances", "add"}'))
+mut_live("live6: an alias's name is not looked at",
+         ('                if not isinstance(name, str) or not norm_player(name):',
+          '                if False:'))
+mut_live("live6: an alias's name may be anything that is not text",
+         ('                if not isinstance(name, str) or not norm_player(name):',
+          '                if not norm_player(name):'))
+mut_live("live6: an alias's name may be empty",
+         ('                if not isinstance(name, str) or not norm_player(name):',
+          '                if not isinstance(name, str):'))
+mut_live('live6: a name may have two aliases on a team',
+         ('                if any((team, norm_player(name)) == (t_, norm_player(n_))\n                       for t_, n_, _ in out[kind]):',
+          '                if False:'))
+mut_live('live6: two aliases are the same only when spelt the same',
+         ('(team, norm_player(name)) == (t_, norm_player(n_))',
+          '(team, name) == (t_, n_)'))
+mut_live('live6: one name cannot have an alias on two teams',
+         ('(team, norm_player(name)) == (t_, norm_player(n_))',
+          'norm_player(name) == norm_player(n_)'))
+mut_live('live6: an alias is filed player first',
+         ('                out[kind].append((team, name, who))',
+          '                out[kind].append((team, who, name))'))
+mut_live('live6: an alias for a team not playing is looked up',
+         ('             for tm, name, who in inputs.get("aliases") or [] if tm in playing}',
+          '             for tm, name, who in inputs.get("aliases") or []}'))
+mut_live('live6: an alias may name anyone in the league',
+         ('    alias = {(tm, norm_player(name)): (placed(tm, who), name)',
+          '    alias = {(tm, norm_player(name)): (names.find(tm, who, anywhere=True), name)'))
+mut_live('live6: an alias answers only to the name as spelt',
+         ('    alias = {(tm, norm_player(name)): (placed(tm, who), name)',
+          '    alias = {(tm, name): (placed(tm, who), name)'))
+mut_live('live6: an alias is read in every game of the run',
+         ('        for (tm, n), (pid, name) in alias.items():\n            if tm in (away, home):',
+          '        for (tm, n), (pid, name) in alias.items():\n            if True:'))
+mut_live('live6: both teams may have an alias for one name',
+         ('                if n in called:\n                    raise Missing',
+          '                if False:\n                    raise Missing'))
+mut_live('live6: an alias may contradict the id the file gives the name',
+         ('                others = same.get(n, set()) - {pid}\n                if others:',
+          '                others = same.get(n, set()) - {pid}\n                if False:'))
+mut_live('live6: an alias is refused when it agrees with the id the file gives the name',
+         ('                others = same.get(n, set()) - {pid}\n',
+          '                others = same.get(n, set())\n'))
+mut_live("live6: an alias overrules the book's id",
+         ('            if pid is not None:\n                return pid, "id"\n            if n in called:\n                return called[n][1], "alias"\n',
+          '            if n in called:\n                return called[n][1], "alias"\n            if pid is not None:\n                return pid, "id"\n'))
+mut_live('live6: an alias is never used',
+         ('            if n in called:\n                return called[n][1], "alias"\n',
+          ''))
+mut_live("live6: the alias's team is not taken as the team said",
+         ('            if by == "alias" and not teams:',
+          '            if False:'))
+mut_live("live6: the alias's team overrules the team the file names",
+         ('            if by == "alias" and not teams:',
+          '            if by == "alias":'))
+mut_live('live6: the reason says the book put him there when the alias did',
+         ('{called[n][0]}, called[n][0], "the alias"',
+          '{called[n][0]}, called[n][0], "the book"'))
+mut_live('live6: every alias is said not to have been used',
+         ('                aka.add((called[norm_player(player)][0], norm_player(player)))',
+          '                pass'))
+mut_live('live6: an alias used is said not to have been, and the other way round',
+         ('            f"by an alias in the inputs" if (tm, n) in aka else',
+          '            f"by an alias in the inputs" if (tm, n) not in aka else'))
+mut_live('live6: a line found by alias is said to be found by name',
+         ('                             "alias" if (h.how == "alias").any() else "name",',
+          '                             "name",'))
+mut_live('live6: a line found by alias carries no caution saying so',
+         ('    if row.matched == "alias":',
+          '    if False:'))
+mut_live('live6: two namesakes get the reason for nobody of that name',
+         ('                if several:',
+          '                if False:'))
+mut_live('live6: the team the file names is not put at risk',
+         ('            return {tm for tm in {*said_, names.team.get(pid)}',
+          '            return {tm for tm in {names.team.get(pid)}'))
+mut_live("live6: the roster's team is not put at risk",
+         ('            return {tm for tm in {*said_, names.team.get(pid)}',
+          '            return {tm for tm in {*said_}'))
+mut_live('live6: a team is put at risk though he is on its slate',
+         ('                    if tm in (away, home) and (tm, pid) not in at}',
+          '                    if tm in (away, home)}'))
+mut_live('live6: a team outside the game is put at risk',
+         ('                    if tm in (away, home) and (tm, pid) not in at}',
+          '                    if (tm, pid) not in at}'))
+mut_live('live6: a defender off the slate puts his team at risk',
+         ('            if pid is None or names.position.get(pid, "WR") not in ADD_AT:',
+          '            if pid is None:'))
+mut_live('live6: a priced player puts a team at risk',
+         ('            if len(hits) == 1:\n                return hits[0], "", by, set(), pid',
+          '            if len(hits) == 1:\n                return hits[0], "", by, lacking(pid, teams), pid'))
+mut_live('live6: nobody ever puts a team at risk',
+         ('            for tm in lacks:\n                off_slate.setdefault(tm, set()).add(names.full.get(pid, player))\n',
+          ''))
+mut_live('live6: the caution names him as the book spells him',
+         ('                off_slate.setdefault(tm, set()).add(names.full.get(pid, player))',
+          '                off_slate.setdefault(tm, set()).add(player)'))
+mut_live("live6: the run has no note that a team's numbers are too high",
+         ('    for tm, who in off_slate.items():\n        notes.append(too_high_text(tm, who))\n',
+          ''))
+mut_live('live6: the board does not keep who is off the slate',
+         ('    return Board(slate, lines, unmatched, notes, P, off_slate)',
+          '    return Board(slate, lines, unmatched, notes, P)'))
+mut_live('live6: the caution is always written for one player',
+         ('    one = len(who) == 1\n',
+          '    one = True\n'))
+mut_live('live6: the caution is always written for several players',
+         ('    one = len(who) == 1\n',
+          '    one = False\n'))
+mut_live("live6: the reason does not say his teammates' numbers are too high",
+         ('            if lacks:\n                why += " " + TOO_HIGH\n',
+          ''))
+mut_live('live6: the reason for a split or stale tag does not say whose slate he is off',
+         ('            if lacks and odd:',
+          '            if False:'))
+mut_live('live6: every reason says whose slate he is off',
+         ('            if lacks and odd:',
+          '            if lacks:'))
+mut_live('live6: the printout has no caution under the team',
+         ('            if board.off_slate.get(team):',
+          '            if False:'))
+mut_live("live6: the saved table has no caution on the team's lines",
+         ('flags_for(record, r, board.off_slate.get(r.team, ())))',
+          'flags_for(record, r, ()))'))
+mut_live("live6: the saved table puts one team's caution on every line",
+         ('flags_for(record, r, board.off_slate.get(r.team, ())))',
+          'flags_for(record, r, [w for v in board.off_slate.values() for w in v]))'))
+mut_live('live6: a line never carries the caution',
+         ('    if off:\n        out.append(f"too high if',
+          '    if False:\n        out.append(f"too high if'))
+mut_live("live6: a line's caution is always written for one player",
+         ('f"play{\'s\' if len(off) == 1 else \'\'}: posted, and not on "',
+          'f"play{\'s\' if True else \'\'}: posted, and not on "'))
+# -- after the review of the alias change (2026-11-21)
+mut_live("live7: an alias may take a name that is another player's on these teams",
+         ('                if others and pid not in named(n, (away, home)):',
+          '                if False:'))
+mut_live("live7: an alias's name is looked for on its own team only",
+         ('                others = named(n, (away, home)) - {pid}\n',
+          '                others = named(n, (tm,)) - {pid}\n'))
+mut_live('live7: a player without a known position does not put his team at risk',
+         ('names.position.get(pid, "WR") not in ADD_AT:',
+          'names.position.get(pid) not in ADD_AT:'))
+mut_live("live7: a player posted only where the run does not read is on nobody's account",
+         ('        for player, key, _ in listed:\n            _, _, _, lacks, pid = place(player, key)',
+          '        for player, key in zip(L.player, L.player_key):\n            _, _, _, lacks, pid = place(player, key)'))
+mut_live("live7: the roster's claim is made of a team the roster does not have him on",
+         ('                elif has in (away, home):',
+          '                elif True:'))
+mut_live('live7: a rostered player off the slate gets the reason for a player on no roster here',
+         ('                elif has in (away, home):',
+          '                elif False:'))
+mut_live("live7: a name is looked for among everyone, the file's team or not",
+         ('            return {g for tm in sides_\n',
+          '            return {g for tm in (away, home)\n'))
+# -- after the re-check (2026-11-21)
+mut_live("live8: a name nobody on the file's team has is not looked for on the other team",
+         ('                found = (named(n, (told,)) if told else set()) or named(n, (away, home))',
+          '                found = named(n, (told,)) if told else named(n, (away, home))'))
+mut_live('live8: an alias cannot say which of two namesakes the book means',
+         ('                if others and pid not in named(n, (away, home)):',
+          '                if others:'))
+mut_live('live8: a name with no id never puts a team at risk',
+         ('            lacks = lacking(pid, teams)\n',
+          '            lacks = lacking(person(player, key)[0], teams)\n'))
+mut_live('live8: the team the file names is left out when a team is put at risk',
+         ('            lacks = lacking(pid, teams)\n',
+          '            lacks = lacking(pid, set())\n'))
+mut_live('live8: a line found through an alias for a name that also has an id is said to be found by alias',
+         ('            if pid is not None:\n                return pid, "id"\n',
+          '            if pid is not None and n not in called:\n                return pid, "id"\n'))
 
 
 def run_one(i: int):

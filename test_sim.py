@@ -5104,7 +5104,8 @@ def _():
     ok = {"season": 2024, "week": 4, "starters": {"ARI": "Art Passer", "Atlanta Falcons": "Abe Passer"},
           "statuses": [{"team": "Atlanta Falcons", "player": "Tom End", "status": "doubtful"}],
           "chances": [{"team": "Arizona Cardinals", "player": "Wes One", "chance": 0.5}],
-          "add": [{"team": "ATL", "player": "espn:99", "position": "WR"}]}
+          "add": [{"team": "ATL", "player": "espn:99", "position": "WR"}],
+          "aliases": [{"team": "Arizona Cardinals", "name": "Wesley One", "player": "Wes One"}]}
     (d / "in.json").write_text(_json.dumps(ok))
     got_in = fl.read_inputs(str(d / "in.json"))
     chk("the inputs are read from a file or a dict, with a team given by code "
@@ -5112,10 +5113,11 @@ def _():
         got_in == fl.read_inputs(ok) == {
             "season": 2024, "week": 4, "starters": {"ARI": "Art Passer", "ATL": "Abe Passer"},
             "statuses": [("ATL", "Tom End", "doubtful")],
-            "chances": [("ARI", "Wes One", 0.5)], "add": [("ATL", "espn:99", "WR")]}
+            "chances": [("ARI", "Wes One", 0.5)], "add": [("ATL", "espn:99", "WR")],
+            "aliases": [("ARI", "Wesley One", "Wes One")]}
         and fl.read_inputs({"starters": {"ARI": "x"}}) == {
             "season": None, "week": None, "starters": {"ARI": "x"}, "statuses": [],
-            "chances": [], "add": []}
+            "chances": [], "add": [], "aliases": []}
         and [fl.read_inputs({"starters": {}, "statuses": [{"team": "ARI", "player": "a", "status": s_}]})
              ["statuses"][0][2] for s_ in fp.STATUSES] == list(fp.STATUSES)
         and raises(lambda: fl.read_inputs({"starters": {}, "statuses": [
@@ -5123,6 +5125,28 @@ def _():
             "the status handed in for 'Wes One' is 'Q'")
         and raises(lambda: fl.read_inputs({"starters": {}, "statuses": [
             {"team": "ARI", "player": "Wes One"}]}), fl.Missing, "it must be one of"))
+    al = lambda *rows: fl.read_inputs({"starters": {}, "aliases": list(rows)})["aliases"]   # noqa: E731
+    al_bad = lambda msg, *rows: raises(lambda: al(*rows), fl.Missing, msg)   # noqa: E731
+    chk("an alias is the book's name, the team and the player, all three: a "
+        "row short of one, with a key it does not know, with no name, or "
+        "the same name twice for a team (however it is spelt) is refused; "
+        "the same name for two teams is not",
+        al({"team": "ARI", "name": "Kenneth G", "player": "00-0012345"},
+           {"team": "ATL", "name": "Kenneth G", "player": "espn:5"}) == [
+            ("ARI", "Kenneth G", "00-0012345"), ("ATL", "Kenneth G", "espn:5")]
+        and al_bad('a "aliases" row in the inputs is', {"team": "ARI", "name": "K"})
+        and al_bad('a "aliases" row in the inputs is', {"name": "K", "player": "a"})
+        and al_bad('a "aliases" row in the inputs is',
+                   {"team": "ARI", "name": "K", "player": "a", "position": "WR"})
+        and al_bad("an alias in the inputs has the name None", {"team": "ARI", "player": "a"})
+        and al_bad("an alias in the inputs has the name ''", {"team": "ARI", "name": "", "player": "a"})
+        and al_bad("an alias in the inputs has the name ' . '", {"team": "ARI", "name": " . ", "player": "a"})
+        and al_bad("an alias in the inputs has the name 7", {"team": "ARI", "name": 7, "player": "a"})
+        and al_bad("'ken g jr.' (ARI) has two aliases", {"team": "ARI", "name": "Ken G", "player": "a"},
+                   {"team": "Arizona Cardinals", "name": "ken g jr.", "player": "b"})
+        and raises(lambda: fl.read_inputs({"starters": {}, "alias": []}), fl.Missing, "which is not one of")
+        and raises(lambda: fl.read_inputs({"starters": {}, "aliases": {"a": 1}}), fl.Missing,
+                   '"aliases" in the inputs must be a list'))
     chk("inputs with no starters, an unknown team, or a chance that is not a "
         "number from 0 to 1 are refused, saying which",
         raises(lambda: fl.read_inputs({"week": 4}), fl.Missing, 'no "starters"')
@@ -5499,15 +5523,34 @@ def _():
         and fl.read_on(TD_STAT, 1.5, role(td=True), []) == ("", fl.TWO_PLUS)
         and fl.read_on(TD_STAT, 2.5, role(), []) == ("", fl.TWO_PLUS))
     why = {p_: (g, n, w_) for g, p_, n, w_ in B.unmatched}
+    NOBODY = ("no id from the book that the roster has, and nobody of that name on either team's "
+              "roster or slate. If the book spells him differently from the data, name him with an "
+              "alias in the inputs. If he is a player not on the slate, add him: until then his "
+              "teammates' numbers here are too high.")
     chk("what it cannot price is listed once a player with the reason: a "
         "rostered player not on the slate, a name with no usable id that "
         "nobody on either slate has, and a passer who is not the named "
         "starter",
         [u[1] for u in B.unmatched] == ["Nat Newman", "Sam Stranger", "Ray Back"]
         and why["Ray Back"] == ("ARI at ATL", 1, "no passing_yards projection: he is not the named starter")
-        and why["Nat Newman"][1] == 1 and "not on the slate" in why["Nat Newman"][2]
-        and "Add him in the inputs" in why["Nat Newman"][2]
-        and "no one player of that name" in why["Sam Stranger"][2])
+        and why["Nat Newman"][1:] == (
+            1, "on ATL's roster but not on the slate: not active for ATL in its last four games. "
+               "Add him in the inputs if he is playing. " + fl.TOO_HIGH)
+        and why["Sam Stranger"][2] == NOBODY)
+    chk("a posted player known not to be on a team's slate makes that "
+        "team's numbers too high if he plays: the run says so in a note, "
+        "and keeps who and for which team; a name it cannot place is on "
+        "nobody's account",
+        B.off_slate == {"ATL": ["Nat Newman"]}
+        and B.notes[-1] == fl.too_high_text("ATL", ["Nat Newman"]) == (
+            "ATL'S NUMBERS ARE TOO HIGH if Nat Newman plays: posted, and not on ATL's slate, so "
+            "the work that would be his is shared among the others. Add him in the inputs, "
+            "unless he is ruled out.")
+        and fl.too_high_text("PIT", ["A B", "C D"]) == (
+            "PIT'S NUMBERS ARE TOO HIGH if A B, C D play: posted, and not on PIT's slate, so the "
+            "work that would be theirs is shared among the others. Add each in the inputs, "
+            "unless he is ruled out.")
+        and fl.TOO_HIGH == "Until he is added or ruled out, his teammates' numbers here are too high.")
     runner = f.copy()
     runner.loc[runner.player_id == "BBB_QB", "carries"] = 8.0
     his = dict(fs.standin_lines(History(runner, T), fs.line_window(History(runner, T), "BBB_QB"),
@@ -5546,7 +5589,8 @@ def _():
             "Injury file for these teams: 1 listed, 0 out, 0 doubtful, 1 questionable. It can "
             "be days behind the league's report; 0 statuses and 0 chances were handed in.",
             "['ATL', 'BAL', 'BUF']: nobody on the injury file this week. A clean report is "
-            "rare; the file may be missing them."])
+            "rare; the file may be missing them.",
+            fl.too_high_text("ATL", ["Nat Newman"])])
 
     moved = f.copy()
     was = (moved.player_id == "AAA_WR2") & (moved.t == 202403)
@@ -5617,15 +5661,22 @@ def _():
         oc["player_team"] = "Atlanta Falcons"
     nameless = fl.run_live(f, reports, roster, [lone], fl.read_inputs(LIVE_IN))
     chk("...with no id anywhere in the file he is looked for by name on the "
-        "team the file names, and nowhere else",
+        "team the file names; when nobody there has the name and one "
+        "player on the other team does, he is that player, and the file's "
+        "team stands as for a player with an id",
         len(nameless.lines) == 0 and [u[1:] for u in nameless.unmatched] == [
-            ("Will Two", 1, "no id from the book that the roster has, and no one player of that "
-                            "name on ATL's slate, where the odds file has him")])
-    mixed = "the odds file puts him on ARI and ATL: not one team in this game, so he is not priced"
+            ("Will Two", 1, "the book has him on ATL, and he is not on ATL's slate: not active for "
+                            "it in its last four games. Add him in the inputs if he is playing. "
+                            + fl.TOO_HIGH)]
+        and nameless.off_slate == {"ATL": ["Will Two Jr."]})
+    mixed = ("the odds file puts him on ARI and ATL: not one team in this game, so he is not priced. "
+             "He is not on the slate of ATL. " + fl.TOO_HIGH)
     chk("...and when the file puts him on two teams he is not priced at all, "
         "whether two books disagree under two spellings or one gives his "
-        "id and the other only his name",
-        all(len(b_.lines) == 0 and [u[1:] for u in b_.unmatched] == [
+        "id and the other only his name; the team whose slate he is not on "
+        "is cautioned, since one of them says he is its player",
+        all(len(b_.lines) == 0 and b_.off_slate == {"ATL": ["Will Two Jr."]}
+            and [u[1:] for u in b_.unmatched] == [
             ("Will Two", 1, mixed), ("Will Two Jr.", 2, mixed)]
             for b_ in (told({"booka": "Atlanta Falcons", "bookb": "Arizona Cardinals"}),
                        told({"booka": "Arizona Cardinals", "bookc": "Atlanta Falcons"}),
@@ -5650,7 +5701,7 @@ def _():
         and [u[1:] for u in t1.unmatched] == [("Sam Twin", 1, shared)]
         and len(t2.lines) == 0 and [u[1:] for u in t2.unmatched] == [("Sam Twin", 1, shared)]
         and [(r_.player_id, r_.line) for r_ in t3.lines.itertuples()] == [("TWIN_1", 1.5)]
-        and "no one player of that name on either slate" in t3.unmatched[0][3]
+        and t3.unmatched[0][3] == shared and t1.off_slate == t2.off_slate == t3.off_slate == {}
         and {"TWIN_1", "TWIN_2"} <= set(t3.slate.player_id) and "TWIN_2" not in set(t1.slate.player_id))
     other_id = ("player_receptions", "alternate", None, [("Over", "Sam Twin", 3.5, "espn:72")])
     t4 = twins({"booka": [with_id], "bookb": [no_id], "bookc": [other_id]},
@@ -5674,7 +5725,7 @@ def _():
         == [("TWIN_1", "ARI", 2.5, "name")] and t6.unmatched == [])
     far = told({"booka": "Buffalo Bills", "bookb": "Buffalo Bills", "bookc": "Buffalo Bills"})
     chk("...nor when it puts him on a team that is not in this game",
-        len(far.lines) == 0 and {u[3] for u in far.unmatched} == {
+        len(far.lines) == 0 and far.off_slate == {} and {u[3] for u in far.unmatched} == {
             "the odds file puts him on BUF: not one team in this game, so he is not priced"}
         and len(told({"bookc": "London Monarchs"}).lines) == 0)
     moved_roster = roster.assign(team=roster.team.where(roster.gsis_id != "AAA_WR2", "ATL"))
@@ -5697,9 +5748,11 @@ def _():
             ("Will Two", 1), ("Will Two Jr.", 2)]
         and all(u[3] == "the roster has him on ATL, the book does not say, and he is on ARI's "
                         "slate only: not active for ATL in its last four games. Add him to ATL in "
-                        "the inputs if he is playing for it." for u in silent.unmatched)
+                        "the inputs if he is playing for it. " + fl.TOO_HIGH for u in silent.unmatched)
+        and silent.off_slate == {"ATL": ["Will Two Jr."]}
         and sorted(fl.run_live(f, reports, moved_roster, [spoken], fl.read_inputs(LIVE_IN)).lines.team)
         == ["ARI", "ARI"]
+        and fl.run_live(f, reports, moved_roster, [spoken], fl.read_inputs(LIVE_IN)).off_slate == {}
         and sorted(fl.run_live(f, reports, elsewhere, [two], fl.read_inputs(LIVE_IN)).lines.team)
         == ["ARI", "ARI"])
     left_st = fl.run_live(f, reports, moved_roster, [ev], dict(
@@ -5728,6 +5781,218 @@ def _():
             chances=[("ARI", "Will Two Jr.", 0.0), ("ATL", "Will Two Jr.", 0.8)]).slate.itertuples()
             if r_.player_id == "AAA_WR2"} == {("ARI", 0.0), ("ATL", 0.8)}
         and len(both(statuses=[("ARI", "Wes One", "out")]).slate) > 0)
+    # -- a name the data does not have, and a player not on the slate
+    post = lambda name, pid, line_=3.5: ("player_receptions", "main", None, [   # noqa: E731
+        ("Over", name, line_, pid), ("Under", name, line_, pid)])
+    game = lambda books: odds_event("Atlanta Falcons", "Arizona Cardinals", books)   # noqa: E731
+    aka = lambda e, *al, fr=f, ro=roster, **kw: fl.run_live(   # noqa: E731
+        fr, reports, ro, [e], dict(fl.read_inputs(LIVE_IN), aliases=list(al), **kw))
+    row = lambda b: [(r_.team, r_.player_id, r_.line, r_.books, r_.matched)   # noqa: E731
+                     for r_ in b.lines.itertuples(index=False)]
+    spelt = game({"booka": [post("Wesley One", None)], "bookb": [post("Wes One", "espn:13")]})
+    solo = game({"booka": [post("Wesley One", None)]})
+    unnamed, known = aka(spelt), aka(spelt, ("ARI", "Wesley One", "Wes One"))
+    alone = aka(solo, ("ARI", "wesley one jr.", "espn:13"))
+    chk("a book's spelling the data does not have is not priced, and the "
+        "reason says an alias can settle it; with the alias (the book's "
+        "name, the team, the player) his line is priced as his own, pooled "
+        "with the book that gives his id, and the run says the alias was "
+        "used",
+        row(unnamed) == [("ARI", "AAA_WR1", 3.5, "bookb", "id")]
+        and [u[1:] for u in unnamed.unmatched] == [("Wesley One", 1, NOBODY)]
+        and row(known) == [("ARI", "AAA_WR1", 3.5, "booka bookb", "id")] and known.unmatched == []
+        and row(alone) == [("ARI", "AAA_WR1", 3.5, "booka", "alias")] and alone.unmatched == []
+        and alone.lines.over.iloc[0] == known.lines.over.iloc[0] == unnamed.lines.over.iloc[0]
+        and "ARI: the book's 'Wesley One' is read as Wes One, by an alias in the inputs" in known.notes
+        and "ARI: the book's 'wesley one jr.' is read as Wes One, by an alias in the inputs" in alone.notes
+        and not any("alias" in n for n in unnamed.notes)
+        and "matched by an ALIAS from the inputs, not by id" in fl.flags_for(
+            {"s21": {}}, next(alone.lines.itertuples(index=False)))
+        and not any("ALIAS" in x for x in fl.flags_for({"s21": {}}, next(known.lines.itertuples(index=False)))))
+    idle = aka(spelt, ("ARI", "Kenneth Nobody", "Wes One"), ("ARI", "Wes One", "espn:13"),
+               ("BUF", "Wesley One", "Nobody Atall"))
+    chk("an alias nothing posted answers to is named as not used, one for a "
+        "name the book gives an id is not used either (the id decides), and "
+        "one for a team that is not playing is not looked at",
+        row(idle) == row(unnamed) and [u[1] for u in idle.unmatched] == ["Wesley One"]
+        and idle.notes[-2:] == [
+            "ARI: the alias for 'Kenneth Nobody' was not used: no line this run reads is posted "
+            "under that name without an id",
+            "ARI: the alias for 'Wes One' was not used: no line this run reads is posted under "
+            "that name without an id"]
+        and not any("BUF" in n and "alias" in n for n in idle.notes))
+    far_game = aka(solo, ("BAL", "Wesley One", "Wyn One"))
+    both_games = fl.run_live(f, reports, roster, [solo, ev2], dict(
+        fl.read_inputs(LIVE_IN), aliases=[("BAL", "Wesley One", "Wyn One")]))
+    chk("an alias is for its own team's game: the same name posted in "
+        "another game of the run is not read by it",
+        row(far_game) == [] and [u[1:] for u in far_game.unmatched] == [("Wesley One", 1, NOBODY)]
+        and [r_ for r_ in row(both_games) if r_[0] in ("ARI", "ATL")] == []
+        and ("ARI at ATL", "Wesley One", 1, NOBODY) in both_games.unmatched
+        and "BAL: the alias for 'Wesley One' was not used: no line this run reads is posted "
+            "under that name without an id" in both_games.notes
+        and not any("alias" in n for n in far_game.notes))
+    other_id = game({"booka": [post("Wesley One", None)], "bookb": [post("Wesley One", "espn:14")]})
+    chk("an alias must name a player on the team or one added to it; it is "
+        "refused when the file gives the same name the id of someone else, "
+        "when both teams in a game have one for the same name, and when "
+        "the name is another player's on these teams; it may say which of "
+        "two namesakes the book means",
+        raises(lambda: aka(solo, ("ARI", "Wesley One", "Abe Passer")), fl.Missing,
+               "no player called 'Abe Passer' on ARI")
+        and raises(lambda: aka(other_id, ("ARI", "Wesley One", "Wes One")), fl.Missing,
+                   "ARI at ATL: the alias for 'Wesley One' names Wes One, and the odds file gives "
+                   "that name the id of Will Two Jr.")
+        and row(aka(other_id, ("ARI", "Wesley One", "espn:14"))) == [
+            ("ARI", "AAA_WR2", 3.5, "booka bookb", "id")]
+        and raises(lambda: aka(solo, ("ARI", "Wesley One", "Wes One"), ("ATL", "Wesley One", "Walt One")),
+                   fl.Missing, "ARI at ATL: an alias for 'Wesley One' is given for both teams")
+        and all(raises(lambda nm=nm: aka(game({"booka": [post(nm, None)]}), ("ARI", nm, "Wes One")),
+                       fl.Missing, f"ARI at ATL: the alias for {nm!r} names Wes One, and that is the "
+                                   f"name of {own} on these teams")
+                for nm, own in (("Walt One", "Walt One"), ("rob back jr", "Rob Back"),
+                                ("Nat Newman", "Nat Newman")))
+        and row(aka(solo, ("ATL", "Wesley One", "Nat Newman"), add=[("ATL", "espn:99", "WR")])) == [
+            ("ATL", "NEW_WR", 3.5, "booka", "alias")]
+        and row(aka(game({"booka": [post("Sam Twin", None)]}), ("ARI", "Sam Twin", "espn:72"),
+                    add=[("ARI", "espn:71", None), ("ARI", "espn:72", None)])) == [
+            ("ARI", "TWIN_2", 3.5, "booka", "alias")]
+        and row(aka(game({"booka": [post("Sam Twin", None)]}), ("ARI", "Sam Twin", "espn:71"),
+                    add=[("ARI", "espn:71", None)])) == [("ARI", "TWIN_1", 3.5, "booka", "alias")])
+
+    def on_team(e, team):
+        e = _json_copy(e)
+        for oc in e["bookmakers"][0]["markets"][0]["outcomes"]:
+            oc["player_team"] = team
+        return e
+
+    cross = aka(on_team(solo, "Atlanta Falcons"), ("ARI", "Wesley One", "Wes One"))
+    chk("the alias's team stands for the team said when the file says "
+        "nothing, so a player on both slates is priced for that team; when "
+        "the file names a team, the file decides",
+        row(aka(solo, ("ARI", "Wesley One", "Will Two Jr."), fr=moved)) == [("ARI", "AAA_WR2", 3.5, "booka", "alias")]
+        and row(aka(solo, ("ATL", "Wesley One", "Will Two Jr."), fr=moved)) == [("ATL", "AAA_WR2", 3.5, "booka", "alias")]
+        and row(aka(on_team(solo, "Arizona Cardinals"), ("ARI", "Wesley One", "Wes One")))
+        == [("ARI", "AAA_WR1", 3.5, "booka", "alias")]
+        and aka(on_team(solo, "Arizona Cardinals"), ("ARI", "Wesley One", "Wes One")).off_slate == {}
+        and aka(on_team(game({"booka": [post("Wes One", "espn:13")]}), "Arizona Cardinals")).off_slate == {}
+        and row(cross) == [] and [u[1:] for u in cross.unmatched] == [(
+            "Wesley One", 1, "the book has him on ATL, and he is not on ATL's slate: not active for "
+                             "it in its last four games. Add him in the inputs if he is playing. "
+                             + fl.TOO_HIGH)]
+        and cross.off_slate == {"ATL": ["Wes One"]})
+    newman = game({"booka": [post("Nat Newman", None)]})
+    bare, renamed = aka(newman), aka(game({"booka": [post("Nathaniel Newman", None)]}),
+                                     ("ATL", "Nathaniel Newman", "Nat Newman"))
+    joined_ = aka(newman, add=[("ATL", "Nat Newman", None)])
+    chk("a posted name with no id that belongs to one player on a team's "
+        "roster, who is not on the slate, is said to be on that roster and "
+        "addable, not to be nobody; added by name he is priced, and the "
+        "caution on his team goes",
+        row(bare) == [] and [u[1:] for u in bare.unmatched] == [(
+            "Nat Newman", 1, "on ATL's roster but not on the slate: not active for ATL in its last "
+                             "four games. Add him in the inputs if he is playing. " + fl.TOO_HIGH)]
+        and bare.off_slate == {"ATL": ["Nat Newman"]}
+        and fl.too_high_text("ATL", ["Nat Newman"]) in bare.notes
+        and row(joined_) == [("ATL", "NEW_WR", 3.5, "booka", "name")]
+        and joined_.off_slate == {} and not any("TOO HIGH" in n for n in joined_.notes)
+        and [u[1:] for u in aka(on_team(newman, "Arizona Cardinals")).unmatched] == [(
+            "Nat Newman", 1, "the book has him on ARI, and he is not on ARI's slate: not active for "
+                             "it in its last four games. Add him in the inputs if he is playing. "
+                             + fl.TOO_HIGH)]
+        and aka(on_team(newman, "Arizona Cardinals")).off_slate == {
+            "ARI": ["Nat Newman"], "ATL": ["Nat Newman"]}
+        and [u[1:] for u in aka(on_team(newman, "Buffalo Bills")).unmatched] == [(
+            "Nat Newman", 1, "the odds file puts him on BUF: not one team in this game, so he is not "
+                             "priced. He is not on the slate of ATL. " + fl.TOO_HIGH)]
+        and aka(on_team(newman, "Buffalo Bills")).off_slate == {"ATL": ["Nat Newman"]}
+        and [u[1:] for u in aka(on_team(game({"booka": [post("Sam Stranger", None)]}),
+                                        "Arizona Cardinals")).unmatched] == [("Sam Stranger", 1, NOBODY)])
+    chk("...the same when an alias names him: the reason says it is the "
+        "alias that puts him there",
+        row(renamed) == [] and [u[1:] for u in renamed.unmatched] == [(
+            "Nathaniel Newman", 1, "the alias has him on ATL, and he is not on ATL's slate: not "
+                                   "active for it in its last four games. Add him in the inputs if "
+                                   "he is playing. " + fl.TOO_HIGH)]
+        and renamed.off_slate == {"ATL": ["Nat Newman"]})
+    away_roster = roster.assign(team=roster.team.where(roster.gsis_id != "NEW_WR", "BUF"))
+    nowhere = aka(game({"booka": [post("Nat Newman", "espn:99")]}), ro=away_roster)
+    two_off = aka(game({"booka": [post("Nat Newman", "espn:99"), post("Sam Twin", "espn:72", 1.5),
+                                  post("Sam Twin", "espn:71", 2.5)]}))
+    chk("a player with an id whom the roster has on neither of these teams "
+        "is on nobody's account; two posted players off one team's slate "
+        "are both named, each once",
+        [u[1:] for u in nowhere.unmatched] == [(
+            "Nat Newman", 1, "on a roster but not on the slate: not active for either team in its "
+                             "last four games. Add him in the inputs if he is playing.")]
+        and nowhere.off_slate == {} and not any("TOO HIGH" in n for n in nowhere.notes)
+        and two_off.off_slate == {"ARI": ["Sam Twin"], "ATL": ["Nat Newman"]}
+        and [n for n in two_off.notes if "TOO HIGH" in n] == [
+            fl.too_high_text("ARI", ["Sam Twin"]), fl.too_high_text("ATL", ["Nat Newman"])])
+    def _tag(tm):
+        e = game({f"book{i}": [post("Nat Newman", "espn:99")] for i in range(len(tm))})
+        for bk, t_ in zip(e["bookmakers"], tm):
+            for oc in bk["markets"][0]["outcomes"]:
+                oc["player_team"] = t_
+        return e
+
+    tagged = lambda *tm: aka(_tag(tm))   # noqa: E731
+    stale_tag, split_tag, wrong_tag = (tagged("Buffalo Bills"), tagged("Buffalo Bills", "Atlanta Falcons"),
+                                       tagged("Arizona Cardinals"))
+    chk("the team at risk is the one the file OR the roster has him on, so "
+        "a tag that is stale, split between books, or simply the other "
+        "team's does not hide it: the roster's team is cautioned, and the "
+        "file's as well when it is in this game",
+        [u[1:] for u in stale_tag.unmatched] == [(
+            "Nat Newman", 1, "the odds file puts him on BUF: not one team in this game, so he is not "
+                             "priced. He is not on the slate of ATL. " + fl.TOO_HIGH)]
+        and stale_tag.off_slate == {"ATL": ["Nat Newman"]}
+        and [u[1:] for u in split_tag.unmatched] == [(
+            "Nat Newman", 1, "the odds file puts him on ATL and BUF: not one team in this game, so "
+                             "he is not priced. He is not on the slate of ATL. " + fl.TOO_HIGH)]
+        and split_tag.off_slate == {"ATL": ["Nat Newman"]}
+        and [u[1:] for u in wrong_tag.unmatched] == [(
+            "Nat Newman", 1, "the book has him on ARI, and he is not on ARI's slate: not active for "
+                             "it in its last four games. Add him in the inputs if he is playing. "
+                             + fl.TOO_HIGH)]
+        and wrong_tag.off_slate == {"ARI": ["Nat Newman"], "ATL": ["Nat Newman"]}
+        and [n for n in wrong_tag.notes if "TOO HIGH" in n] == [
+            fl.too_high_text("ARI", ["Nat Newman"]), fl.too_high_text("ATL", ["Nat Newman"])])
+    defender = roster.assign(position=roster.position.where(roster.gsis_id != "NEW_WR", "DB"))
+    guard = aka(game({"booka": [post("Nat Newman", "espn:99")]}), ro=defender)
+    unknown = aka(on_team(game({"booka": [post("Ted End", None)]}), "Atlanta Falcons"),
+                  ro=roster[roster.gsis_id != "AAA_TE"])
+    chk("...and only for a position the slate carries: a defender posted "
+        "and not on the slate takes no targets from anyone; a slate player "
+        "the roster does not have, so of no known position, still counts",
+        unknown.off_slate == {"ATL": ["Ted End"]} and len(unknown.lines) == 0
+        and guard.off_slate == {} and [u[1:] for u in guard.unmatched] == [(
+            "Nat Newman", 1, "on ATL's roster but not on the slate: not active for ATL in its last "
+                             "four games. Add him in the inputs if he is playing.")])
+    unread = game({"booka": [post("Wes One", "espn:13"),
+                             ("player_1st_td", "main", None, [("Nat Newman", "Nat Newman", None, "espn:99"),
+                                                              ("Walt One", "Walt One", None, "espn:23"),
+                                                              ("Sam Stranger", "Sam Stranger", None, None)])],
+                   "bookb": [post("Sam Twin", "espn:71")]})
+    quiet = aka(unread)
+    chk("a player posted only in a market this run does not read, or only "
+        "by a book it was not asked for, has no line to list; if he is off "
+        "his team's slate the caution is still given, and not for one who "
+        "is on it, a defender, or a name it cannot place",
+        row(quiet) == [("ARI", "AAA_WR1", 3.5, "booka", "id")]
+        and [u[1] for u in quiet.unmatched] == ["Sam Twin"]
+        and quiet.off_slate == {"ARI": ["Sam Twin"], "ATL": ["Nat Newman"]}
+        and fl.run_live(f, reports, roster, [unread], fl.read_inputs(LIVE_IN), books={"booka"}).off_slate
+        == {"ARI": ["Sam Twin"], "ATL": ["Nat Newman"]}
+        and fl.run_live(f, reports, roster, [unread], fl.read_inputs(LIVE_IN), books={"booka"}).unmatched == []
+        and aka(unread, ro=defender).off_slate == {"ARI": ["Sam Twin"]}
+        and aka(game({"booka": [post("Wes One", "espn:13"), ("player_1st_td", "main", None, [
+            ("Nat Newman", "Nat Newman", None, None), ("Sam Twin", "Sam Twin", None, None),
+            ("Will Two", "Will Two", None, None)])]})).off_slate == {"ATL": ["Nat Newman"]}
+        and aka(on_team(game({"booka": [("player_1st_td", "main", None, [
+            ("Will Two", "Will Two", None, "espn:14")])], "bookb": [post("Wes One", "espn:13")]}),
+            "Arizona Cardinals"), ro=moved_roster).off_slate == {}
+        and aka(unread, add=[("ATL", "espn:99", None), ("ARI", "espn:71", None)]).off_slate == {})
     stale = dict(fl.read_inputs(LIVE_IN), add=[("ATL", "Will Two Jr.", None)])
     joined = fl.run_live(f, reports, roster, [ev], stale)
     chk("a player can be added to a team the roster does not have him on "
@@ -5943,6 +6208,18 @@ def _():
     first = fl.run_live(f[f.season == 2023], pd.DataFrame(
         [(202401, "AAA_WR2", "out")], columns=["t", "player_id", "status"]), roster, [ev],
         dict(fl.read_inputs(LIVE_IN), week=1))
+    cut_ = fl.run_live(f[f.season == 2023], pd.DataFrame(
+        [(202401, "AAA_WR2", "out")], columns=["t", "player_id", "status"]),
+        roster[roster.gsis_id != "AAA_TE"],
+        [odds_event("Atlanta Falcons", "Arizona Cardinals", {"booka": [
+            ("player_receptions", "main", None, [("Over", "Ted End", 2.5, None),
+                                                 ("Under", "Ted End", 2.5, None)])]})],
+        dict(fl.read_inputs(LIVE_IN), week=1))
+    chk("a name with no id is looked for on the slates as well as the "
+        "rosters: a player on the slate from last season's games, whom the "
+        "roster no longer has, is still found by his name",
+        [(r_.team, r_.player_id, r_.matched) for r_ in cut_.lines.itertuples(index=False)]
+        == [("ARI", "AAA_TE", "name")] and cut_.unmatched == [])
     chk("the season after the newest on file can be run for Week 1 only",
         set(first.slate.season) == {2024} and raises(
             lambda: fl.run_live(f[f.season == 2023], reports, roster, [ev],
@@ -5951,7 +6228,7 @@ def _():
     chk("Week 1 runs on last season alone: no last week to be missing, and "
         "no note that every team's newest game is an old one",
         len(first.lines) > 5 and set(first.slate.game_id) == {"2024_01_ARI_ATL"}
-        and not any("newest game" in n for n in first.notes) and len(first.notes) == 2
+        and not any("newest game" in n for n in first.notes) and len(first.notes) == 3
         and first.notes[0].startswith("Injury file for these teams: 1 listed, 1 out, ")
         and first.slate.status[list(first.slate.player_id).index("AAA_WR2")] == "out")
     only = fl.run_live(f, reports, roster, [ev], fl.read_inputs(LIVE_IN), books={"bookb"})
@@ -6306,11 +6583,35 @@ def _():
             "Quiet Wideout", "Tight End", "Kicker"])
     chk("...and it ends with what was posted but not priced, and why",
         rows[-2] == "POSTED BUT NOT PRICED"
-        and rows[-1] == ("    ARI at ATL: Sam Stranger (1 line): no id from the book that the "
-                         "roster has, and no one player of that name on either slate")
+        and rows[-1].startswith("    ARI at ATL: Sam Stranger (1 line): no id from the book that the "
+                                "roster has, and nobody of that name on either team's roster or slate.")
+        and rows[-1].endswith("until then his teammates' numbers here are too high.")
         and "POSTED BUT NOT PRICED" not in fl.render(
             fl.Board(B.slate, B.lines, [], [], B.P), rec))
     C = fl.to_csv(B, rec, 2024, 4)
+    rec_line = lambda who, pid: ("player_receptions", "main", None, [   # noqa: E731
+        ("Over", who, 3.5, pid), ("Under", who, 3.5, pid)])
+    Bo = fl.run_live(f, reports, roster, [odds_event("Atlanta Falcons", "Arizona Cardinals", {"booka": [
+        rec_line("Wes One", "espn:13"), rec_line("Walt One", "espn:23"), rec_line("Wade Two", "espn:24"),
+        rec_line("Nat Newman", "espn:99")]})], fl.read_inputs(LIVE_IN))
+    ro, Co = fl.render(Bo, rec).split("\n"), fl.to_csv(Bo, rec, 2024, 4)
+    chk("a team with a posted player off its slate carries the caution "
+        "under its name in the printout and on every one of its lines in "
+        "the table, and the other team carries none",
+        Bo.off_slate == {"ATL": ["Nat Newman"]} and B.off_slate == {}
+        and ro[ro.index("--- ATL ---") + 1] == "! " + fl.too_high_text("ATL", ["Nat Newman"])
+        and not ro[ro.index("--- ARI ---") + 1].startswith("!")
+        and sum(r_.startswith("! ATL'S NUMBERS") for r_ in ro) == 1
+        and "NOTE. " + fl.too_high_text("ATL", ["Nat Newman"]) in ro
+        and not any("TOO HIGH" in r_ for r_ in rows)
+        and sorted(Co.team) == ["ARI", "ATL", "ATL"]
+        and all((c_ == "too high if Nat Newman plays: posted, and not on the slate") == (t_ == "ATL")
+                and ("too high" in c_) == (t_ == "ATL") for c_, t_ in zip(Co.cautions, Co.team))
+        and not any("too high" in c_ for c_ in C.cautions)
+        and fl.flags_for(R, line(), ["A B", "C D"])[0] == "too high if A B, C D play: posted, and not on the slate"
+        and not any("too high" in x for x in fl.flags_for(R, line()))
+        and not any("too high" in x for x in fl.flags_for(R, line(), [])),
+        (Bo.off_slate, list(zip(Co.team, Co.cautions))))
     chk("the table to save has one row per priced line: the season and week, "
         "everything on the line, its record and its cautions",
         list(C.columns) == ["season", "week", *fl.LINE_COLS, "record", "cautions"]
@@ -6514,7 +6815,8 @@ def _():
         and ("Marvin Mims Jr.", TD_STAT, 1.5) in key
         and ("Bo Nix", "passing_tds", 1.5) in key and key[("Bo Nix", "passing_tds", 1.5)].kind == "main"
         and key[("Fernando Mendoza", "passing_tds", 0.5)].kind == "main"
-        and key[("Bo Nix", "passing_tds", 1.5)].rung == "main", (len(L), B.unmatched))
+        and key[("Bo Nix", "passing_tds", 1.5)].rung == "main" and B.off_slate == {}
+        and not any("TOO HIGH" in n or "alias" in n for n in B.notes), (len(L), B.unmatched))
     own = fs.standin_lines(History(frame, 202611), fs.line_window(History(frame, 202611), "00-0039732"),
                            "passing_tds")
     chk("...a passing-touchdown line is read on the quarterback's own rung, "

@@ -2,23 +2,33 @@
 """S28. A shadow run of the simulator on this week's slate.
 
     python3 sim_live.py --week 11 --inputs week11.json odds/*.json
-    python3 sim_live.py --week 11 --inputs week11.json --out week11.csv odds/*.json
+    python3 sim_live.py --week 11 --inputs week11.json --ladders \\
+        --out shadow_2026_wk11.csv odds/*.json
     python3 sim_live.py --record --current-week 11      # rebuild sim_record.py
 
 A RUN. Each odds file is one saved `propline_get_odds` response for ONE
 game (pass `event_id`, `markets` and `bookmakers` when pulling, as the
 project instructions say). The inputs file names the week and every
-team's starting quarterback, and may hand in chances of playing and add
-players who are back:
+team's starting quarterback, and may hand in chances of playing, add
+players who are back, and say who a book means by a name the data does
+not have:
 
     {"season": 2026, "week": 11,
      "starters": {"DEN": "Bo Nix", "LV": "Fernando Mendoza"},
      "statuses": [{"team": "DEN", "player": "Courtland Sutton", "status": "questionable"}],
      "chances":  [{"team": "LV", "player": "Brock Bowers", "chance": 0.0}],
-     "add":      [{"team": "LV", "player": "Somebody Back", "position": "WR"}]}
+     "add":      [{"team": "LV", "player": "Somebody Back", "position": "WR"}],
+     "aliases":  [{"team": "TB", "name": "Kenneth Gainwell", "player": "Kenny Gainwell"}]}
 
 A status (out, doubtful, questionable, listed, none) replaces the injury
 file's for that player, which can be days behind; a chance overrides both.
+An alias is the name a book posts with no id, the team, and the player it
+is (his name in the data, his nflverse id, or "espn:<id>").
+
+A posted player who is not on his team's slate (he has been out for its
+last four games, or is new to it) is listed under "posted but not priced".
+Until he is added, or is ruled out, HIS TEAMMATES' NUMBERS ARE TOO HIGH,
+and the printout says so at the top and under the team.
 
 It prints, for every player with a posted line, his projected stat line
 and the chance of clearing each posted line, with the record of the band
@@ -80,7 +90,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("odds", nargs="*", help="saved get_odds event responses")
     ap.add_argument("--week", type=int)
-    ap.add_argument("--inputs", help="the inputs file (starters, chances, add)")
+    ap.add_argument("--inputs", help="the inputs file (starters, statuses, chances, add, aliases)")
     ap.add_argument("--books", help="comma-separated book keys; default all in the files")
     ap.add_argument("--ladders", action="store_true", help="price every rung, not only main lines")
     ap.add_argument("--everyone", action="store_true", help="print players with no posted line too")

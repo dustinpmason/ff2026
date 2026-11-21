@@ -32,10 +32,22 @@ WHICH TEAM A POSTED PLAYER IS PRICED FOR. The team the odds file puts him
 on, when it says, and he must be on that team's slate. If the file puts
 him on more than one team (two books, or one with his id and one
 without), or on a team that is not in the game, he is not priced. A
-name with no id is never enough when two players on these teams share it. When
+name with no id is looked for on these teams' rosters and slates, and is
+never enough when two players there share it. A name the data does not
+have at all (the book's "Kenneth" for the data's "Kenny") is settled by an
+alias in the inputs: the book's name, the team, and the player. When
 it does not say: the one slate he is on, unless the roster has him on the
 other team in this game; a player on both slates is not priced. Whatever
 is not priced is listed with the reason, never dropped and never guessed.
+
+A POSTED PLAYER WHO IS NOT ON THE SLATE makes his teammates' numbers too
+high if he plays, because the work that would be his is shared among
+them. The printout says so at the top, under the team and beside his
+name, and the saved table says so on every line of that team, until he is
+added or his absence is the truth. The team is the one the odds file or
+the roster has him on; when they differ, both. It is said of a quarterback,
+back, receiver or tight end posted anywhere in the file, in a market or by
+a book this run does not read as well.
 
 IS IT THIS WEEK'S GAME. A game in progress or already started is refused.
 So is one outside the season, and one outside the Wednesday-to-Tuesday
@@ -141,10 +153,11 @@ MAX_DAYS_AHEAD = 8
 WEEK_STARTS = pd.Timedelta(days=3, hours=9)
 #: Positions a player may be added at.
 ADD_AT = ("QB", "RB", "FB", "WR", "TE")
-INPUT_KEYS = {"season", "week", "starters", "statuses", "chances", "add"}
+INPUT_KEYS = {"season", "week", "starters", "statuses", "chances", "add", "aliases"}
 ROW_KEYS = {"statuses": {"team", "player", "status"},
             "chances": {"team", "player", "chance"},
-            "add": {"team", "player", "position"}}
+            "add": {"team", "player", "position"},
+            "aliases": {"team", "name", "player"}}
 #: Not players: left out without comment.
 NOT_A_PLAYER = re.compile(r"d/st$|^no (touchdown|td) scorer$|^no scorer$", re.I)
 GSIS = re.compile(r"^\d\d-\d{7}$")
@@ -154,6 +167,8 @@ NO_ROLE = ("he has no stand-in line for this stat (it takes four recent "
            "games and a role in them), so the record does not cover him")
 OFF_LADDER = "the line is outside his stand-in ladder"
 TWO_PLUS = "nothing grades two or more"
+TOO_HIGH = ("Until he is added or ruled out, his teammates' numbers here "
+            "are too high.")
 
 
 class Missing(Exception):
@@ -340,11 +355,14 @@ def book_players(event: dict) -> list:
 def read_inputs(source) -> dict:
     """The inputs file: {"season", "week", "starters": {team: player},
     "statuses": [{"team", "player", "status"}], "chances": [{"team",
-    "player", "chance"}], "add": [{"team", "player", "position"}]}.
-    `statuses`, `chances` and `add` may be left out. A team is its code or
-    its full name; a player is his name, his nflverse id, or "espn:<id>";
-    a status is one of `ff_sim_play.STATUSES`. Anything else in it is
-    refused: a misspelt key would otherwise be a hand-in silently lost."""
+    "player", "chance"}], "add": [{"team", "player", "position"}],
+    "aliases": [{"team", "name", "player"}]}. `statuses`, `chances`, `add`
+    and `aliases` may be left out. A team is its code or its full name; a
+    player is his name, his nflverse id, or "espn:<id>"; a status is one
+    of `ff_sim_play.STATUSES`; an alias's `name` is the name a book posts
+    for that team's `player` when it gives no id the roster has. Anything
+    else in it is refused: a misspelt key would otherwise be a hand-in
+    silently lost."""
     if isinstance(source, (str, Path)):
         try:
             source = json.loads(Path(source).read_text())
@@ -359,7 +377,7 @@ def read_inputs(source) -> dict:
     if odd:
         raise Missing(f"the inputs have {odd}, which is not one of "
                       f"{sorted(INPUT_KEYS)}")
-    out = {"statuses": [], "chances": [], "add": [], "starters": {}}
+    out = {"statuses": [], "chances": [], "add": [], "aliases": [], "starters": {}}
     for k in ("season", "week"):
         v = source.get(k)
         if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
@@ -396,6 +414,16 @@ def read_inputs(source) -> dict:
                     raise Missing(f"the chance handed in for {who!r} is "
                                   f"{p!r}; it must be a number from 0 to 1")
                 out[kind].append((team, who, float(p)))
+            elif kind == "aliases":
+                name = row.get("name")
+                if not isinstance(name, str) or not norm_player(name):
+                    raise Missing(f"an alias in the inputs has the name "
+                                  f"{name!r}; it must be the name a book posts")
+                if any((team, norm_player(name)) == (t_, norm_player(n_))
+                       for t_, n_, _ in out[kind]):
+                    raise Missing(f"{name!r} ({team}) has two aliases in the "
+                                  f"inputs")
+                out[kind].append((team, name, who))
             else:
                 if row.get("position") is not None and row["position"] not in ADD_AT:
                     raise Missing(f"the position handed in for {who!r} is "
@@ -588,11 +616,13 @@ def read_on(stat: str, line: float, role: dict, ladder) -> tuple:
 class Board:
     """One shadow run. `slate` (with `chance`, `status`, `source`), `lines`
     (one row per player, stat and posted line), `unmatched` (posted lines
-    with no projection, and why), and `notes`."""
+    with no projection, and why), `notes`, and `off_slate`: {team: the
+    posted players known not to be on its slate}, whose teammates'
+    numbers are too high if they play."""
 
-    def __init__(self, slate, lines, unmatched, notes, P):
+    def __init__(self, slate, lines, unmatched, notes, P, off_slate=None):
         self.slate, self.lines, self.unmatched = slate, lines, unmatched
-        self.notes, self.P = notes, P
+        self.notes, self.P, self.off_slate = notes, P, off_slate or {}
 
 
 LINE_COLS = ["game_id", "team", "opponent", "player_id", "name", "position",
@@ -672,6 +702,8 @@ def run_live(frame: pd.DataFrame, reports, roster: pd.DataFrame, events,
                     raise Missing(f"{who!r} ({tm}) is listed twice under "
                                   f'"{kind}" in the inputs')
                 into[key] = value
+    alias = {(tm, norm_player(name)): (placed(tm, who), name)
+             for tm, name, who in inputs.get("aliases") or [] if tm in playing}
     slate = build_slate(hist, season, week, games, starters, names, add)
     on_slate = set(zip(slate.team, slate.player_id))
     stray = sorted(f"{names.full.get(pid, pid)} ({tm})" for tm, pid in {*given, *said}
@@ -759,7 +791,7 @@ def run_live(frame: pd.DataFrame, reports, roster: pd.DataFrame, events,
     by_name = {}
     for i, (tm, nm) in enumerate(zip(slate.team, slate.name)):
         by_name.setdefault((tm, norm_player(nm)), []).append(i)
-    rows, unmatched = [], []
+    rows, unmatched, off_slate, aka = [], [], {}, set()
     for e, (away, home) in zip(events, games):
         game = f"{away} at {home}"
         L = posted_lines(e, books)
@@ -776,73 +808,157 @@ def run_live(frame: pd.DataFrame, reports, roster: pd.DataFrame, events,
                              f"simulator has a stat for")
             continue
         # Who each outcome is, and every team the file puts him on. An
-        # outcome with no id is taken to be the player another outcome in
-        # this file gives an id under the same name, but only when nobody
-        # else in the league has that name.
+        # outcome with no id is the player an alias in the inputs says it
+        # is; failing that, the player another outcome in this file gives
+        # an id under the same name, but only when nobody else in the
+        # league has that name.
         listed = book_players(e)
         same = {}
         for player, key, _ in listed:
             if names.from_key(key):
                 same.setdefault(norm_player(player), set()).add(names.from_key(key))
 
+        def named(n, sides_):
+            """Everyone on these teams' rosters or slates under this name."""
+            return {g for tm in sides_
+                    for g in [*names.by_name.get((tm, n), ()),
+                              *(slate.player_id.iloc[j] for j in by_name.get((tm, n), []))]}
+
+        called = {}
+        for (tm, n), (pid, name) in alias.items():
+            if tm in (away, home):
+                if n in called:
+                    raise Missing(f"{game}: an alias for {name!r} is given "
+                                  f"for both teams")
+                others = same.get(n, set()) - {pid}
+                if others:
+                    raise Missing(
+                        f"{game}: the alias for {name!r} names "
+                        f"{names.full.get(pid, pid)}, and the odds file gives "
+                        f"that name the id of "
+                        f"{' and '.join(sorted(names.full.get(g, g) for g in others))}")
+                others = named(n, (away, home)) - {pid}
+                if others and pid not in named(n, (away, home)):
+                    raise Missing(
+                        f"{game}: the alias for {name!r} names "
+                        f"{names.full.get(pid, pid)}, and that is the name of "
+                        f"{' and '.join(sorted(names.full.get(g, g) for g in others))} "
+                        f"on these teams")
+                called[n] = (tm, pid)
+
         def person(player, key):
+            """(his nflverse id or None, how he was found)."""
             pid, n = names.from_key(key), norm_player(player)
-            if (pid is None and len(same.get(n, ())) == 1
-                    and names.any_name.get(n, set()) <= same[n]):
-                pid = next(iter(same[n]))
-            return pid
+            if pid is not None:
+                return pid, "id"
+            if n in called:
+                return called[n][1], "alias"
+            if len(same.get(n, ())) == 1 and names.any_name.get(n, set()) <= same[n]:
+                return next(iter(same[n])), "name"
+            return None, "name"
 
         puts = {}
         for player, key, team in listed:
             if team:
-                puts.setdefault(person(player, key) or norm_player(player), set()).add(team)
-        where, how = [], []
-        for player, key in zip(L.player, L.player_key):
-            pid = person(player, key)
-            teams = puts.get(pid or norm_player(player), set())
+                puts.setdefault(person(player, key)[0] or norm_player(player), set()).add(team)
+
+        def lacking(pid, said_) -> set:
+            """The teams in this game that are said to have this player,
+            by the odds file, an alias or the roster, and whose slate does
+            not: their numbers are too high if he plays. Only for a
+            position the slate carries."""
+            if pid is None or names.position.get(pid, "WR") not in ADD_AT:
+                return set()
+            return {tm for tm in {*said_, names.team.get(pid)}
+                    if tm in (away, home) and (tm, pid) not in at}
+
+        def place(player, key):
+            """Where one posted player stands: (his slate row or None, why
+            he is not priced, how he was found, the teams whose slates
+            lack him, his id or None)."""
+            n = norm_player(player)
+            pid, by = person(player, key)
+            teams = puts.get(pid or n, set())
             told = next(iter(teams)) if len(teams) == 1 else None
-            if len(teams) > 1 or (told and told not in (away, home)):
-                hits, told = [], "?"
+            says = "the book"
+            if by == "alias" and not teams:
+                teams, told, says = {called[n][0]}, called[n][0], "the alias"
+            odd = len(teams) > 1 or bool(told and told not in (away, home))
+            several = False
+            if pid is None:
+                # a name alone: whoever has it on the team the file names,
+                # or failing that on either team, rosters and slates; it
+                # must be one player
+                found = (named(n, (told,)) if told else set()) or named(n, (away, home))
+                several = len(found) > 1
+                pid = next(iter(found)) if len(found) == 1 else None
+            on = [tm for tm in (away, home) if (tm, pid) in at]
+            has = names.team.get(pid)
+            if odd:
+                hits = []
                 why = (f"the odds file puts him on {' and '.join(sorted(teams))}"
                        f": not one team in this game, so he is not priced")
-            elif pid is None:
-                hits = [j for tm in ((told,) if told else (away, home))
-                        for j in by_name.get((tm, norm_player(player)), [])]
-                why = ("no id from the book that the roster has, and no one "
-                       "player of that name on "
-                       + (f"{told}'s slate, where the odds file has him"
-                          if told else "either slate"))
-                # a namesake on these teams who is not on the slate: a name
-                # alone cannot say which of them the book means
-                if len(hits) == 1 and {g for tm in ((told,) if told else (away, home))
-                                       for g in names.by_name.get((tm, norm_player(player)), ())
-                                       } - {slate.player_id.iloc[hits[0]]}:
-                    hits, why = [], ("no id from the book that the roster has, "
-                                     "and more than one player of that name on "
-                                     "these teams")
             else:
-                on = [tm for tm in (away, home) if (tm, pid) in at]
                 hits = [at[(tm, pid)] for tm in ((told,) if told else on) if tm in on]
-                why = (f"the book has him on {told}, and he is not on {told}'s "
-                       f"slate: not active for it in its last four games. Add "
-                       f"him in the inputs if he is playing." if told else
-                       "on both teams' slates, and the book does not say "
-                       "which team he is on" if len(on) == 2 else
-                       "on a roster but not on the slate: not active for "
-                       "either team in its last four games. Add him in the "
-                       "inputs if he is playing.")
-            if len(hits) == 1 and not told:
-                # the book does not say: the roster may know he has moved
-                his = slate.team.iloc[hits[0]]
-                there = names.team.get(slate.player_id.iloc[hits[0]])
-                if there in (away, home) and there != his:
-                    hits, why = [], (
-                        f"the roster has him on {there}, the book does not say, "
-                        f"and he is on {his}'s slate only: not active for "
-                        f"{there} in its last four games. Add him to {there} "
-                        f"in the inputs if he is playing for it.")
-            where.append(hits[0] if len(hits) == 1 else why)
-            how.append("id" if names.from_key(key) is not None else "name")
+                if several:
+                    why = ("no id from the book that the roster has, and more "
+                           "than one player of that name on these teams")
+                elif pid is None:
+                    why = ("no id from the book that the roster has, and "
+                           "nobody of that name on either team's roster or "
+                           "slate. If the book spells him differently from "
+                           "the data, name him with an alias in the inputs. "
+                           "If he is a player not on the slate, add him: "
+                           "until then his teammates' numbers here are too "
+                           "high.")
+                elif told:
+                    why = (f"{says} has him on {told}, and he is not on "
+                           f"{told}'s slate: not active for it in its last "
+                           f"four games. Add him in the inputs if he is "
+                           f"playing.")
+                elif len(on) == 2:
+                    why = ("on both teams' slates, and the book does not say "
+                           "which team he is on")
+                elif has in (away, home):
+                    why = (f"on {has}'s roster but not on the slate: not "
+                           f"active for {has} in its last four games. Add him "
+                           f"in the inputs if he is playing.")
+                else:
+                    why = ("on a roster but not on the slate: not active for "
+                           "either team in its last four games. Add him in "
+                           "the inputs if he is playing.")
+                if len(hits) == 1 and not told:
+                    # the book does not say: the roster may know he has moved
+                    his = slate.team.iloc[hits[0]]
+                    if has in (away, home) and has != his:
+                        hits, why = [], (
+                            f"the roster has him on {has}, the book does not "
+                            f"say, and he is on {his}'s slate only: not active "
+                            f"for {has} in its last four games. Add him to "
+                            f"{has} in the inputs if he is playing for it.")
+            if len(hits) == 1:
+                return hits[0], "", by, set(), pid
+            lacks = lacking(pid, teams)
+            if lacks and odd:
+                why += f". He is not on the slate of {' or '.join(sorted(lacks))}."
+            if lacks:
+                why += " " + TOO_HIGH
+            return None, why, by, lacks, pid
+
+        where, how = [], []
+        for player, key in zip(L.player, L.player_key):
+            hit, why, by, _, _ = place(player, key)
+            if by == "alias":
+                aka.add((called[norm_player(player)][0], norm_player(player)))
+            where.append(why if hit is None else hit)
+            how.append(by)
+        # Whose slate lacks a posted player: everyone in the file, so that
+        # one posted only in a market or by a book this run does not read
+        # is counted too. He has no line here, and his teammates do.
+        for player, key, _ in listed:
+            _, _, _, lacks, pid = place(player, key)
+            for tm in lacks:
+                off_slate.setdefault(tm, set()).add(names.full.get(pid, player))
         L = L.assign(where=where, how=how)
         lost = L[[isinstance(w, str) for w in L["where"]]]
         for (player, why), g in lost.groupby(["player", "where"], sort=False):
@@ -865,13 +981,33 @@ def run_live(frame: pd.DataFrame, reports, roster: pd.DataFrame, events,
                              "main" if (h.kind == "main").any() else "ladder",
                              rung, no_record, " ".join(sorted(set(h.book))),
                              " ".join(sorted(set(h.book[h.suspended]))),
-                             "id" if (h.how == "id").any() else "name",
+                             "id" if (h.how == "id").any() else
+                             "alias" if (h.how == "alias").any() else "name",
                              expected, over, push, under))
             for stat, n in sorted(Counter(blank).items()):
                 unmatched.append((game, s["name"], n, f"no {stat} projection" + (
                     ": he is not the named starter" if FAMILY[stat] == "pass" else "")))
+    for (tm, n), (pid, name) in sorted(alias.items()):
+        notes.append(
+            f"{tm}: the book's {name!r} is read as {names.full.get(pid, pid)}, "
+            f"by an alias in the inputs" if (tm, n) in aka else
+            f"{tm}: the alias for {name!r} was not used: no line this run "
+            f"reads is posted under that name without an id")
+    off_slate = {tm: sorted(v) for tm, v in sorted(off_slate.items())}
+    for tm, who in off_slate.items():
+        notes.append(too_high_text(tm, who))
     lines = pd.DataFrame(rows, columns=LINE_COLS)
-    return Board(slate, lines, unmatched, notes, P)
+    return Board(slate, lines, unmatched, notes, P, off_slate)
+
+
+def too_high_text(team: str, who) -> str:
+    """The caution on a team whose slate lacks posted players."""
+    one = len(who) == 1
+    return (f"{team}'S NUMBERS ARE TOO HIGH if {', '.join(who)} "
+            f"play{'s' if one else ''}: posted, and not on {team}'s slate, so "
+            f"the work that would be {'his' if one else 'theirs'} is shared "
+            f"among the others. Add {'him' if one else 'each'} in the inputs, "
+            f"unless he is ruled out.")
 
 
 # ---------------------------------------------------------------------------
@@ -966,9 +1102,14 @@ def on_main(row) -> bool:
     return row.rung == MAIN and row.stat != TD_STAT
 
 
-def flags_for(record: dict, row) -> list:
-    """The cautions that belong on one priced line."""
+def flags_for(record: dict, row, off=()) -> list:
+    """The cautions that belong on one priced line. `off` is the posted
+    players known not to be on his team's slate."""
     out = []
+    if off:
+        out.append(f"too high if {', '.join(off)} "
+                   f"play{'s' if len(off) == 1 else ''}: posted, and not on "
+                   f"the slate")
     side = "OVER" if row.over >= row.under else "UNDER"
     if row.stat == "passing_tds":
         out.append(PASS_TD_UNDER)
@@ -983,6 +1124,8 @@ def flags_for(record: dict, row) -> list:
                        f"{S21_FROM:.0%}+ on this stat in the record")
     if row.matched == "name":
         out.append("matched by NAME, not by id: check it is the right player")
+    if row.matched == "alias":
+        out.append("matched by an ALIAS from the inputs, not by id")
     if row.suspended:
         out.append(f"SUSPENDED at {row.suspended}")
     if row.push > 0:
@@ -1078,6 +1221,8 @@ def render(board: Board, record: dict, *, everyone: bool = False) -> str:
         out.append(f"=== {away} at {home} ===")
         for team, T in G.groupby("team", sort=False):
             out.append(f"--- {team} ---")
+            if board.off_slate.get(team):
+                out.append("! " + too_high_text(team, board.off_slate[team]))
             priced = set(L.player_id[(L.game_id == gid) & (L.team == team)])
 
             def busy(i):
@@ -1119,7 +1264,7 @@ def to_csv(board: Board, record: dict, season: int, week: int) -> pd.DataFrame:
     d.insert(0, "week", week)
     d.insert(0, "season", season)
     d["record"] = [record_text(record, r) for r in board.lines.itertuples(index=False)]
-    d["cautions"] = [" | ".join(flags_for(record, r))
+    d["cautions"] = [" | ".join(flags_for(record, r, board.off_slate.get(r.team, ())))
                      for r in board.lines.itertuples(index=False)]
     return d
 
