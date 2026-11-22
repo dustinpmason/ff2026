@@ -1,0 +1,47 @@
+{
+  "season": 2026,
+  "week": 11,
+  "starters": {
+    "Tampa Bay Buccaneers": "Baker Mayfield",
+    "Detroit Lions": "Jared Goff",
+    "Pittsburgh Steelers": "Aaron Rodgers",
+    "Philadelphia Eagles": "Joe Milton III",
+    "Miami Dolphins": "Kyle McCord",
+    "Buffalo Bills": "Josh Allen",
+    "Arizona Cardinals": "Josh Johnson",
+    "Kansas City Chiefs": "Patrick Mahomes II",
+    "Las Vegas Raiders": "Fernando Mendoza",
+    "Denver Broncos": "Bo Nix"
+  },
+  "chances": [
+    {"team": "Tampa Bay Buccaneers", "player": "Baker Mayfield", "chance": 0.95},
+    {"team": "Detroit Lions", "player": "Sione Vaki", "chance": 0.89732},
+    {"team": "Pittsburgh Steelers", "player": "Roman Wilson", "chance": 0.72028},
+    {"team": "Philadelphia Eagles", "player": "Will Shipley", "chance": 0.47224},
+    {"team": "Las Vegas Raiders", "player": "Brock Bowers", "chance": 0.1},
+    {"team": "Philadelphia Eagles", "player": "Dontayvion Wicks", "chance": 0.0},
+    {"team": "Miami Dolphins", "player": "Malik Willis", "chance": 0.0},
+    {"team": "Buffalo Bills", "player": "Dalton Kincaid", "chance": 0.0},
+    {"team": "Buffalo Bills", "player": "Josh Palmer", "chance": 0.0},
+    {"team": "Arizona Cardinals", "player": "Jeremiyah Love", "chance": 0.0},
+    {"team": "Arizona Cardinals", "player": "Kendrick Bourne", "chance": 0.0},
+    {"team": "Arizona Cardinals", "player": "Michael Wilson", "chance": 0.0},
+    {"team": "Arizona Cardinals", "player": "Jalen Brooks", "chance": 0.0},
+    {"team": "Kansas City Chiefs", "player": "Kenneth Walker III", "chance": 0.0},
+    {"team": "Denver Broncos", "player": "RJ Harvey", "chance": 0.0},
+    {"team": "Philadelphia Eagles", "player": "Dameon Pierce", "chance": 0.0},
+    {"team": "Philadelphia Eagles", "player": "Marquise Brown", "chance": 0.0},
+    {"team": "Philadelphia Eagles", "player": "E.J. Jenkins", "chance": 0.0},
+    {"team": "Arizona Cardinals", "player": "Jacoby Brissett", "chance": 0.0},
+    {"team": "Kansas City Chiefs", "player": "Nikko Remigio", "chance": 0.0},
+    {"team": "Las Vegas Raiders", "player": "Kirk Cousins", "chance": 0.0}
+  ],
+  "add": [
+    {"team": "Pittsburgh Steelers", "player": "Roman Wilson", "position": "WR"},
+    {"team": "Philadelphia Eagles", "player": "Will Shipley", "position": "RB"}
+  ],
+  "aliases": [
+    {"team": "Tampa Bay Buccaneers", "name": "Kenneth Gainwell", "player": "Kenny Gainwell"},
+    {"team": "Arizona Cardinals", "name": "Zonovan Knight", "player": "Bam Knight"}
+  ]
+}
