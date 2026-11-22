@@ -6860,5 +6860,762 @@ def _():
         and "POSTED BUT NOT PRICED" not in text)
 
 
+# ---------------------------------------------------------------------------
+# S29 — grading the shadow runs (ff_sim_grade.py)
+# ---------------------------------------------------------------------------
+
+def shadow_table(*rows):
+    """A saved shadow run by hand: each row is the fields that differ from a
+    plain main line for player P1 of ARI in game G1, 2024 Week 4."""
+    base = {"season": 2024, "week": 4, "game_id": "G1", "team": "ARI", "opponent": "ATL",
+            "player_id": "P1", "name": "Pat One", "position": "WR", "chance": 0.9,
+            "source": "counted", "stat": "receptions", "line": 4.5, "kind": "main",
+            "rung": "main", "no_record": "", "books": "booka", "suspended": "",
+            "matched": "id", "expected": 5.0, "over": 0.6, "push": 0.0, "under": 0.4,
+            "record": "", "cautions": ""}
+    return pd.DataFrame([dict(base, **r) for r in rows])
+
+
+def played_table(*rows, t=202404):
+    """The data's side by hand: (team, player, {stat: what he did}). ARI
+    plays ATL and BAL plays BUF unless a row says otherwise."""
+    stats = ("receptions", "receiving_yards", "carries", "rushing_yards", "targets",
+             "attempts", "completions", "passing_yards", "passing_tds", "anytime_tds")
+    other = {"ARI": "ATL", "ATL": "ARI", "BAL": "BUF", "BUF": "BAL"}
+    return pd.DataFrame([dict({s_: 0.0 for s_ in stats}, t=t, team=tm, player_id=pid,
+                              **dict({"opponent": other[tm]}, **did)) for tm, pid, did in rows])
+
+
+def _w(d, table, name="w.csv"):
+    """Save a table in `d` and give its path."""
+    table.to_csv(d / name, index=False)
+    return str(d / name)
+
+
+@section("38. grading — reading a saved run")
+def _():
+    import pathlib
+    import tempfile
+    import ff_sim_grade as fg
+    globals()["fg"] = fg
+    d = pathlib.Path(tempfile.mkdtemp())
+    one = shadow_table({}, {"line": 5.5, "kind": "ladder", "rung": "x1.25", "over": 0.4,
+                            "under": 0.6, "books": "booka bookb", "suspended": "2024-09-29T16:00:00Z",
+                            "cautions": "a | b", "record": "no record: x"},
+                       {"player_id": "00-0012345", "name": "Néstor O'Neil Jr.", "stat": "anytime_tds",
+                        "line": 0.5, "over": 0.25, "under": 0.75, "no_record": ""})
+    one.to_csv(d / "shadow_2024_wk4.csv", index=False)
+    back = fg.read_shadow([str(d / "shadow_2024_wk4.csv")])
+    chk("the columns a saved run must have are the ones the live run saves, "
+        "in its order",
+        fg.SHADOW_COLS == ["season", "week", *fl.LINE_COLS, "record", "cautions"]
+        and list(one.columns) == fg.SHADOW_COLS)
+    chk("a saved run reads back as it was saved: text that was blank is "
+        "blank, not a missing number; numbers are numbers; the season and "
+        "week are whole; and each row says which file it came from",
+        list(back.columns) == fg.SHADOW_COLS + ["file"] and len(back) == 3
+        and all(list(back[c]) == list(one[c]) for c in fg.SHADOW_COLS)
+        and list(back.suspended) == ["", "2024-09-29T16:00:00Z", ""]
+        and list(back.no_record) == ["", "", ""] and back.cautions[0] == ""
+        and back.season.dtype.kind == "i" and back.week.dtype.kind == "i"
+        and back.line.dtype.kind == "f" and back.player_id[2] == "00-0012345"
+        and back.name[2] == "Néstor O'Neil Jr." and set(back.file) == {"shadow_2024_wk4.csv"})
+    wk5 = shadow_table({"week": 5, "game_id": "G5"})
+    wk5.assign(notes="x", price=-110)[["price", *reversed(fg.SHADOW_COLS), "notes"]].to_csv(
+        d / "five.csv", index=False)
+    both = fg.read_shadow([d / "shadow_2024_wk4.csv", str(d / "five.csv")])
+    chk("one path or several are taken; files of different weeks are put "
+        "together; columns in another order are put right, and a column "
+        "it does not know (a price, say) is not read",
+        len(fg.read_shadow(str(d / "five.csv"))) == 1 and len(fg.read_shadow(d / "five.csv")) == 1
+        and len(both) == 4 and list(both.week) == [4, 4, 4, 5]
+        and list(both.file) == ["shadow_2024_wk4.csv"] * 3 + ["five.csv"]
+        and list(both.columns) == fg.SHADOW_COLS + ["file"] and "price" not in both.columns)
+
+    def bad(msg, table=None, text=None, name="bad.csv", also=()):
+        if text is not None:
+            (d / name).write_text(text)
+        elif table is not None:
+            table.to_csv(d / name, index=False)
+        return raises(lambda: fg.read_shadow([str(d / name), *also]), fl.Missing, msg)
+
+    chk("no file, a file that is not there, an empty one, one with a header "
+        "and no lines, or one short of a column is refused, saying which",
+        raises(lambda: fg.read_shadow([]), fl.Missing, "no shadow file was given")
+        and bad("cannot read the shadow file absent.csv", name="absent.csv")
+        and bad("cannot read the shadow file bad.csv", text="")
+        and bad("bad.csv has no lines in it", one.iloc[:0])
+        and bad("bad.csv is not a saved shadow run: it has no ['push']", one.drop(columns="push"))
+        and bad("it has no ['season', 'cautions']", one.drop(columns=["season", "cautions"]))
+        and bad("is not a saved shadow run", text="a,b\n1,2\n"))
+    chk("a number that is not one is refused with its row as a spreadsheet "
+        "shows it; so are a week that is not whole and a file holding two weeks",
+        bad('bad.csv: "line" is not a number on row 3', one.assign(line=[4.5, "x", 0.5]))
+        and bad('"over" is not a number on row 2', one.assign(over=["", 0.4, 0.25]))
+        and bad('"expected" is not a number on row 4', one.assign(expected=[1.0, 2.0, float("inf")]))
+        and bad('"chance" is not a number on row 2', one.assign(chance=[float("nan"), 0.5, 0.5]))
+        and bad('bad.csv: "week" is not a whole number', one.assign(week=4.5))
+        and bad('"season" is not a number on row 2', one.assign(season="2024a"))
+        and bad("bad.csv holds more than one week", one.assign(week=[4, 4, 5]))
+        and bad("bad.csv holds more than one week", one.assign(season=[2024, 2025, 2024])))
+    chk("a stat it cannot grade, chances that do not add up to one, a "
+        "chance below nothing or above one, and a chance of playing "
+        "outside 0 to 1 are refused: the file is not as it was saved",
+        bad("bad.csv has a stat this cannot grade: ['fumbles']", one.assign(stat=["receptions", "fumbles", "anytime_tds"]))
+        and bad("over, push and under do not add up to one", one.assign(under=[0.4, 0.5, 0.75]))
+        and bad("over, push and under do not add up to one", one.assign(push=[0.0, 0.01, 0.0]))
+        and bad("over, push and under do not add up to one",
+                one.assign(over=[1.2, 0.4, 0.25], under=[-0.2, 0.6, 0.75]))
+        and bad("a chance of playing is not between 0 and 1", one.assign(chance=[0.9, 1.01, 0.9]))
+        and bad("a chance of playing is not between 0 and 1", one.assign(chance=[-0.1, 1.0, 0.0]))
+        and len(fg.read_shadow(_w(d, one.assign(chance=[0.0, 1.0, 0.5], push=[0.1, 0.0, 0.0],
+                                                over=[0.5, 0.4, 0.25])))) == 3
+        and bad("bad.csv: a line is saved as a certain push, with no chance of over or under",
+                one.assign(over=[0.0, 0.4, 0.25], push=[1.0, 0.0, 0.0], under=[0.0, 0.6, 0.75]))
+        and len(fg.read_shadow(_w(d, one.assign(over=[0.0, 0.4, 0.25], push=[0.0, 0.0, 0.0],
+                                                under=[1.0, 0.6, 0.75])))) == 3)
+    spaced = fg.read_shadow(_w(d, one.assign(game_id=" G1 ", team="ARI ", player_id=[" P1", "P1 ", "P1"],
+                                             stat=[" receptions", "receptions ", "anytime_tds"],
+                                             no_record="  ", cautions=" a | b ")))
+    chk("text is read without the spaces round it, so a game or a player "
+        "cannot be made two by a stray space",
+        set(spaced.game_id) == {"G1"} and set(spaced.team) == {"ARI"} and set(spaced.player_id) == {"P1"}
+        and list(spaced.stat) == ["receptions", "receptions", "anytime_tds"]
+        and set(spaced.no_record) == {""} and set(spaced.cautions) == {"a | b"}
+        and raises(lambda: fg.read_shadow([str(d / "shadow_2024_wk4.csv"),
+                                           _w(d, shadow_table({"player_id": "P9", "team": " ARI"}))]),
+                   fl.Missing, "both hold ARI's game")
+        and bad("bad.csv has Pat One receptions 4.5 more than once",
+                shadow_table({}, {"player_id": "P1 "})))
+    twice = pd.concat([one, one.iloc[[1]].assign(over=0.3, under=0.7)], ignore_index=True)
+    chk("a line saved twice is refused, and so are two files holding the "
+        "same game: a game graded twice would count twice. The same game "
+        "id in another week is another game",
+        bad("bad.csv has Pat One receptions 5.5 more than once", twice)
+        and raises(lambda: fg.read_shadow([str(d / "shadow_2024_wk4.csv"),
+                                           _w(d, shadow_table({"player_id": "P9", "stat": "carries"}))]),
+                   fl.Missing, "shadow_2024_wk4.csv and w.csv both hold ARI's game of 2024 Week 4: "
+                               "grade one run of a game, not two")
+        and len(fg.read_shadow([str(d / "shadow_2024_wk4.csv"),
+                                _w(d, shadow_table({"week": 5}))])) == 4
+        and len(fg.read_shadow([str(d / "shadow_2024_wk4.csv"),
+                                _w(d, shadow_table({"team": "ATL", "opponent": "ARI"}))])) == 4
+        and raises(lambda: fg.read_shadow([str(d / "shadow_2024_wk4.csv"),
+                                           _w(d, shadow_table({"game_id": "g1"}))]),
+                   fl.Missing, "both hold ARI's game of 2024 Week 4"))
+    chk("a game has one id in a file and an id one game: the same two "
+        "teams under two ids, or two pairs of teams under one, is refused",
+        bad("bad.csv has more than one game id for ARI and ATL",
+            shadow_table({}, {"game_id": "g1", "player_id": "P2"}))
+        and bad("bad.csv has more than one game id for ARI and ATL",
+                shadow_table({}, {"game_id": "G2", "team": "ATL", "opponent": "ARI"}))
+        and bad("bad.csv has more than one game under the id G1",
+                shadow_table({}, {"team": "BAL", "opponent": "BUF"}))
+        and len(fg.read_shadow(_w(d, shadow_table({}, {"team": "ATL", "opponent": "ARI"},
+                                                  {"game_id": "G2", "team": "BAL", "opponent": "BUF"}))))
+        == 3)
+
+
+@section("39. grading — what happened")
+def _():
+    S = shadow_table(
+        {"line": 4.5},                                                    # 0 he caught 5: over
+        {"line": 5.5, "kind": "ladder", "over": 0.3, "under": 0.7},       # 1 under, as it leaned
+        {"line": 5.0, "kind": "ladder", "over": 0.4, "push": 0.2, "under": 0.4},   # 2 push
+        {"stat": "receiving_yards", "line": 60.5, "over": 0.5, "under": 0.5},     # 3 61: over, at 50%
+        {"player_id": "P2", "name": "Sat Out"},                           # 4 not in the game
+        {"player_id": "P3", "name": "Moved On"},                          # 5 played for ATL
+        {"game_id": "G2", "team": "BAL", "opponent": "BUF", "player_id": "P4"},   # 6 not on file
+        {"stat": "anytime_tds", "line": 0.5, "over": 0.2, "under": 0.8},  # 7 scored twice
+        {"stat": "anytime_tds", "line": 1.5, "kind": "ladder", "over": 0.05, "under": 0.95},  # 8
+        {"stat": "carries", "line": 0.5, "over": 0.1, "under": 0.9},      # 9 none: under
+        {"stat": "receiving_yards", "line": 61.0, "kind": "ladder", "over": 0.45, "push": 0.1,
+         "under": 0.45})                                                  # 10 push at 50/50
+    F = pd.concat([
+        played_table(("ARI", "P1", {"receptions": 5.0, "receiving_yards": 61.0, "anytime_tds": 2.0}),
+                     ("ATL", "P3", {"receptions": 9.0}), ("ATL", "P5", {})),
+        played_table(("BAL", "P4", {"receptions": 9.0}), t=202403),
+        played_table(("ARI", "P2", {"receptions": 9.0, "opponent": "BUF"}), t=202403)], ignore_index=True)
+    G = fg.grade(S, F)
+    chk("a line is over when he did more, under when less and a push when "
+        "the same; a player with no row in his team's game did not play; "
+        "one whose row is for another team played for it; a team with no "
+        "rows that week is not on file, whatever other weeks hold",
+        list(G.result) == ["over", "under", "push", "over", "did not play", "other team",
+                           "not on file", "over", "over", "under", "push"]
+        and [None if a != a else a for a in G.actual] == [5.0, 5.0, 5.0, 61.0, None, None, None,
+                                                          2.0, 2.0, 0.0, 61.0]
+        and list(G.columns[:len(fg.SHADOW_COLS)]) == fg.SHADOW_COLS and len(G) == len(S))
+    chk("the chance graded is the over's share of over plus under, so a "
+        "whole-number line is read as if it does not push; the side is the "
+        "one it favoured, OVER at exactly 50%; and a line that is not over "
+        "or under has no hit or miss",
+        near(G.p[0], 0.6) and near(G.p[2], 0.5) and near(G.p[10], 0.5) and near(G.p[1], 0.3)
+        and list(G.side) == ["OVER", "UNDER", "OVER", "OVER", "OVER", "OVER", "OVER", "UNDER",
+                             "UNDER", "UNDER", "OVER"]
+        and near(G.p_side[1], 0.7) and near(G.p_side[0], 0.6) and near(G.p_side[7], 0.8)
+        and near(G.p_side[3], 0.5)
+        and [None if h_ != h_ else bool(h_) for h_ in G.hit] == [
+            True, True, None, True, None, None, None, False, False, True, None])
+    chk("the data must have the stat and one row a player a week",
+        raises(lambda: fg.grade(S, F.drop(columns="carries")), fl.Missing,
+               "the data has no column for ['carries']")
+        and raises(lambda: fg.grade(S, pd.concat([F, F.iloc[[0]]], ignore_index=True)), fl.Missing,
+                   "the data has a player twice in one week")
+        and len(fg.grade(S, pd.concat([F, F.iloc[[4]]], ignore_index=True))) == len(S)
+        and raises(lambda: fg.grade(S, F.drop(columns="opponent")), fl.Missing,
+                   "the data has no column for ['opponent']"))
+    two_weeks = pd.concat([S.iloc[[4]], S.iloc[[4]].assign(week=3, opponent="BUF")], ignore_index=True)
+    chk("each week is graded on its own rows: a man who played the week "
+        "before and not this week did not play this week",
+        list(fg.grade(two_weeks, F).result) == ["did not play", "over"]
+        and list(fg.grade(two_weeks, F).actual.fillna(-1)) == [-1.0, 9.0])
+    later = pd.concat([F, played_table(("BAL", "P4", {}), t=202405)], ignore_index=True)
+    chk("a file whose week is not the data's is refused: the data has the "
+        "team against another opponent that week, or has no game for it "
+        "that week though it has later ones; the game id is the file's own "
+        "label and is not compared",
+        raises(lambda: fg.grade(S, later), fl.Missing,
+               "the data has no game for BAL in 2024 Week 4, though it has later weeks of BAL")
+        and raises(lambda: fg.grade(S.iloc[:4], F.assign(opponent="BUF")), fl.Missing,
+                   "the saved file has ARI in 2024 Week 4 against ATL, and the data has it against "
+                   "['BUF']")
+        and raises(lambda: fg.grade(S.iloc[:4].assign(week=3), F), fl.Missing,
+                   "the saved file has ARI in 2024 Week 3 against ATL, and the data has it against "
+                   "['BUF']")
+        and list(fg.grade(S.iloc[:4].assign(game_id="another label"), F).result)
+        == list(G.result[:4])
+        and raises(lambda: fg.grade(S.iloc[:4].assign(season=2023), F), fl.Missing,
+                   "the data has no game for ARI in 2023 Week 4, though it has later weeks")
+        and list(fg.grade(S.iloc[:4].assign(week=9), F).result) == ["not on file"] * 4)
+
+    def halves(stats_, snaps_):
+        return F.assign(has_stats=[a and b for a, b in zip(stats_, [True] * len(F))],
+                        has_snaps=[a and b for a, b in zip(snaps_, [True] * len(F))])
+
+    yes = [True] * len(F)
+    arI = list(F.team == "ARI")
+    chk("a game is on file only when the data has both the stats and the "
+        "snap counts for the team: with one of them a man who did "
+        "nothing cannot be told from a man who sat out, so its lines wait "
+        "as half on file; one row of each on the team is enough",
+        list(fg.grade(S, halves(yes, yes)).result) == list(G.result)
+        and list(fg.grade(S, halves([not x for x in arI], yes)).result)
+        == ["half on file"] * 6 + ["not on file"] + ["half on file"] * 4
+        and list(fg.grade(S, halves(yes, [not x for x in arI])).result)
+        == ["half on file"] * 6 + ["not on file"] + ["half on file"] * 4
+        and list(fg.grade(S, halves([x != "P3" for x in F.player_id], yes)).result) == list(G.result)
+        and all(list(fg.grade(S, pd.concat([F, played_table(("ARI", "PX", {}))], ignore_index=True)
+                              .assign(**dict({"has_stats": True, "has_snaps": True},
+                                             **{c_: [True] * len(F) + [False]}))).result)
+                == list(G.result)
+                for c_ in ("has_stats", "has_snaps"))
+        and fg.grade(S, halves(yes, [not x for x in arI])).actual.isna().all()
+        and fg.HALF_ON_FILE == "half on file" and fg.WAITING == ("not on file", "half on file"))
+    snaps = pd.DataFrame(
+        [(2024, 4, "REG", "ARI", "Sat Out Jr.", 0.0, 0.0, 3.0), (2024, 4, "REG", "ARI", "Pat One", 9.0, 0.0, 0.0),
+         (2024, 4, "REG", "ATL", "Nobody", 0.0, 0.0, 0.0)],
+        columns=["season", "week", "game_type", "team", "player", "offense_snaps", "defense_snaps",
+                 "st_snaps"])
+    Gs = fg.grade(S, F, snaps=snaps)
+    chk("a man with no row in the data whom the snap counts list under his "
+        "name on that team that week played: he is graded on no stats, "
+        "and the line says how; no snap, another team, another week or a "
+        "playoff row does not count",
+        list(Gs.result) == ["over", "under", "push", "over", "under", "other team", "not on file",
+                            "over", "over", "under", "push"]
+        and Gs.actual[4] == 0.0 and Gs.how[4] == "played by the snap count, under his name"
+        and set(Gs.how.drop(4)) == {""} and set(G.how) == {""}
+        and all(fg.grade(S, F, snaps=snaps.assign(**kw)).result[4] == "did not play" for kw in (
+            {"st_snaps": 0.0}, {"team": "ATL"}, {"week": 3}, {"season": 2023}, {"game_type": "POST"},
+            {"player": "Someone Else"})))
+    ro = pd.DataFrame([("OneP00", "P1"), ("TwoX00", "P8"), ("TwoX00", "P9"), (None, "P7"), ("NoId00", None)],
+                      columns=["pfr_id", "gsis_id"])
+    raw = pd.DataFrame({"pfr_player_id": ["OneP00", "TwoX00", "NewM00", None, "NoId00"],
+                        "player": ["a", "b", "c", "d", "e"]})
+    chk("the snap rows read by name are only the ones the data could not "
+        "place: an id no roster has, one a roster gives to two players, or "
+        "none; never a row whose player the data knows, so a namesake is "
+        "not taken for him",
+        list(fg.unplaced_snaps(raw, ro).player) == ["b", "c", "d", "e"]
+        and list(fg.unplaced_snaps(raw, pd.concat([ro, ro])).player) == ["b", "c", "d", "e"]
+        and list(fg.unplaced_snaps(raw, ro.iloc[:0]).player) == list("abcde"))
+    weekly = pd.DataFrame(
+        [(2024, 4, "REG", "P1", 1, 0, 0), (2024, 4, "REG", "P3", 0, 1, 0), (2024, 3, "REG", "P9", 1, 1, 1),
+         (2024, 4, "POST", "P7", 5, 0, 0)],
+        columns=["season", "week", "season_type", "player_id", *fg.OTHER_TDS])
+    T = shadow_table({"stat": "anytime_tds", "line": 2.5, "over": 0.1, "under": 0.9},
+                     {"stat": "anytime_tds", "line": 0.5, "over": 0.4, "under": 0.6, "player_id": "P7"},
+                     {"stat": "carries", "line": 0.5}, {"stat": "receptions", "line": 5.5})
+    F7 = pd.concat([F, played_table(("ARI", "P7", {}))], ignore_index=True)
+    Gt = fg.grade(T, F7, weekly=weekly)
+    chk("a touchdown on a return or a recovery counts toward the anytime "
+        "line, as a book counts it: the two he ran or caught and one more "
+        "clear 2.5; it touches no other stat, and a playoff row or "
+        "another week's does not count",
+        list(Gt.actual) == [3.0, 0.0, 0.0, 5.0] and list(Gt.result) == ["over", "under", "under", "under"]
+        and list(Gt.how) == ["a touchdown on a return or a recovery", "", "", ""]
+        and list(fg.grade(T, F7).actual) == [2.0, 0.0, 0.0, 5.0]
+        and fg.OTHER_TDS == ("special_teams_tds", "def_tds", "fumble_recovery_tds")
+        and fg.grade(T, F7, weekly=weekly.assign(special_teams_tds=0, def_tds=[0, 0, 0, 5],
+                                                 fumble_recovery_tds=[2, 0, 0, 0])).actual[0] == 4.0)
+    def heads(*rows):
+        return list(fg.headline(shadow_table(*rows)))
+
+    chk("one line is read for each player and stat: the book's main line; "
+        "of two main lines the one more books post, then the one nearer "
+        "50%, then the lower; with no main line, the line nearest 50%",
+        heads({"line": 3.5, "kind": "ladder", "over": 0.5, "under": 0.5}, {"line": 4.5},
+              {"line": 5.5, "kind": "ladder"}) == [False, True, False]
+        and heads({"line": 4.5, "books": "a"}, {"line": 5.5, "books": "a b", "over": 0.9, "under": 0.1},
+                  {"line": 6.5, "books": "c"}) == [False, True, False]
+        and heads({"line": 4.5, "over": 0.7, "under": 0.3}, {"line": 5.5, "over": 0.45, "under": 0.55},
+                  {"line": 6.5, "over": 0.3, "under": 0.7}) == [False, True, False]
+        and heads({"line": 5.5, "over": 0.4, "under": 0.6}, {"line": 4.5, "over": 0.6, "under": 0.4})
+        == [False, True]
+        and heads({"line": 3.5, "kind": "ladder", "over": 0.9, "under": 0.1},
+                  {"line": 5.0, "kind": "ladder", "over": 0.4, "push": 0.2, "under": 0.4},
+                  {"line": 6.5, "kind": "ladder", "over": 0.45, "under": 0.55}) == [False, True, False]
+        and heads({"line": 6.5, "kind": "ladder", "over": 0.4, "under": 0.6},
+                  {"line": 5.5, "kind": "ladder", "over": 0.6, "under": 0.4}) == [False, True])
+    chk("...the anytime touchdown is the line at 0.5 and no other; each "
+        "player, stat, team and game is its own; and the choice is made "
+        "from the saved rows alone, so it is the same whatever happened",
+        heads({"stat": "anytime_tds", "line": 1.5, "kind": "main", "over": 0.5, "under": 0.5},
+              {"stat": "anytime_tds", "line": 0.5, "kind": "ladder", "over": 0.2, "under": 0.8})
+        == [False, True]
+        and heads({"stat": "anytime_tds", "line": 1.5}, {"stat": "anytime_tds", "line": 2.5}) == [False, False]
+        and heads({}, {"player_id": "P2"}, {"stat": "carries"}, {"team": "ATL"},
+                  {"week": 5}, {"season": 2025}, {"line": 5.5, "kind": "ladder"},
+                  {"line": 6.5, "kind": "ladder", "game_id": "another label"}) == [True] * 6 + [False] * 2
+        and list(G.headline) == list(fg.headline(S)) == [True, False, False, True, True, True, True,
+                                                          True, False, True, False]
+        and list(fg.grade(S, F[F.t == 0]).headline) == list(G.headline))
+    L = fg.legs(G)
+    chk("each line carries the headline line of its player and stat; the "
+        "lines handed to the harness are the ones that were over or "
+        "under, in the shape its tables read",
+        [None if x != x else x for x in G.main_line] == [4.5, 4.5, 4.5, 60.5, 4.5, 4.5, 4.5, 0.5, 0.5,
+                                                          0.5, 60.5]
+        and list(L.index) == [0, 1, 3, 7, 8, 9] and list(L["over"]) == [True, False, True, True, True, False]
+        and list(L.hit) == [True, True, True, False, False, True] and L.hit.dtype == bool
+        and {"game_id", "team", "player_id", "stat", "side", "p", "p_side", "hit", "over", "line",
+             "main_line"} <= set(L.columns)
+        and len(fs.calibration(L[L.stat != TD_STAT])) == len(fs.FOLDED_BANDS)
+        and list(fg.legs(fg.grade(shadow_table({"stat": "anytime_tds", "line": 1.5, "over": 0.1,
+                                                "under": 0.9}), F)).main_line) == [1.5]
+        and list(fg.grade(S, F).headline) == [bool(x) for x in G.headline]
+        and [fg.books_on(r_) for r_ in shadow_table({"books": "a"}, {"books": "a b  c"}).itertuples()]
+        == [1, 3])
+
+    # -- the same answers as the harness, through a file
+    import pathlib
+    import tempfile
+    f, roster, reports = live_league()
+    full = live_frame()
+    run = fs.walk_forward(full, [fl.live_model(reports)], through=202404)
+    H = run.legs[(run.legs.version == "B") & (run.legs.season == 2024) & (run.legs.week == 4)]
+    key = {v[0]: k for k, v in fl.MARKETS.items() if v[1] is None}
+    espn = {g: f"espn:{int(e)}" for g, e in zip(roster.gsis_id, roster.espn_id) if e == e and g}
+    code = {v: k for k, v in fl.TEAM_CODE.items()}
+    events = []
+    for gid, g in H.groupby("game_id", sort=True):
+        home, away = sorted(set(g.team))[::-1]
+        mk = {}
+        for r in g.itertuples():
+            if r.stat == TD_STAT:
+                mk.setdefault(("player_anytime_td", "milestone"), []).append(
+                    (r.name, r.name, None, espn.get(r.player_id)))
+            else:
+                mk.setdefault((key[r.stat], "main" if r.rung == "main" else "alternate"), []).extend(
+                    (s_, r.name, r.line, espn.get(r.player_id)) for s_ in ("Over", "Under"))
+        events.append(odds_event(code[home], code[away],
+                                 {"booka": [(k, lt, None, o) for (k, lt), o in mk.items()]}))
+    board = fl.run_live(f, reports, roster, events, fl.read_inputs(LIVE_IN))
+    rec = fl.build_record(full, reports, 202404)
+    d = pathlib.Path(tempfile.mkdtemp())
+    saved = fl.to_csv(board, rec, 2024, 4)
+    saved.to_csv(d / "shadow_2024_wk4.csv", index=False)
+    Gf = fg.grade(fg.read_shadow(d / "shadow_2024_wk4.csv"), full)
+    hk = {(r.player_id, r.stat, r.line): r for r in H.itertuples()}
+    gk = {(r.player_id, r.stat, r.line): r for r in Gf.itertuples()}
+    chk("(the fixture: the harness's own stand-in lines for 2024 Week 4, "
+        "posted as a book would post them, priced by the live run, saved "
+        "and read back)",
+        len(H) > 200 and len(board.unmatched) == 0 and set(gk) == set(hk) and len(Gf) == len(H)
+        and set(H.played) == {True} and H.game_id.nunique() == 2)
+    chk("grading the saved file gives the harness's answers: the same "
+        "chance for the over on every line, the same result, and the same "
+        "number for what he did",
+        all(near(gk[k].p, hk[k].p_live, 1e-9) for k in hk)
+        and all((gk[k].result == "over") == bool(hk[k].over) for k in hk)
+        and all(gk[k].actual == hk[k].actual for k in hk)
+        and set(Gf.result) == {"over", "under"} and 0.1 < (Gf.result == "over").mean() < 0.9)
+    hl = fs.graded_legs(run, "live", version="B")
+    hl = hl[(hl.season == 2024) & (hl.week == 4)]
+    mine = fg.legs(Gf)
+    chk("...the same side favoured and the same hits, and so the same "
+        "table by band as the harness makes from its own legs, stat by "
+        "stat: the main line it reads is the harness's main line",
+        all(gk[k].side == r.side and bool(gk[k].hit) == bool(r.hit) and near(gk[k].p_side, r.p_side, 1e-9)
+            for k, r in ((k_, r_) for k_, r_ in ((( r.player_id, r.stat, r.line), r) for r in hl.itertuples())))
+        and all(gk[(r.player_id, r.stat, r.line)].main_line == r.main_line
+                for r in hl.itertuples() if r.stat != TD_STAT)
+        and all(fs.calibration(mine[mine.stat == s_])[["band", "n", "games", "stated", "happened"]]
+                .round(9).equals(fs.calibration(hl[hl.stat == s_])[["band", "n", "games", "stated",
+                                                                    "happened"]].round(9))
+                for s_ in ft.ALL_STATS if s_ != TD_STAT)
+        and sum(int(fs.calibration(mine[mine.stat == s_]).n.sum()) for s_ in ft.ALL_STATS
+                if s_ != TD_STAT) > 100)
+    sat, moved_ = (sorted(set(Gf.player_id[Gf.team == tm]))[0] for tm in ("ATL", "ARI"))
+    gone = full[~((full.t == 202404) & ((full.player_id == sat) | full.team.isin(["BAL", "BUF"])))].copy()
+    gone.loc[(gone.t == 202404) & (gone.player_id == moved_), ["team", "opponent"]] = ["ATL", "ARI"]
+    Gg = fg.grade(fg.read_shadow(d / "shadow_2024_wk4.csv"), gone)
+    rest = lambda g_: list(g_.result[~(g_.player_id.isin([sat, moved_]) | g_.team.isin(["BAL", "BUF"]))])  # noqa: E731
+    chk("...and with the data short of a player, a game and a team's claim "
+        "on a player, those lines and only those are void or waiting",
+        set(Gg.result[Gg.player_id == sat]) == {"did not play"}
+        and set(Gg.result[Gg.team.isin(["BAL", "BUF"])]) == {"not on file"}
+        and set(Gg.result[Gg.player_id == moved_]) == {"other team"}
+        and rest(Gg) == rest(Gf) and len(rest(Gg)) > 50
+        and (Gg.result == "did not play").sum() > 3 and (Gg.result == "other team").sum() > 3
+        and (Gg.result == "not on file").sum() > 50,
+        (sat, moved_, Gg.result.value_counts().to_dict()))
+
+
+@section("40. grading — the report")
+def _():
+    import pathlib
+    import tempfile
+
+    def lines(n, games, p, hits, **kw):
+        """n graded headline lines over `games` games, each at chance p for
+        the over, the first `hits` of them over."""
+        S = shadow_table(*[dict({"game_id": f"G{i % games}", "player_id": f"P{i}",
+                                 "over": p, "under": 1 - p}, **kw) for i in range(n)])
+        F = played_table(*[("ARI", f"P{i}", {"receptions": 5.0 if i < hits else 4.0,
+                                             "passing_tds": 5.0 if i < hits else 4.0})
+                           for i in range(n)])
+        return fg.legs(fg.grade(S, F))
+
+    a = lines(10, 2, 0.7, 6)
+    r = fg.rate(a)
+    chk("what a set of lines said and what happened, by hand: the average "
+        "chance of the side favoured, the share that hit, how many games; "
+        "the range is the harness's, and under 30 games it gives no reading",
+        r["n"] == 10 and r["games"] == 2 and near(r["stated"], 0.7) and near(r["happened"], 0.6)
+        and r["read"] == "too few games to say"
+        and (r["lo"], r["hi"]) == tuple(fs.rate_range(a.hit.astype(float), a.game_id)[k]
+                                        for k in ("lo", "hi"))
+        and 0 < r["lo"] < 0.6 < r["hi"] < 1
+        and fg.rate(a.iloc[:0]) ["read"] == "nothing here" and fg.rate(a.iloc[:0])["n"] == 0)
+    under = lines(10, 2, 0.2, 3)
+    chk("...on the side favoured: lines it leaned under are read on the "
+        "under; and read as stated for the chance to score",
+        near(fg.rate(under)["stated"], 0.8) and near(fg.rate(under)["happened"], 0.7)
+        and near(fg.rate(under, "p", "over")["stated"], 0.2)
+        and near(fg.rate(under, "p", "over")["happened"], 0.3))
+    big, off = lines(600, 40, 0.7, 420), lines(600, 40, 0.7, 300)
+    chk("with 30 games or more it reads: as stated when what happened is "
+        "inside the range, and less than stated when it is not",
+        fg.rate(big)["read"] == "as stated" and fg.rate(big)["games"] == 40
+        and fg.rate(off)["read"] == "happens LESS than stated"
+        and fg.rate(lines(600, 40, 0.6, 500))["read"] == "happens MORE than stated")
+    b = fg.brier(a)
+    chk("the score, by hand: the mean squared gap between the over's chance "
+        "and what happened, beside a coin flip's 0.250; no reading under "
+        "30 games",
+        near(b["brier"], (6 * 0.3 ** 2 + 4 * 0.7 ** 2) / 10) and near(b["gap"], b["brier"] - 0.25)
+        and b["n"] == 10 and b["games"] == 2 and b["read"] == "too few games to say"
+        and fg.COIN == 0.25 and fg.brier(a.iloc[:0])["read"] == "nothing here"
+        and near(fg.brier(under)["brier"], (3 * 0.8 ** 2 + 7 * 0.2 ** 2) / 10))
+    chk("...and with 30 games: better than a coin flip when the chances "
+        "lean the way things went, worse when they lean the other way, "
+        "and neither when they are all 50%",
+        fg.brier(lines(600, 40, 0.8, 480))["read"] == "better than calling them 50/50"
+        and fg.brier(lines(600, 40, 0.8, 480))["gap"] < 0
+        and fg.brier(lines(600, 40, 0.8, 120))["read"] == "WORSE than calling them 50/50"
+        and fg.brier(lines(600, 40, 0.5, 300))["read"] == "no better or worse than calling them 50/50"
+        and near(fg.brier(lines(600, 40, 0.5, 300))["gap"], 0.0)
+        and near(fg.brier(big)["se"], fs.cluster_mean((big.p - big["over"].astype(float)) ** 2 - 0.25,
+                                                      big.game_id)[1]))
+    chk("the record's own figure is read out of the text beside a line",
+        near(fg.record_rate("said 55%-60% on his main line: happened 55.0% of 101 (as stated)"), 0.55)
+        and near(fg.record_rate("said 95%-100% on his x0.6 rung: happened 100% of 1,204 (x)"), 1.0)
+        and all(fg.record_rate(x) != fg.record_rate(x) for x in (
+            "no record: nothing grades two or more", "", float("nan"), "happened to be 5% of")))
+    sp = fg.legs(fg.grade(shadow_table(
+        {"player_id": "P0"},
+        {"player_id": "P1", "no_record": fl.OFF_LADDER, "rung": ""},
+        {"player_id": "P2", "no_record": fl.NO_ROLE, "rung": ""},
+        {"player_id": "P3", "cautions": "x | S21 main-line caution: unders it put at 65%+ ..."},
+        {"player_id": "P4", "stat": "passing_tds", "line": 1.5, "over": 0.3, "under": 0.7,
+         "cautions": fl.PASS_TD_UNDER},
+        {"player_id": "P5", "stat": "passing_tds", "line": 1.5, "cautions": fl.PASS_TD_UNDER},
+        {"player_id": "P6", "cautions": "too high if A B plays: posted, and not on the slate"},
+        {"player_id": "P7", "matched": "name"}, {"player_id": "P8", "matched": "alias"},
+        {"player_id": "P9", "suspended": "2024-09-29T16:00:00Z", "over": 0.2, "under": 0.8}),
+        played_table(*[("ARI", f"P{i}", {"receptions": 5.0, "passing_tds": 2.0}) for i in range(10)])))
+    got = {label: list(sp.player_id[which]) for label, which in fg.splits(sp)}
+    chk("the splits of the headline lines, by hand: with a record or "
+        "without and why, the two cautions, a teammate off the slate, how "
+        "he was matched, a suspended line, and the side favoured",
+        got == {"with a record": ["P0", "P3", "P4", "P5", "P6", "P7", "P8", "P9"],
+                "no record: off his ladder": ["P1"], "no record: no role": ["P2"],
+                "S21 main-line caution": ["P3"], "passing-touchdown unders": ["P4"],
+                "a posted teammate off the slate": ["P6"], "matched by name or alias": ["P7", "P8"],
+                "line suspended when saved": ["P9"],
+                "it favoured the OVER": ["P0", "P1", "P2", "P3", "P5", "P6", "P7", "P8"],
+                "it favoured the UNDER": ["P4", "P9"]})
+    E = fg.grade(shadow_table(
+        {"player_id": "P0", "expected": 6.0, "line": 4.5},
+        {"player_id": "P0", "expected": 6.0, "line": 9.5, "kind": "ladder"},
+        {"player_id": "P1", "expected": 2.0, "line": 3.5},
+        {"player_id": "P2", "expected": 9.0, "line": 9.5},
+        {"player_id": "P0", "stat": "receiving_yards", "expected": 50.0, "line": 40.5, "game_id": "G1"},
+        {"player_id": "P1", "stat": "receiving_yards", "expected": 30.0, "line": 20.0, "game_id": "G2",
+         "over": 0.5, "push": 0.1, "under": 0.4},
+        {"player_id": "P0", "stat": "anytime_tds", "expected": 0.4, "line": 0.5}),
+        played_table(("ARI", "P0", {"receptions": 5.0, "receiving_yards": 70.0}),
+                     ("ARI", "P1", {"receptions": 4.0, "receiving_yards": 20.0}), ("ARI", "PX", {})))
+    se = fg.stat_error(E)
+    chk("the stat lines, by hand: for players who played, one line each, "
+        "what the run expected, what he did, its typical miss and the "
+        "book line's; a push counts here, a man who sat out and the "
+        "anytime touchdown do not",
+        list(se.stat) == ["receptions", "receiving_yards"] and list(se.n) == [2, 2]
+        and list(se.games) == [1, 2]
+        and near(se.expected[0], 4.0) and near(se.actual[0], 4.5) and near(se.miss[0], 1.5)
+        and near(se.line_miss[0], 0.5)
+        and near(se.expected[1], 40.0) and near(se.actual[1], 45.0) and near(se.miss[1], 15.0)
+        and near(se.line_miss[1], (29.5 + 0.0) / 2))
+
+    # -- the printout
+    P = shadow_table(
+        {"player_id": "P0", "name": "Ann Over", "over": 0.7, "under": 0.3,
+         "record": "said 65%-70% on his main line: happened 60.0% of 50 (as stated)"},
+        {"player_id": "P0", "name": "Ann Over", "line": 6.5, "kind": "ladder", "over": 0.2, "under": 0.8},
+        {"player_id": "P1", "name": "Bob Under", "over": 0.4, "under": 0.6, "expected": 4.0},
+        {"player_id": "P2", "name": "Cy Push", "line": 5.0, "over": 0.5, "push": 0.2, "under": 0.3},
+        {"player_id": "P3", "name": "Di Out", "chance": 0.25},
+        {"player_id": "P4", "name": "Ed Moved", "chance": 0.5},
+        {"player_id": "P0", "name": "Ann Over", "stat": "anytime_tds", "line": 0.5, "over": 0.3, "under": 0.7},
+        {"player_id": "P0", "name": "Ann Over", "stat": "anytime_tds", "line": 1.5, "kind": "ladder",
+         "over": 0.1, "under": 0.9},
+        {"player_id": "P5", "name": "Flo Later", "game_id": "G9", "team": "BAL", "opponent": "BUF"})
+    PF = played_table(("ARI", "P0", {"receptions": 5.0, "anytime_tds": 1.0}),
+                      ("ARI", "P1", {"receptions": 5.0}), ("ARI", "P2", {"receptions": 5.0}),
+                      ("ATL", "P4", {"receptions": 5.0}))
+    text = fg.render(fg.grade(P.assign(file="shadow_2024_wk4.csv"), PF)).split("\n")
+    chk("it opens with the weeks and files, then every saved line accounted "
+        "for: graded, pushed, void because he did not play or played "
+        "elsewhere, or not on file yet, each by name",
+        text[0] == "SHADOW RUNS GRADED: 2024 Week 4 (shadow_2024_wk4.csv)"
+        and text[1] == ("9 saved lines in 2 games. Graded 5 (over 3, under 2) in 1 games; pushes 1; "
+                        "did not play 1; other team 1; not on file 1; half on file 0.")
+        and text[2] == "NOT ON FILE YET, left out: G9."
+        and text[3] == "DID NOT PLAY, lines void: Di Out (ARI, it said 25% to play)."
+        and text[4] == "PLAYED FOR ANOTHER TEAM, lines void: Ed Moved (ARI, it said 50% to play).")
+    chk("...then how the chance of playing went for the posted players of "
+        "the games on file, and the warning that so few games are no verdict",
+        text[5] == ("Chance of playing, posted players: it said 69.0% on average; 3 of 5 played "
+                    "(60.0%).")
+        and text[6] == ("READ THIS FIRST: 1 games. Nothing below is a verdict before 30 games; the "
+                        "figures are given, and the reading is refused.")
+        and text[7] == "")
+    body = "\n".join(text)
+    sq = lambda x: " ".join(x.split())   # noqa: E731  (the columns are padded; the words are checked)
+    chk("...then one line per player and stat on the side favoured (Ann's "
+        "main line over at 70% and Bob's under at 60%: said 65%, one of "
+        "two happened), scored beside the coin flip, by stat and by band, "
+        "and the chance to score read as stated",
+        text[8] == ("1. ONE LINE PER PLAYER AND STAT, on the side the run favoured: 2 the book's "
+                    "main line, 0 the line nearest 50% where it posted no main line")
+        and sq(text[9]) == sq("  all stats but the anytime touchdown    2 lines,   1 games: said  65.0%, "
+                        "happened  50.0% (5.5% to 94.5%; too few games to say)")
+        and sq(text[10]) == sq("  main lines scored (Brier, lower is better): 0.225 beside 0.250 for "
+                               "calling every one 50/50; gap -0.025 (error nan; too few games to "
+                               "say). This is not the market's price.")
+        and text[11].startswith("    receptions ") and "    2 lines,   1 games: said  65.0%" in text[11]
+        and text[12] == "  by what it said:"
+        and sq(text[13]) == sq("    60%-65%       1 lines,   1 games: said  60.0%, happened   0.0% (too few games to say)")
+        and sq(text[14]) == sq("    70%-75%       1 lines,   1 games: said  70.0%, happened 100.0% (too few games to say)")
+        and sq(text[15]) == sq("  anytime touchdown, chance to score     1 lines,   1 games: said  30.0%, "
+                         "happened 100.0% (20.7% to 100.0%; too few games to say)"),
+        text[9:16])
+    chk("...then the splits, what the record had said beside what it said "
+        "and what happened, the stat lines, and every posted line with a "
+        "ladder counted once in a band; two or more touchdowns last",
+        "2. THE SAME LINES, SPLIT" in text and "  no record: no role                 nothing here" in text
+        and any(x.startswith("  with a record                          2 lines") for x in text)
+        and any(x.startswith("  it favoured the OVER                   1 lines,   1 games: said  70.0%, "
+                             "happened 100.0%") for x in text)
+        and any(x.startswith("  it favoured the UNDER                  1 lines,   1 games: said  60.0%, "
+                             "happened   0.0%") for x in text)
+        and "  where the record gave a figure (1 lines): it said 70.0%, the record said 60.0%, and "
+            "100.0% happened" in text
+        and any(x.startswith("3. THE STAT LINES") for x in text)
+        and "  receptions            3 players: expected     4.7, actual     5.0, miss    0.3, line's "
+            "miss    0.3" in text
+        and any(x.startswith("4. EVERY POSTED LINE") for x in text)
+        and any(x.startswith("  all lines, each counted                3 lines,   1 games: said  "
+                             "70.0%, happened  66.7%") for x in text)
+        and "    80%-85%       1 lines (1 before a ladder is counted once),   1 games: said  80.0%, "
+            "happened 100.0% (too few games to say)" in text
+        and sq(text[-1]) == sq("  2 or more touchdowns, chance         1 lines,   1 games: said  10.0%, "
+                               "happened   0.0% (0.0% to 79.3%; too few games to say)")
+        and sum("or more touchdowns" in x for x in text) == 1, body)
+    Q = shadow_table(
+        {"player_id": "P0", "name": "Ann Over", "kind": "ladder", "over": 0.9, "under": 0.1},
+        {"player_id": "P1", "name": "Bob Under", "over": 0.4, "under": 0.6},
+        {"player_id": "P6", "name": "Gus Snap"},
+        {"player_id": "P0", "name": "Ann Over", "stat": "anytime_tds", "line": 0.5, "over": 0.3, "under": 0.7},
+        {"player_id": "P0", "name": "Ann Over", "stat": "anytime_tds", "line": 1.5, "kind": "ladder",
+         "over": 0.1, "under": 0.9},
+        {"player_id": "P0", "name": "Ann Over", "stat": "anytime_tds", "line": 2.5, "kind": "ladder",
+         "over": 0.02, "under": 0.98},
+        {"player_id": "P8", "name": "Hal Half", "game_id": "G2", "team": "BAL", "opponent": "BUF"},
+        {"player_id": "P5", "name": "Flo Later", "game_id": "G9", "team": "CAR", "opponent": "CHI"})
+    QF = pd.concat([PF.assign(has_stats=True, has_snaps=True),
+                    played_table(("BAL", "P8", {"receptions": 9.0})).assign(has_stats=True, has_snaps=False)],
+                   ignore_index=True)
+    q_snaps = pd.DataFrame([(2024, 4, "REG", "ARI", "Gus Snap", 0.0, 0.0, 7.0)], columns=[
+        "season", "week", "game_type", "team", "player", "offense_snaps", "defense_snaps", "st_snaps"])
+    q_weekly = pd.DataFrame([(2024, 4, "REG", "P0", 1, 0, 0)], columns=[
+        "season", "week", "season_type", "player_id", *fg.OTHER_TDS])
+    qt = fg.render(fg.grade(Q.assign(file="q.csv"), QF, q_weekly, q_snaps)).split("\n")
+    chk("a game with the stats in and the snap counts not is named as half "
+        "on file and left out; a man graded from the snap counts and a "
+        "touchdown on a return are each named; and the games counted as "
+        "graded are the ones with a graded line",
+        qt[1] == ("8 saved lines in 3 games. Graded 6 (over 4, under 2) in 1 games; pushes 0; did "
+                  "not play 0; other team 0; not on file 1; half on file 1.")
+        and qt[2] == "NOT ON FILE YET, left out: G9."
+        and qt[3] == "HALF ON FILE (the stats or the snap counts, not both yet), left out: G2."
+        and qt[4] == ("GRADED ON NO STATS, the snap counts list him by name and the data could not "
+                      "tie him to an id: Gus Snap (ARI).")
+        and qt[5] == "SCORED ON A RETURN OR A RECOVERY, counted as a book counts it: Ann Over (ARI)."
+        and qt[6] == ("Chance of playing, posted players: it said 90.0% on average; 3 of 3 played "
+                      "(100.0%).")
+        and qt[7].startswith("READ THIS FIRST: 1 games."), qt[:8])
+    chk("...the score is of the book's main lines only, and the opening "
+        "line says how many of the lines read were not; each rung of the "
+        "touchdown ladder has its own line, by what it pays on",
+        qt[9] == ("1. ONE LINE PER PLAYER AND STAT, on the side the run favoured: 2 the book's main "
+                  "line, 1 the line nearest 50% where it posted no main line")
+        and sq(qt[10]).startswith("all stats but the anytime touchdown 3 lines, 1 games: said 70.0%")
+        and sq(qt[11]).startswith("main lines scored (Brier, lower is better): 0.360 beside 0.250")
+        and sq(qt[-2]).startswith("2 or more touchdowns, chance 1 lines, 1 games: said 10.0%, "
+                                  "happened 100.0%")
+        and sq(qt[-1]).startswith("3 or more touchdowns, chance 1 lines, 1 games: said 2.0%, "
+                                  "happened 0.0%"), qt)
+    V = shadow_table({"player_id": "P0"},
+                     {"player_id": "P3", "name": "Di Out", "chance": 0.25},
+                     {"player_id": "P3", "name": "Di Out", "chance": 0.25, "line": 6.5, "kind": "ladder"},
+                     {"player_id": "P9", "name": "Vic Void", "game_id": "G2", "team": "BAL", "opponent": "BUF"})
+    vt = fg.render(fg.grade(V.assign(file="v.csv"), pd.concat(
+        [PF, played_table(("BAL", "PZ", {}))], ignore_index=True))).split("\n")
+    chk("a man with two void lines is named once, and a game on file with "
+        "no graded line is not counted among the games graded",
+        vt[1] == ("4 saved lines in 2 games. Graded 1 (over 1, under 0) in 1 games; pushes 0; did "
+                  "not play 3; other team 0; not on file 0; half on file 0.")
+        and vt[2] == ("DID NOT PLAY, lines void: Di Out (ARI, it said 25% to play), Vic Void (BAL, it "
+                      "said 90% to play).")
+        and vt[4].startswith("READ THIS FIRST: 1 games."))
+    none = fg.render(fg.grade(P.assign(file="f.csv"), PF[PF.t == 0])).split("\n")
+    many = fg.render(fg.grade(shadow_table(*[{"game_id": f"G{i}", "player_id": f"P{i}"}
+                                              for i in range(30)]).assign(file="f.csv"),
+                              played_table(*[("ARI", f"P{i}", {"receptions": 5.0}) for i in range(30)])))
+    chk("with nothing on file it says so and stops there; with 30 games it "
+        "drops the warning and gives a reading",
+        none[1].endswith("Graded 0 (over 0, under 0) in 0 games; pushes 0; did not play 0; other "
+                         "team 0; not on file 9; half on file 0.")
+        and none[2] == "NOT ON FILE YET, left out: G1, G9." and none[-1] == "Nothing to grade yet."
+        and len(none) == 5 and "READ THIS FIRST" not in many
+        and "30 lines,  30 games: said  60.0%, happened 100.0% (88.6% to 100.0%; happens MORE than "
+            "stated)" in many)
+    d = pathlib.Path(tempfile.mkdtemp())
+    path = _w(d, P, "shadow_2024_wk4.csv")
+    got, code_ = fg.grade_files(PF, [path], out=str(d / "graded.csv"))
+    saved = pd.read_csv(d / "graded.csv", dtype=str, keep_default_na=False)
+    chk("the whole thing from a file: the same printout, and the graded "
+        "table saved with the saved columns first, then the file, what he "
+        "did, the result, and what was read",
+        code_ == 0 and got == "\n".join(text) + f"\nsaved 9 graded lines to {d / 'graded.csv'}"
+        and fg.grade_files(PF, path) == ("\n".join(text), 0)
+        and fg.grade_files(QF, _w(d, Q, "q.csv"), weekly=q_weekly, snaps=q_snaps) == ("\n".join(qt), 0)
+        and fg.grade_files(QF, _w(d, Q, "q.csv"))[0] != "\n".join(qt)
+        and list(saved.columns) == fg.SHADOW_COLS + ["file", "actual", "result", "how", "headline",
+                                                     "p", "side", "p_side", "hit"],
+        (code_, got == "\n".join(text) + f"\nsaved 9 graded lines to {d / 'graded.csv'}",
+         fg.grade_files(PF, path)[1], list(saved.columns), list(saved.result), list(saved.actual),
+         list(saved.hit), list(saved.headline)))
+    chk("...each line with its own result",
+        list(saved.result) == ["over", "under", "over", "push", "did not play", "other team",
+                                   "over", "under", "not on file"]
+        and list(saved.actual) == ["5.0", "5.0", "5.0", "5.0", "", "", "1.0", "1.0", ""]
+        and list(saved.hit) == ["1.0", "1.0", "0.0", "", "", "", "0.0", "1.0", ""]
+        and list(saved.headline) == ["True", "False", "True", "True", "True", "True", "True",
+                                     "False", "True"],
+        (list(saved.result), list(saved.actual), list(saved.hit), list(saved.headline)))
+    chk("when something is missing it stops with what, under code 2, and "
+        "prints nothing of a run; a fault it did not foresee stops it "
+        "under code 3; so does nowhere to save",
+        fg.grade_files(PF, [str(d / "absent.csv")])[1] == 2
+        and fg.grade_files(PF, [str(d / "absent.csv")])[0].startswith(
+            "STOPPED. cannot read the shadow file absent.csv")
+        and fg.grade_files(PF, []) == ("STOPPED. no shadow file was given", 2)
+        and fg.grade_files(PF, [path, path])[0].startswith(
+            "STOPPED. shadow_2024_wk4.csv and shadow_2024_wk4.csv both hold ARI's game of 2024 Week 4")
+        and fg.grade_files(PF.drop(columns="receptions"), [path])
+        == ("STOPPED. the data has no column for ['receptions']", 2)
+        and fg.grade_files(None, [path])[1] == 3
+        and fg.grade_files(None, [path])[0].startswith("STOPPED. Something it did not foresee: ")
+        and fg.grade_files(PF, [path], out=str(d / "no" / "such" / "x.csv"))[1] == 2
+        and fg.grade_files(PF, [path], out=str(d / "no" / "such" / "x.csv"))[0].startswith(
+            "STOPPED. cannot save the graded table to "))
+
+
+@section("41. grading — real data")
+def _():
+    frame = REAL.get("frame")
+    if frame is None:
+        frame = REAL["frame"] = fs.load_frame()
+    done = frame[(frame.season == frame.season.max())]
+    t = int(sorted(done.t.unique())[-2])            # a week that is whole, whatever today is
+    wk = frame[frame.t == t]
+    gid = sorted(wk.game_id.unique())[0]
+    g = wk[wk.game_id == gid]
+    top = g.sort_values(["receiving_yards", "player_id"], ascending=[False, True]).iloc[0]
+    idle = frame[(frame.t < t) & (frame.team == top.team) & ~frame.player_id.isin(set(wk.player_id))
+                 & (frame.season == top.season)].iloc[-1]
+    yd, season, week = float(top.receiving_yards), int(top.season), int(top.week)
+    base = {"season": season, "week": week, "game_id": gid, "team": top.team,
+            "opponent": top.opponent, "player_id": top.player_id, "name": top["name"],
+            "stat": "receiving_yards"}
+    S = shadow_table(dict(base, line=yd - 0.5, over=0.8, under=0.2),
+                     dict(base, line=yd + 0.5, kind="ladder", over=0.3, under=0.7),
+                     dict(base, line=yd, kind="ladder", over=0.4, push=0.1, under=0.5),
+                     dict(base, stat="anytime_tds", line=0.5, over=0.3, under=0.7),
+                     dict(base, player_id=idle.player_id, name=idle["name"]),
+                     dict(base, week=week + 30, line=1.5))
+    G = fg.grade(S, frame)
+    chk("on the data on file: the leading receiver of a finished game is "
+        "over the line under what he gained, under the line above it and "
+        "a push on it; his touchdown line goes by whether he scored; a "
+        "teammate who was not in the game did not play; and a week that "
+        "has not been played is not on file",
+        yd > 20 and list(G.result) == ["over", "under", "push",
+                                       "over" if top.anytime_tds > 0 else "under",
+                                       "did not play", "not on file"]
+        and list(G.actual[:3]) == [yd, yd, yd] and G.actual[3] == float(top.anytime_tds)
+        and list(G.hit[:2]) == [1.0, 1.0],
+        (gid, top["name"], yd, list(G.result)))
+    text = fg.render(G.assign(file="x.csv"))
+    chk("...and the report accounts for all six lines",
+        f"6 saved lines in 1 games. Graded 3 (over {2 if top.anytime_tds > 0 else 1}, under "
+        f"{1 if top.anytime_tds > 0 else 2}) in 1 games; pushes 1; did not play 1; other team 0; "
+        f"not on file 1; half on file 0." in text and f"DID NOT PLAY, lines void: {idle['name']} ({top.team}" in text)
+
 _summary()
 sys.exit(1 if fails else 0)

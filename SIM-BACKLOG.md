@@ -4,15 +4,15 @@ Owned by the simulator thread. Ids are `S1`, `S2`, ... The betting engine's
 backlog is `BACKLOG.md` (ids `B...`) and is never edited from here.
 `SIM-HANDOFF.md` is the brief this build works from.
 
-## State on 2026-11-21 (after S28)
+## State on 2026-11-21 (after S29)
 
 | | |
 |---|---|
 | Built | The test harness (S1). An opportunity model for targets, carries and pass attempts (S4). Efficiency on top of it: receptions, receiving yards, rushing yards, completions, passing yards (S17). A chance of playing for every listed player, from the injury report and games missed, or handed in at run time, and the opportunity model that uses it (S13). Touchdowns on top of all of it: anytime (rushing or receiving) and passing (S24). A script that runs all of it on a week not yet played, from files a project thread saves (S28). **First touchdown is not built, nothing has been graded against a book's line, and no shadow run has been made yet.** |
 | Files | `ff_sim.py`, `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `test_sim.py`, `sim_baseline.py`, `sim_opportunity.py`, `sim_efficiency.py`, `sim_play.py`, `sim_touchdowns.py`, `ff_sim_live.py`, `sim_live.py`, `sim_record.py` (made by `sim_live.py --record`), `sim_reverts.py`, this file |
-| Simulator suite | `python3 test_sim.py` → **839 checks, ALL PASS** |
+| Simulator suite | `python3 test_sim.py` → **885 checks, ALL PASS** |
 | Engine suite | `python3 test_regression.py` → 1801, untouched. No existing file was edited. |
-| Next | More shadow runs, in a project thread (S28 says how; the first was 2026-11-21). Then grading them (S29), and the parked calibration items: S11, S12, S18, S19, S20, S25. |
+| Next | Shadow runs each week, saved to the repository root, and `sim_grade.py` once their games are on file (S29). No reading is given before 30 games. Then the parked calibration items: S11, S12, S18, S19, S20, S25. |
 
 ```bash
 python3 refresh.py
@@ -26,7 +26,8 @@ python3 sim_touchdowns.py --current-week 11    # touchdowns; about 7 minutes
 python3 sim_live.py --week 11 --inputs week11.json odds/*.json   # a shadow run; seconds
 python3 sim_live.py --record --current-week 11 # rebuild the record; about 10 minutes
 python3 sim_reverts.py                         # break every behaviour; about 9 hours in full
-python3 sim_reverts.py --fast 613 614          # ...the live file's reverts only; about 12 s each
+python3 sim_grade.py                           # grade every shadow_*_wk*.csv here; seconds
+python3 sim_reverts.py --fast 615 616          # ...the live or grading file's reverts only; seconds each
 ```
 
 `--current-week` is the NFL week now in progress. On 2026-11-20 that is 11,
@@ -1378,6 +1379,134 @@ stands as built.
 ids; the three games' saved responses are in the project thread, not
 here. The first run on them with these fixes is the real test.
 
+---
+
+## S29. Grading the shadow runs — BUILT 2026-11-21
+
+`ff_sim_grade.py` and `sim_grade.py`. No model file and no engine file was
+touched; `ff_sim_live.py` is as committed.
+
+```bash
+python3 refresh.py
+python3 sim_grade.py                          # every shadow_*_wk*.csv in the repository root
+python3 sim_grade.py shadow_2026_wk11.csv --out graded.csv
+```
+
+### What it does
+
+It reads the saved shadow files and, for every game that is on file, says
+what happened to each line.
+
+- **On file** means the data has both the stats and the snap counts for
+  the team that week, against the opponent the file was saved with. The
+  two tables arrive separately. With only one, a man who played and did
+  nothing cannot be told from a man who sat out, so the game waits as
+  "half on file". A file whose week the data has against another
+  opponent, or has no game for though later weeks are in, is refused.
+- **Did not play**: no row in his team's game. His lines are void, as a
+  book voids them, counted and named. A man listed by name in a
+  snap-count row the data could not tie to any player is graded on no
+  stats and named (five skill players have such rows in 2026; on a
+  made-up Week 9 board it was one receiver, 14 lines).
+- **Over, under, push** against the line. A push is counted, not graded.
+  The chance graded is the over's share of over plus under.
+- **The anytime touchdown counts a return or a recovery**, as a book
+  does. The simulator's own touchdown stat is rushing and receiving
+  only, so its chance is a shade low for a returner (three such
+  touchdowns in 2026 by players with a row in the data).
+- **One line per player and stat** for the headline tables: the book's
+  main line, or the line nearest 50% where none was posted; the anytime
+  touchdown at 0.5. Chosen from the saved file alone.
+- **The report**: every saved line accounted for; how the chance of
+  playing went; then (1) the headline lines on the side favoured,
+  overall, by stat and by what it said, with the main lines scored
+  beside 0.250 for calling each one 50/50; (2) the same lines split by
+  record or none, the S21 caution, passing-touchdown unders, a teammate
+  off the slate, how the player was matched, suspended lines, and side,
+  and what the record had said beside what the run said; (3) the stat
+  lines, expected against actual; (4) every posted line with a ladder
+  counted once in a band, and the touchdown ladder.
+- **No reading before 30 games**, the harness's rule. Under that the
+  figures are printed and each says "too few games to say".
+- **It stops, and says why**, on a file that is not a saved run, a number
+  that is not one, chances that do not add up, a line saved twice, one
+  game under two ids, two files holding the same team's game, or a week
+  that is not the data's.
+
+### How it was checked
+
+The suite: 885 checks (46 new, sections 38 to 41). The strongest of
+them saves the harness's own stand-in lines for a fixture week through
+the live run to a file, grades the file, and gets the harness's answers:
+the same chance, the same result and the same table by band for every
+one of 232 lines.
+
+Reverts (`sim_reverts.py --fast`, the new file only, run once):
+165 reverts of `ff_sim_grade.py` in one pass: 158 caught, 7 not. Two of the seven change
+nothing and were dropped. Five showed a check that could not fail; each
+check was added and those five were run again and caught. 163 stand. The
+runner's controls passed in every run. `--fast` now covers this file as
+well as the live one.
+
+**Reviewed** once, and its findings re-checked by the same reviewer. On
+14,113 lines over three real weeks it recomputed every result from the
+raw tables, and 1,187 report figures from four files: all matched except
+where it found these.
+- A player who played was voided: his snap row has no id the roster
+  knows and he had no stat line (14 lines). Fixed (above).
+- A week with the stats in and the snap counts not was graded as if
+  everyone without a stat sat out. Fixed: half on file.
+- A file with its week or season edited was graded against the wrong
+  week. Fixed: the opponent must be the data's.
+- A touchdown on a return graded as no touchdown. Fixed.
+- A stray space in a game id counted a file twice; a line saved as a
+  certain push printed "nan". Fixed.
+- The score was labelled as against "the book's main line" when the line
+  was not one, and beating 0.250 read as if it were beating the market.
+  Now scored on true main lines only and worded as what it is.
+The re-check found all of those fixed, 1,206 figures unchanged, and no
+legitimate file among 1,934 team-weeks wrongly refused. It found one
+new case from the fix: a namesake's snap row taken for a man who did not
+play. Fixed as it proposed (only rows the data could not place are read
+by name) and its case now reads "did not play". **That last fix, and
+keying a game by team and week so a second label cannot double count
+it, were not seen by the reviewer**: they are covered by the suite and
+the reverts.
+
+### What is weak
+
+- **It has not graded a real file.** Every file so far came from a
+  made-up board on finished weeks. The first real one is due 2026-11-22.
+- **One week of three games says nothing.** At about 15 games a week the
+  30-game line is two full weeks.
+- **A coin flip is a low bar, and the only one the files allow.** The
+  brief's bar for Phase 2 is the market's own chance and the engine's.
+  The saved files hold no price (Phase 1 rule), so neither can be
+  scored. See decision 1 under "For Dustin" below.
+- **A saved file does not say when it was made.** The grader takes it
+  that it was saved before kickoff; the commit time is the evidence.
+  S31.
+- **Lines made while a posted teammate was off the slate are graded with
+  the rest** and shown apart in section 2. That split cannot tell a
+  returning starter from a deep backup (S30).
+- **Book rules it assumes**: a player with no snap is void; a return
+  touchdown pays. Both from general knowledge, not checked against a
+  book's rules page.
+- **Shifted lines or swapped sides in a file cannot be detected.** It
+  grades what the file says.
+
+### For Dustin
+
+1. **Decide, when you are ready for Phase 2, whether a shadow file may
+   carry the market's price** so the run can be scored against the
+   market's de-vigged chance. Until then the only yardstick is the coin
+   flip. Nothing changes without your say.
+2. After each week's games: `python3 refresh.py`, then `python3
+   sim_grade.py`. If it says a game is "half on file", the snap counts
+   are not in yet; run it again a day later.
+
+---
+
 ## Open
 
 | id | what | status |
@@ -1409,7 +1538,10 @@ here. The first run on them with these fixes is the real test.
 | **S26** | **First touchdown is not built.** | **OPEN.** The brief asks for it. It needs the game-level simulation (every scorer in order) and a first-touchdown result in the frame to grade against; play-by-play has it. |
 | **S27** | **`ff_sim_eff.py` gives a position its own rates from any number of plays.** | **NOTED.** The hole the touchdown review found (S24), in the committed efficiency file: catch rate, yards per catch, yards per carry, completion rate and yards per attempt by position, on one play if that is all there is. Only odd positions are affected (a cornerback's targets; a starter not listed at quarterback would be pulled toward a few trick plays' completion rate). Fix with a floor like S24's when that file is next opened; its reverts then need rerunning. |
 | **S28** | **The live-run script.** | **BUILT 2026-11-21**, section above. Hand-set, none tuned: the S21 caution starts at 65% (the engine thread's figure); a line is read on the player's own stand-in rung nearest it, and has no record further off his ladder than half the gap to the next rung; a week runs from 09:00 UTC on the Wednesday after last week's Sunday for seven days, and with no dates to go by a game more than 8 days off is refused; last week counts as on file when at least half the teams have a game in it. |
-| **S29** | **Grade the shadow runs.** | **OPEN, next.** Runs are saved in the repository root as `shadow_<season>_wk<N>.csv`. The first (Week 11, three games, 2026-11-21) had 1,599 priced lines, 872 of them with NO record: 404 off the player's stand-in ladder, 338 for a player with no role, 130 two-plus touchdowns. So over half of what a book posts cannot yet be set beside a record, and grading against real lines is the only way those get one. Lines priced while a posted teammate was off the slate carry "too high if ..." in `cautions` and should be graded apart. `sim_live.py --out` saves each run's priced lines. Nothing yet joins a saved run to what happened, or sets it beside the book's own price (the saved odds files have the prices; reading them is Phase 2). This is also where S3 gets its first real lines. |
+| **S29** | **Grade the shadow runs.** | **BUILT 2026-11-21**, section above; nothing real graded yet. Runs are saved in the repository root as `shadow_<season>_wk<N>.csv`. The first (Week 11, three games, 2026-11-21) had 1,599 priced lines, 872 of them with NO record: 404 off the player's stand-in ladder, 338 for a player with no role, 130 two-plus touchdowns. So over half of what a book posts cannot yet be set beside a record, and grading against real lines is the only way those get one. Lines priced while a posted teammate was off the slate carry "too high if ..." in `cautions` and should be graded apart. `sim_live.py --out` saves each run's priced lines. Nothing yet joins a saved run to what happened, or sets it beside the book's own price (the saved odds files have the prices; reading them is Phase 2). This is also where S3 gets its first real lines. |
+| **S30** | **The "too high" caution does not weigh who is missing.** | **OPEN, from Dustin 2026-11-21, not urgent.** One anytime-touchdown line for a deep backup (Eli Heidenreich) put the caution on all 280 PIT rows, the same as a returning starter would. Adding him is not clean either: a player with no games behind him is handed an average share (Thornton got 2.2 targets). The shadow prompt adds anyone with a yardage, receptions or carries line and leaves touchdown-only players off, so the caution will remain on some teams in the saved files. To do: say in the caution what was posted for him (a yardage line, or a touchdown line only), and give an added player with no history a share that fits his position on the depth chart, not the average. Until then S29 shows cautioned lines apart and cannot tell the two cases apart. |
+| **S31** | **A saved shadow file does not say when it was made.** | **OPEN, small.** Add the time of the run to `ff_sim_live.to_csv` (a column the grader would check against kickoff). Changes `ff_sim_live.py`, so it waits for the next change to that file. |
+| **S32** | **Score the run against the market's chance and the engine's.** | **WAITS on Dustin** (S29, decision 1). The brief's Phase 2 bar. Needs prices in the saved file, which Phase 1 rules out. |
 
 ## Needs from the engine thread
 
@@ -1490,6 +1622,15 @@ For its information, each measured above:
   the chance of clearing each posted line, with the band's record and the
   S21 main-line caution, and stops, saying what, when something is
   missing.
+- **2026-11-21. Second real run, on the fixed code**: same inputs, every
+  number identical to the committed version's, only the new caution
+  differing (537 rows); with the alias Gainwell's 40 lines price (1,645
+  in all); three bad aliases each stopped with a clear reason; nothing
+  left unpriced without a reason that says what to do. Metcalf 50.7 with
+  the two receivers added and nothing else; his earlier 49.1 also handed
+  in their chances (0.83 and 0.72). The caution's bluntness is S30, not
+  urgent. Next is S29; the first shadow file reaches the repository on
+  Sunday 2026-11-22.
 - **2026-11-21. After the first real shadow run** (the engine thread, three
   Week 11 games, twelve markets, three books: clean, 1,599 lines, no
   price in the printout or the table; every market read correctly

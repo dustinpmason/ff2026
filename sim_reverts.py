@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """S1. Break every behaviour in `ff_sim.py`, `ff_sim_opp.py`,
-`ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py` and `ff_sim_live.py` and
-see that `test_sim.py` notices.
+`ff_sim_eff.py`, `ff_sim_play.py`, `ff_sim_td.py`, `ff_sim_live.py` and
+`ff_sim_grade.py` and see that `test_sim.py` notices.
 
     python3 sim_reverts.py            # all of them; about 9 hours on 2 cores
     python3 sim_reverts.py --check    # only confirm each revert still applies
     python3 sim_reverts.py 8 9 17     # just these, by number (plus the controls)
     python3 sim_reverts.py --show 300 # ...and print which checks failed for each
-    python3 sim_reverts.py --fast 613 614   # `ff_sim_live.py` reverts, about 12 s each
+    python3 sim_reverts.py --fast 615 616   # `ff_sim_live.py` or `ff_sim_grade.py` reverts
 
 SIM-HANDOFF.md, "Before saying done", item 1: "Break every new check. Remove
 the behaviour and confirm a check fails. A crash counts; a pass does not."
@@ -15,9 +15,9 @@ This is that, kept as a script so it can be run again after any change
 instead of being claimed once.
 
 How it works. Each entry below is one small edit to `ff_sim.py` (or, for
-the entries made with `mut_opp`, `mut_eff`, `mut_play`, `mut_td` and
-`mut_live`, to `ff_sim_opp.py`, `ff_sim_eff.py`, `ff_sim_play.py`,
-`ff_sim_td.py` and `ff_sim_live.py`)
+the entries made with `mut_opp`, `mut_eff`, `mut_play`, `mut_td`,
+`mut_live` and `mut_grade`, to `ff_sim_opp.py`, `ff_sim_eff.py`,
+`ff_sim_play.py`, `ff_sim_td.py`, `ff_sim_live.py` and `ff_sim_grade.py`)
 that removes or reverses one behaviour. For each, a temporary directory gets the edited
 file, a COPY of `test_sim.py`, and links to every other module; the
 suite is run there and its own last line is read. "ALL PASS" means the
@@ -28,15 +28,15 @@ directory on its path, so a linked `test_sim.py` imports the real, unbroken
 `ff_sim.py` and every revert reads ALL PASS. The first run of this did
 exactly that and reported 0 of 148 caught.
 
-Twelve controls run with EVERY pass, including a pass of a few numbered
+Fourteen controls run with EVERY pass, including a pass of a few numbered
 reverts, and a pass that fails any of them proves nothing. Two for each
 file: an edit that changes no behaviour must read NOT CAUGHT (so the
 unbroken suite passes here, and the edited copy is the one imported), and
 an edit that breaks something plain must be caught. They are numbers 0 to
-11; the reverts start at 12.
+13; the reverts start at 14.
 
-`--fast` is for the newest file only (`FAST_TARGET`). Its sections are the
-last in the suite and nothing before them imports it, so the earlier part
+`--fast` is for the files in `FAST`, the two newest. Each one's sections
+come after a marker in the suite and nothing before the marker imports it, so the earlier part
 of the suite is run once, unbroken, in this process, and each revert runs
 only the rest, in a child forked from that point with the edited file
 first on its path. It refuses to start if a check before the cut fails or
@@ -51,7 +51,7 @@ An entry whose text no longer matches its file exactly once is reported
 as BAD REVERT. That is a failure of this file, to be fixed here; it is
 never to be read as "caught".
 
-LAST RUNS — 2026-11-20 and 21, 2 cores. 1,036 reverts and 12 controls.
+LAST RUNS — 2026-11-20 and 21, 2 cores. 1,199 reverts and 14 controls.
 
   `ff_sim.py` and `ff_sim_opp.py`, 355 reverts: 355 caught, 0 not, on a
   fresh clone in seven blocks, run before the later files existed.
@@ -74,6 +74,16 @@ LAST RUNS — 2026-11-20 and 21, 2 cores. 1,036 reverts and 12 controls.
   18 caught, 0 not. The other 77 were not rerun after those edits, which
   removed two lines from the chance of a line and replaced one check in
   section 31.
+
+  `ff_sim_grade.py`, 163 reverts, 2026-11-21, with `--fast`. One pass of
+  165: 158 caught, 7 not. Two of the seven change nothing and were dropped
+  (an empty set of lines reads "nothing here" with or without its own
+  guard; a roster row with no player id cannot place a snap row either
+  way). Five showed a check that could not fail, and each was added in
+  sections 39 and 40: a man who played another week and not this one; a
+  team with one row short of a snap count; a game on file with no graded
+  line; a man with two void lines named once; the anytime line kept out
+  of the touchdown ladder. Those five were run again and caught.
 
   `ff_sim_live.py` after the first real run (aliases, the roster's names,
   the teammates caution), 2026-11-21, with `--fast`: ALL of the file's
@@ -131,7 +141,7 @@ import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parent
 TARGETS = ("ff_sim.py", "ff_sim_opp.py", "ff_sim_eff.py", "ff_sim_play.py",
-           "ff_sim_td.py", "ff_sim_live.py")
+           "ff_sim_td.py", "ff_sim_live.py", "ff_sim_grade.py")
 SRC = {f: (REPO / f).read_text() for f in TARGETS}
 TEST = (REPO / "test_sim.py").read_text()
 
@@ -147,9 +157,11 @@ NULL_TD = "CONTROL: nothing changed in ff_sim_td.py (must read NOT CAUGHT)"
 BROKEN_TD = "CONTROL: ff_sim_td.py's stats reordered (must be caught)"
 NULL_LIVE = "CONTROL: nothing changed in ff_sim_live.py (must read NOT CAUGHT)"
 BROKEN_LIVE = "CONTROL: ff_sim_live.py's anytime line moved (must be caught)"
-CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
-NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY, NULL_TD, NULL_LIVE)
-BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY, BROKEN_TD, BROKEN_LIVE)
+NULL_GRADE = "CONTROL: nothing changed in ff_sim_grade.py (must read NOT CAUGHT)"
+BROKEN_GRADE = "CONTROL: ff_sim_grade.py grades overs only (must be caught)"
+CONTROLS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+NULLS = (NULL, NULL_OPP, NULL_EFF, NULL_PLAY, NULL_TD, NULL_LIVE, NULL_GRADE)
+BROKENS = (BROKEN, BROKEN_OPP, BROKEN_EFF, BROKEN_PLAY, BROKEN_TD, BROKEN_LIVE, BROKEN_GRADE)
 
 M: list = []
 
@@ -178,6 +190,10 @@ def mut_live(name: str, *pairs) -> None:
     M.append((name, pairs, "ff_sim_live.py"))
 
 
+def mut_grade(name: str, *pairs) -> None:
+    M.append((name, pairs, "ff_sim_grade.py"))
+
+
 # ---- controls on this runner itself
 mut(NULL, ("def tkey(season: int, week: int) -> int:",
            "def tkey(season: int,  week: int) -> int:"))
@@ -199,6 +215,8 @@ mut_td(NULL_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = ("passing_td
 mut_td(BROKEN_TD, ('TD_STATS = ("passing_tds", TD_STAT)', 'TD_STATS = (TD_STAT, "passing_tds")'))
 mut_live(NULL_LIVE, ("S21_FROM = 0.65", "S21_FROM  = 0.65"))
 mut_live(BROKEN_LIVE, ('    "player_anytime_td": (TD_STAT, 0.5),', '    "player_anytime_td": (TD_STAT, 3.5),'))
+mut_grade(NULL_GRADE, ("COIN = 0.25", "COIN  = 0.25"))
+mut_grade(BROKEN_GRADE, ('GRADED = ("over", "under")', 'GRADED = ("over",)'))
 
 # ---- the frame
 mut("frame: active zeros dropped (left join)", ('how="outer"', 'how="left"'))
@@ -3009,6 +3027,501 @@ mut_live('live8: a line found through an alias for a name that also has an id is
          ('            if pid is not None:\n                return pid, "id"\n',
           '            if pid is not None and n not in called:\n                return pid, "id"\n'))
 
+# ---------------------------------------------------------------------------
+# S29 — ff_sim_grade.py
+# ---------------------------------------------------------------------------
+mut_grade('grade: a path handed in as a Path is taken letter by letter',
+          ('if isinstance(paths, (str, Path)) else paths)]',
+           'if isinstance(paths, str) else paths)]'))
+mut_grade('grade: no file is not refused',
+          ('    if not paths:\n        raise Missing("no shadow file was given")\n',
+           ''))
+mut_grade("grade: a row says its file's whole path",
+          ('        name = Path(path).name',
+           '        name = str(path)'))
+mut_grade('grade: blank text is read as a missing number',
+          ('pd.read_csv(path, dtype=str, keep_default_na=False)',
+           'pd.read_csv(path, dtype=str)'))
+mut_grade('grade: an empty file is a traceback',
+          ('        except (OSError, UnicodeDecodeError, pd.errors.ParserError,\n                pd.errors.EmptyDataError) as e:',
+           '        except (OSError, UnicodeDecodeError, pd.errors.ParserError) as e:'))
+mut_grade('grade: a file that is not there is a traceback',
+          ('        except (OSError, UnicodeDecodeError, pd.errors.ParserError,\n                pd.errors.EmptyDataError) as e:',
+           '        except (UnicodeDecodeError, pd.errors.ParserError,\n                pd.errors.EmptyDataError) as e:'))
+mut_grade('grade: a file short of a column is read',
+          ('        if lacking:\n            raise Missing(f"{name} is not a saved shadow run',
+           '        if False:\n            raise Missing(f"{name} is not a saved shadow run'))
+mut_grade('grade: a file with no lines is said to hold two weeks',
+          ('        if not len(d):\n            raise Missing(f"{name} has no lines in it")\n',
+           ''))
+mut_grade("grade: columns it does not know are kept, in the file's order",
+          ('        d = d[SHADOW_COLS].copy()',
+           '        d = d.copy()'))
+mut_grade('grade: the line is left as text',
+          ('NUMBERS = ("line", "chance", "expected", "over", "push", "under")',
+           'NUMBERS = ("chance", "expected", "over", "push", "under")'))
+mut_grade('grade: the season and week are left as text',
+          ('        for c in ("season", "week", *NUMBERS):',
+           '        for c in NUMBERS:'))
+mut_grade('grade: a number that is not one is read as missing',
+          ('            if not np.isfinite(v).all():',
+           '            if False:'))
+mut_grade('grade: an endless number is taken',
+          ('            if not np.isfinite(v).all():',
+           '            if v.isna().any():'))
+mut_grade('grade: the bad row is counted from the data, not as a spreadsheet shows it',
+          ('np.flatnonzero(~np.isfinite(v))[0]) + 2}',
+           'np.flatnonzero(~np.isfinite(v))[0]) + 1}'))
+mut_grade('grade: a week and a half is cut to a week',
+          ('            if (d[c] != d[c].round()).any():',
+           '            if False:'))
+mut_grade('grade: a file may hold two weeks',
+          ('        if len(d[["season", "week"]].drop_duplicates()) != 1:',
+           '        if False:'))
+mut_grade('grade: a file may hold one week of two seasons',
+          ('        if len(d[["season", "week"]].drop_duplicates()) != 1:',
+           '        if len(d[["week"]].drop_duplicates()) != 1:'))
+mut_grade('grade: a file may hold two weeks of one season',
+          ('        if len(d[["season", "week"]].drop_duplicates()) != 1:',
+           '        if len(d[["season"]].drop_duplicates()) != 1:'))
+mut_grade('grade: a stat it cannot grade is let in',
+          ('        if odd:\n            raise Missing(f"{name} has a stat',
+           '        if False:\n            raise Missing(f"{name} has a stat'))
+mut_grade('grade: a chance below nothing or above one is taken',
+          ('        if ((P < 0) | (P > 1)).any().any() or (abs(P.sum(axis=1) - 1) > 1e-6).any():',
+           '        if (abs(P.sum(axis=1) - 1) > 1e-6).any():'))
+mut_grade('grade: chances that do not add up to one are taken',
+          ('        if ((P < 0) | (P > 1)).any().any() or (abs(P.sum(axis=1) - 1) > 1e-6).any():',
+           '        if ((P < 0) | (P > 1)).any().any():'))
+mut_grade('grade: chances may be a tenth out',
+          ('(abs(P.sum(axis=1) - 1) > 1e-6).any():',
+           '(abs(P.sum(axis=1) - 1) > 1e-1).any():'))
+mut_grade('grade: a chance of playing below nothing is taken',
+          ('        if ((d.chance < 0) | (d.chance > 1)).any():',
+           '        if (d.chance > 1).any():'))
+mut_grade('grade: a chance of playing above one is taken',
+          ('        if ((d.chance < 0) | (d.chance > 1)).any():',
+           '        if (d.chance < 0).any():'))
+mut_grade('grade: a line saved twice is graded twice',
+          ('        if len(twice):\n',
+           '        if False:\n'))
+mut_grade('grade: two lines of one stat are called the same line',
+          ('LINE_KEY = ["season", "week", "team", "player_id", "stat", "line"]',
+           'LINE_KEY = ["season", "week", "team", "player_id", "stat"]'))
+mut_grade('grade: two stats at one line are called the same line',
+          ('LINE_KEY = ["season", "week", "team", "player_id", "stat", "line"]',
+           'LINE_KEY = ["season", "week", "team", "player_id", "line"]'))
+mut_grade('grade: two files may hold the same game',
+          ('            if g in held:\n',
+           '            if False:\n'))
+mut_grade("grade: a team's game in another week is called the same game",
+          ('        for g in sorted(set(zip(d.season, d.week, d.team))):',
+           '        for g in sorted(set(zip(d.season, d.season, d.team))):'))
+mut_grade('grade: a row does not say its file',
+          ('        out.append(d.assign(file=name))',
+           '        out.append(d.assign(file=""))'))
+mut_grade('grade: every book counts as one',
+          ('    return len(str(row.books).split())',
+           '    return 1'))
+mut_grade("grade: the headline goes by the over's chance with the push left in",
+          ('    p = shadow.over / (shadow.over + shadow.under)\n    d = shadow.assign',
+           '    p = shadow.over\n    d = shadow.assign'))
+mut_grade("grade: a touchdown ladder's main line is the headline",
+          ('        if g.stat.iloc[0] == TD_STAT:\n            g = g[g.line == 0.5]\n        elif',
+           '        if False:\n            g = g[g.line == 0.5]\n        elif'))
+mut_grade('grade: any touchdown line may be the headline',
+          ('            g = g[g.line == 0.5]\n',
+           '            g = g\n'))
+mut_grade('grade: the main line is not preferred',
+          ('        elif (g.kind == "main").any():',
+           '        elif False:'))
+mut_grade('grade: of two main lines the one fewer books post is read',
+          ('ascending=[False, True, True], kind="stable")',
+           'ascending=[True, True, True], kind="stable")'))
+mut_grade('grade: of two main lines the one further from 50% is read',
+          ('ascending=[False, True, True], kind="stable")',
+           'ascending=[False, False, True], kind="stable")'))
+mut_grade('grade: of two main lines level in every way the higher is read',
+          ('ascending=[False, True, True], kind="stable")',
+           'ascending=[False, True, False], kind="stable")'))
+mut_grade('grade: how many books post a main line is not looked at',
+          ('            g = g[g.kind == "main"].sort_values(["_books", "_p", "line"],\n                                                ascending=[False, True, True], kind="stable")',
+           '            g = g[g.kind == "main"].sort_values(["_p", "line"], kind="stable")'))
+mut_grade('grade: with no main line the first saved is read',
+          ('            g = g.sort_values(["_p", "line"], kind="stable")',
+           '            g = g'))
+mut_grade('grade: with no main line the lowest is read',
+          ('            g = g.sort_values(["_p", "line"], kind="stable")',
+           '            g = g.sort_values(["line"], kind="stable")'))
+mut_grade('grade: with no main line and two as near 50%, the higher is read',
+          ('            g = g.sort_values(["_p", "line"], kind="stable")',
+           '            g = g.sort_values(["_p", "line"], ascending=[True, False], kind="stable")'))
+mut_grade('grade: one headline is read for a player whatever the stat',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["season", "week", "team", "player_id"]'))
+mut_grade('grade: one headline is read for a stat whoever the player',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["season", "week", "team", "stat"]'))
+mut_grade('grade: one headline is read for a player across teams',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["season", "week", "player_id", "stat"]'))
+mut_grade('grade: a second label for his game gives a player a second headline',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["season", "week", "game_id", "team", "player_id", "stat"]'))
+mut_grade('grade: one headline is read for a player across weeks',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["season", "team", "player_id", "stat"]'))
+mut_grade('grade: one headline is read for a player across seasons',
+          ('ONE = ["season", "week", "team", "player_id", "stat"]',
+           'ONE = ["week", "team", "player_id", "stat"]'))
+mut_grade('grade: a stat the data lacks is a traceback',
+          ('    if lacking:\n        raise Missing(f"the data has no column',
+           '    if False:\n        raise Missing(f"the data has no column'))
+mut_grade('grade: the week is the season times ten',
+          ('    t = shadow.season * 100 + shadow.week',
+           '    t = shadow.season * 10 + shadow.week'))
+mut_grade('grade: a player twice in a week is graded on his last row',
+          ('    if F.duplicated(["t", "player_id"]).any():',
+           '    if False:'))
+mut_grade('grade: a game not on file is graded as if nobody played',
+          ('            state[(tt, team, gid)] = NOT_ON_FILE\n',
+           '            state[(tt, team, gid)] = ""\n'))
+mut_grade('grade: a team is on file when any week of it is',
+          ('        if (tt, team) not in both:\n            if newest.get(team, -1) > tt:',
+           '        if team not in newest:\n            if newest.get(team, -1) > tt:'))
+mut_grade('grade: a man who played for another team is graded on it',
+          ('        elif team[i] != r.team:',
+           '        elif False:'))
+mut_grade('grade: a man who did not play is found in another week',
+          ('        i = at.get((tt, r.player_id))',
+           '        i = at.get((tt, r.player_id), next((v for (a_, b_), v in at.items() if b_ == r.player_id), None))'))
+mut_grade('grade: the same as the line is an over',
+          ('            res = "over" if a > r.line else "under" if a < r.line else PUSH',
+           '            res = "over" if a >= r.line else "under" if a < r.line else PUSH'))
+mut_grade('grade: the same as the line is an under',
+          ('            res = "over" if a > r.line else "under" if a < r.line else PUSH',
+           '            res = "over" if a > r.line else "under" if a <= r.line else PUSH'))
+mut_grade('grade: over and under are the wrong way round',
+          ('            res = "over" if a > r.line else "under" if a < r.line else PUSH',
+           '            res = "under" if a > r.line else "over" if a < r.line else PUSH'))
+mut_grade('grade: what he did is read from another stat',
+          ('            a = float(F[r.stat].iloc[i])',
+           '            a = float(F["receptions"].iloc[i])'))
+mut_grade('grade: the chance graded keeps the push in',
+          ('    G["p"] = G.over / (G.over + G.under)',
+           '    G["p"] = G.over'))
+mut_grade('grade: a line at exactly 50% is put on the under',
+          ('    fav = G.p >= 0.5\n',
+           '    fav = G.p > 0.5\n'))
+mut_grade('grade: the side favoured is always the over',
+          ('    G["side"] = np.where(fav, "OVER", "UNDER")',
+           '    G["side"] = "OVER"'))
+mut_grade("grade: the favoured side's chance is the over's",
+          ('    G["p_side"] = np.where(fav, G.p, 1.0 - G.p)',
+           '    G["p_side"] = G.p'))
+mut_grade('grade: a hit is the over, whichever side was favoured',
+          ('    G["hit"] = np.where(done, (G.result == "over") == fav, np.nan)',
+           '    G["hit"] = np.where(done, G.result == "over", np.nan)'))
+mut_grade('grade: a push or a void line is a miss',
+          ('    G["hit"] = np.where(done, (G.result == "over") == fav, np.nan)',
+           '    G["hit"] = ((G.result == "over") == fav).astype(float)'))
+mut_grade('grade: the headline is chosen after the results are in',
+          ('    G["headline"] = headline(shadow)',
+           '    G["headline"] = headline(shadow[done.to_numpy()]).reindex(shadow.index, fill_value=False)'))
+mut_grade('grade: every line is its own main line',
+          ('    G["main_line"] = [main.get(k, float("nan")) for k in zip(*(G[c] for c in ONE))]',
+           '    G["main_line"] = G.line'))
+mut_grade('grade: pushes are handed to the harness as unders',
+          ('    d = G[G.result.isin(GRADED)].copy()',
+           '    d = G[G.result.isin([*GRADED, PUSH])].copy()'))
+mut_grade('grade: a stat with no headline has no main line for the harness',
+          ('    d["main_line"] = d.main_line.fillna(d.line)\n',
+           ''))
+mut_grade('grade: the hits are handed over as numbers, not yes and no',
+          ('    d["hit"] = d.hit.astype(bool)\n',
+           ''))
+mut_grade("grade: what was said is the over's chance, whichever side was favoured",
+          ('    stated = float(d[p_col].mean())',
+           '    stated = float(d.p.mean())'))
+mut_grade("grade: what happened is the over's rate, whichever side was favoured",
+          ('    r = fs.rate_range(d[hit_col].astype(float), d.game_id)',
+           '    r = fs.rate_range(d["over"].astype(float), d.game_id)'))
+mut_grade('grade: every line is its own game when the range is worked out',
+          ('    r = fs.rate_range(d[hit_col].astype(float), d.game_id)',
+           '    r = fs.rate_range(d[hit_col].astype(float), np.arange(len(d)))'))
+mut_grade('grade: the score is against the side favoured',
+          ('    sq = (d.p - d["over"].astype(float)) ** 2',
+           '    sq = (d.p_side - d["over"].astype(float)) ** 2'))
+mut_grade('grade: the score is the gap, not its square',
+          ('    sq = (d.p - d["over"].astype(float)) ** 2',
+           '    sq = (d.p - d["over"].astype(float)).abs()'))
+mut_grade('grade: a coin flip scores a half',
+          ('COIN = 0.25',
+           'COIN = 0.5'))
+mut_grade('grade: the score is read under 30 games',
+          ('    read = ("too few games to say" if games < fs.MIN_GAMES_FOR_VERDICT else',
+           '    read = ("too few games to say" if False else'))
+mut_grade('grade: any gap from the coin flip is a finding',
+          ('"no better or worse than calling them 50/50" if not abs(gap) > 2 * se else',
+           '"no better or worse than calling them 50/50" if False else'))
+mut_grade('grade: better and worse than a coin flip are the wrong way round',
+          ('"better than calling them 50/50" if gap < 0 else "WORSE than calling them 50/50")',
+           '"better than calling them 50/50" if gap > 0 else "WORSE than calling them 50/50")'))
+mut_grade("grade: the score's error treats every line as its own game",
+          ('    gap, se, n, games = fs.cluster_mean(sq - COIN, d.game_id)',
+           '    gap, se, n, games = fs.cluster_mean(sq - COIN, np.arange(len(d)))'))
+mut_grade("grade: the record's figure is read as a count of a hundred",
+          ('    return float(m.group(1)) / 100.0 if m else float("nan")',
+           '    return float(m.group(1)) if m else float("nan")'))
+mut_grade('grade split: every line is said to have a record',
+          ('        ("with a record", H.no_record.astype(str) == ""),',
+           '        ("with a record", H.no_record.astype(str) != "~"),'))
+mut_grade('grade split: off his ladder and no role are swapped',
+          ('        ("no record: off his ladder", H.no_record == fl.OFF_LADDER),\n        ("no record: no role", H.no_record == fl.NO_ROLE),',
+           '        ("no record: off his ladder", H.no_record == fl.NO_ROLE),\n        ("no record: no role", H.no_record == fl.OFF_LADDER),'))
+mut_grade('grade split: any caution is the S21 caution',
+          ('c.str.contains("S21 main-line caution", regex=False)),',
+           'c != ""),'))
+mut_grade('grade split: every passing-touchdown line is an under',
+          ('(H.stat == "passing_tds") & (H.side == "UNDER")),',
+           '(H.stat == "passing_tds")),'))
+mut_grade('grade split: every under is a passing-touchdown under',
+          ('(H.stat == "passing_tds") & (H.side == "UNDER")),',
+           '(H.side == "UNDER")),'))
+mut_grade('grade split: no line has a teammate off the slate',
+          ('c.str.contains("too high if", regex=False)),',
+           'c.str.contains("TOO HIGH IF", regex=False)),'))
+mut_grade('grade split: a match by alias is not counted',
+          ('H.matched.isin(["name", "alias"])),',
+           'H.matched.isin(["name"])),'))
+mut_grade('grade split: a match by name is not counted',
+          ('H.matched.isin(["name", "alias"])),',
+           'H.matched.isin(["alias"])),'))
+mut_grade('grade split: every line is said to have been suspended',
+          ('H.suspended.astype(str) != ""),',
+           'H.suspended.astype(str) != "~"),'))
+mut_grade('grade split: overs and unders are swapped',
+          ('        ("it favoured the OVER", H.side == "OVER"),\n        ("it favoured the UNDER", H.side == "UNDER"),',
+           '        ("it favoured the OVER", H.side == "UNDER"),\n        ("it favoured the UNDER", H.side == "OVER"),'))
+mut_grade('grade stat lines: every rung of a ladder is counted',
+          ('    d = G[G.headline & G.actual.notna() & (G.stat != TD_STAT)]',
+           '    d = G[G.actual.notna() & (G.stat != TD_STAT)]'))
+mut_grade('grade stat lines: the anytime touchdown is in the table',
+          ('    d = G[G.headline & G.actual.notna() & (G.stat != TD_STAT)]',
+           '    d = G[G.headline & G.actual.notna()]'))
+mut_grade('grade stat lines: the miss is the average gap, signs and all',
+          ('float((x.expected - x.actual).abs().mean()),',
+           'float(abs((x.expected - x.actual).mean())),'))
+mut_grade("grade stat lines: the line's miss is the run's",
+          ('float((x.line - x.actual).abs().mean())))',
+           'float((x.expected - x.actual).abs().mean())))'))
+mut_grade('grade stat lines: games are counted as players',
+          ('rows.append((stat, len(x), x.game_id.nunique(),',
+           'rows.append((stat, len(x), len(x),'))
+mut_grade('grade report: the files are not named',
+          ('               + f" ({\', \'.join(sorted(set(G.file)))})")',
+           '               + "")'))
+mut_grade('grade report: games graded counts every game on file, graded line or not',
+          ('    games_done = G[G.result.isin(GRADED)].game_id.nunique()',
+           '    games_done = G[~G.result.isin(WAITING)].game_id.nunique()'))
+mut_grade('grade report: pushes are counted as graded',
+          ('f"Graded {int(n.get(\'over\', 0) + n.get(\'under\', 0)):,} "',
+           'f"Graded {int(n.get(\'over\', 0) + n.get(\'under\', 0) + n.get(PUSH, 0)):,} "'))
+mut_grade('grade report: the games not on file are not named',
+          ('    if waiting:\n',
+           '    if False:\n'))
+mut_grade('grade report: a man who did not play is named once a line',
+          ('        who = G[G.result == res].drop_duplicates(["game_id", "team", "player_id"])',
+           '        who = G[G.result == res]'))
+mut_grade('grade report: the men who played elsewhere are listed as not having played',
+          ('                       ("PLAYED FOR ANOTHER TEAM, lines void", OTHER_TEAM)):',
+           '                       ("PLAYED FOR ANOTHER TEAM, lines void", DID_NOT_PLAY)):'))
+mut_grade('grade report: the chance of playing counts players of games not on file',
+          ('    P = G[~G.result.isin(WAITING)].drop_duplicates(["game_id", "team", "player_id"])',
+           '    P = G.drop_duplicates(["game_id", "team", "player_id"])'))
+mut_grade('grade report: the chance of playing counts every line, not every player',
+          ('    P = G[~G.result.isin(WAITING)].drop_duplicates(["game_id", "team", "player_id"])',
+           '    P = G[~G.result.isin(WAITING)]'))
+mut_grade('grade report: a man who played elsewhere counts as having played',
+          ('        played = ~P.result.isin([DID_NOT_PLAY, OTHER_TEAM])',
+           '        played = ~P.result.isin([DID_NOT_PLAY])'))
+mut_grade('grade report: with nothing graded it goes on to the tables',
+          ('    if not len(L):\n        out.append("")\n        out.append("Nothing to grade yet.")\n        return "\\n".join(out)\n',
+           ''))
+mut_grade('grade report: the few-games warning is never given',
+          ('    if games_done < fs.MIN_GAMES_FOR_VERDICT:',
+           '    if False:'))
+mut_grade('grade report: the few-games warning is always given',
+          ('    if games_done < fs.MIN_GAMES_FOR_VERDICT:',
+           '    if True:'))
+mut_grade('grade report: the headline table reads every line',
+          ('    H = L[L.headline]\n',
+           '    H = L\n'))
+mut_grade("grade report: the anytime touchdown is among the stat lines' headline",
+          ('    S = H[H.stat != TD_STAT]\n',
+           '    S = H\n'))
+mut_grade('grade report: the chance to score is read on the side favoured',
+          ('rate(T, "p", "over")))',
+           'rate(T)))'))
+mut_grade("grade report: the chance to score is every touchdown line's",
+          ('    T = H[H.stat == TD_STAT]',
+           '    T = L[L.stat == TD_STAT]'))
+mut_grade('grade report: the splits are of every line',
+          ('    for label, which in splits(S):\n        out.append(_line(label, rate(S[which])))',
+           '    for label, which in splits(L):\n        out.append(_line(label, rate(L[which])))'))
+mut_grade("grade report: the record's figure is not set beside what it said",
+          ('    if len(R):\n',
+           '    if False:\n'))
+mut_grade('grade report: lines with no record figure are averaged in as nothing',
+          ('    R = R[R._rec.notna()]\n',
+           '    R = R.assign(_rec=R._rec.fillna(0.0))\n'))
+mut_grade('grade report: every posted line includes the touchdown ladder',
+          ('    A = L[L.stat != TD_STAT]\n',
+           '    A = L\n'))
+mut_grade("grade report: the touchdown ladder's lines include the anytime line",
+          ('    for ln in sorted(set(L.line[(L.stat == TD_STAT) & (L.line > 0.5)])) or [1.5]:',
+           '    for ln in sorted(set(L.line[(L.stat == TD_STAT)])) or [1.5]:'))
+mut_grade('grade report: the touchdown ladder is read on the side favoured',
+          ('rate(L[(L.stat == TD_STAT) & (L.line == ln)], "p", "over")))',
+           'rate(L[(L.stat == TD_STAT) & (L.line == ln)])))'))
+mut_grade('grade report: a band with nothing in it is printed',
+          ('    for r in cal.itertuples():\n        if r.n:',
+           '    for r in cal.itertuples():\n        if True:'))
+mut_grade('grade: the saved table leaves out what he did',
+          ('    return G[[*SHADOW_COLS, "file", "actual", "result", "how", "headline", "p", "side",',
+           '    return G[[*SHADOW_COLS, "file", "result", "how", "headline", "p", "side",'))
+mut_grade('grade: the table is not saved',
+          ('                to_csv(G).to_csv(out, index=False)',
+           '                pass'))
+mut_grade('grade: it does not say the table was saved',
+          ('            text += f"\\nsaved {len(G):,} graded lines to {out}"\n',
+           ''))
+mut_grade('grade: nowhere to save is a fault it did not foresee',
+          ('            except OSError as e:\n                raise Missing(f"cannot save the graded table',
+           '            except ZeroDivisionError as e:\n                raise Missing(f"cannot save the graded table'))
+mut_grade('grade: something missing is reported as a fault',
+          ('        return f"STOPPED. {e}", 2',
+           '        return f"STOPPED. {e}", 3'))
+mut_grade('grade: a fault it did not foresee is reported as something missing',
+          ('        return (f"STOPPED. Something it did not foresee: {type(e).__name__}: {e}", 3)',
+           '        return (f"STOPPED. Something it did not foresee: {type(e).__name__}: {e}", 2)'))
+# -- after the review (2026-11-21)
+mut_grade('grade2: text is read with the spaces round it',
+          ('        for c in TEXT:\n            d[c] = d[c].str.strip()\n',
+           ''))
+mut_grade("grade2: a player's id is read with the spaces round it",
+          ('TEXT = ("game_id", "team", "opponent", "player_id", "name",',
+           'TEXT = ("game_id", "team", "opponent", "name",'))
+mut_grade('grade2: a line saved as a certain push is taken',
+          ('        if (P.over + P.under <= 0).any():',
+           '        if False:'))
+mut_grade('grade2: a line that cannot go over is refused',
+          ('        if (P.over + P.under <= 0).any():',
+           '        if (P.over <= 0).any():'))
+mut_grade('grade2: a team with stats and no snap counts is graded',
+          ('        state[(tt, team, gid)] = "" if stats_in and snaps_in else HALF_ON_FILE',
+           '        state[(tt, team, gid)] = "" if stats_in else HALF_ON_FILE'))
+mut_grade('grade2: a team with snap counts and no stats is graded',
+          ('        state[(tt, team, gid)] = "" if stats_in and snaps_in else HALF_ON_FILE',
+           '        state[(tt, team, gid)] = "" if snaps_in else HALF_ON_FILE'))
+mut_grade('grade2: a half-filed game is said to be not on file at all',
+          ('        state[(tt, team, gid)] = "" if stats_in and snaps_in else HALF_ON_FILE',
+           '        state[(tt, team, gid)] = "" if stats_in and snaps_in else NOT_ON_FILE'))
+mut_grade('grade2: every row of a team must have stats for its game to be on file',
+          ('                   bool(g.has_stats.any()) if "has_stats" in g else True,',
+           '                   bool(g.has_stats.all()) if "has_stats" in g else True,'))
+mut_grade('grade2: every row of a team must have a snap count for its game to be on file',
+          ('                   bool(g.has_snaps.any()) if "has_snaps" in g else True)',
+           '                   bool(g.has_snaps.all()) if "has_snaps" in g else True)'))
+mut_grade('grade2: a week the data has against another opponent is graded',
+          ('        if against != {opp}:',
+           '        if False:'))
+mut_grade('grade2: a week the data does not have, with later ones on file, waits for ever',
+          ('            if newest.get(team, -1) > tt:',
+           '            if False:'))
+mut_grade('grade2: a week not yet played is refused',
+          ('            if newest.get(team, -1) > tt:',
+           '            if newest.get(team, -1) != tt:'))
+mut_grade('grade2: a man the snap counts list is still said not to have played',
+          ('        elif i is None and (tt, r.team, fl.norm_player(r.name)) in seen:',
+           '        elif False:'))
+mut_grade('grade2: a row with no snap in it counts as played',
+          ('        on = sn[["offense_snaps", "defense_snaps", "st_snaps"]].fillna(0).sum(axis=1) > 0',
+           '        on = sn[["offense_snaps", "defense_snaps", "st_snaps"]].fillna(0).sum(axis=1) >= 0'))
+mut_grade('grade2: special-teams snaps do not count as playing',
+          ('        on = sn[["offense_snaps", "defense_snaps", "st_snaps"]].fillna(0).sum(axis=1) > 0',
+           '        on = sn[["offense_snaps", "defense_snaps"]].fillna(0).sum(axis=1) > 0'))
+mut_grade('grade2: a playoff snap count counts',
+          ('        sn = snaps[snaps.game_type == "REG"]',
+           '        sn = snaps'))
+mut_grade('grade2: the snap counts are matched on the name as spelt',
+          ('        elif i is None and (tt, r.team, fl.norm_player(r.name)) in seen:',
+           '        elif i is None and (tt, r.team, r.name) in seen:'))
+mut_grade('grade2: the line does not say he was graded from the snap counts',
+          ('            a, note = 0.0, "played by the snap count, under his name"',
+           '            a, note = 0.0, ""'))
+mut_grade('grade2: a man graded from the snap counts is given one of everything',
+          ('            a, note = 0.0, "played by the snap count, under his name"',
+           '            a, note = 1.0, "played by the snap count, under his name"'))
+mut_grade('grade2: a touchdown on a return does not count',
+          ('            if r.stat == TD_STAT and more.get((tt, r.player_id)):',
+           '            if False:'))
+mut_grade('grade2: a touchdown on a return counts toward every stat',
+          ('            if r.stat == TD_STAT and more.get((tt, r.player_id)):',
+           '            if more.get((tt, r.player_id)):'))
+mut_grade('grade2: a playoff touchdown counts',
+          ('        w = weekly[weekly.season_type == "REG"]',
+           '        w = weekly'))
+mut_grade('grade2: a fumble-recovery touchdown does not count',
+          ('OTHER_TDS = ("special_teams_tds", "def_tds", "fumble_recovery_tds")',
+           'OTHER_TDS = ("special_teams_tds", "def_tds")'))
+mut_grade('grade2: the line does not say a return touchdown was counted',
+          ('                note = "a touchdown on a return or a recovery"',
+           '                note = ""'))
+mut_grade('grade2: the score is of every headline line, main or not',
+          ('    b = brier(mains)',
+           '    b = brier(S)'))
+mut_grade('grade2: every headline line is called a main line',
+          ('    mains = S[S.kind == "main"]',
+           '    mains = S'))
+mut_grade('grade2: the games half on file are not named',
+          ('                       ("HALF ON FILE (the stats or the snap counts, not both yet), left out",\n                        HALF_ON_FILE)):',
+           '                       ):'))
+mut_grade('grade2: the men graded from the snap counts are not named',
+          ('    for label, note in (("GRADED ON NO STATS, the snap counts list him by name and the data "\n                         "could not tie him to an id", "played by the snap count, under his name"),\n',
+           '    for label, note in (\n'))
+mut_grade('grade2: the chance of playing counts players of half-filed games',
+          ('    P = G[~G.result.isin(WAITING)].drop_duplicates(["game_id", "team", "player_id"])',
+           '    P = G[G.result != NOT_ON_FILE].drop_duplicates(["game_id", "team", "player_id"])'))
+mut_grade('grade2: three or more touchdowns is called two or more',
+          ('f"{math.ceil(ln)} or more touchdowns, chance"',
+           'f"{2} or more touchdowns, chance"'))
+mut_grade('grade2: the raw tables are not passed on',
+          ('        G = grade(read_shadow(paths), frame, weekly, snaps)',
+           '        G = grade(read_shadow(paths), frame)'))
+# -- after the re-check (2026-11-21)
+mut_grade("grade3: two files may hold one team's game under two labels",
+          ('        for g in sorted(set(zip(d.season, d.week, d.team))):',
+           '        for g in sorted(set(zip(d.season, d.week, d.game_id))):'))
+mut_grade('grade3: one game may have two ids in a file',
+          ('        for a, b, what in (("_m", "game_id", "more than one game id for"),\n                           ("game_id", "_m", "more than one game under the id")):',
+           '        for a, b, what in (("game_id", "_m", "more than one game under the id"),):'))
+mut_grade('grade3: one id may stand for two games in a file',
+          ('        for a, b, what in (("_m", "game_id", "more than one game id for"),\n                           ("game_id", "_m", "more than one game under the id")):',
+           '        for a, b, what in (("_m", "game_id", "more than one game id for"),):'))
+mut_grade("grade3: a game's two teams are two games",
+          ('        teams = d.assign(_m=[" and ".join(sorted(x)) for x in zip(d.team, d.opponent)])',
+           '        teams = d.assign(_m=[" and ".join(x) for x in zip(d.team, d.opponent)])'))
+mut_grade('grade3: a snap row the data placed is read by name too',
+          ('    return snaps[~snaps.pfr_player_id.astype(str).isin(set(per[per == 1].index))]',
+           '    return snaps'))
+mut_grade('grade3: an id a roster gives to two players counts as placed',
+          ('    return snaps[~snaps.pfr_player_id.astype(str).isin(set(per[per == 1].index))]',
+           '    return snaps[~snaps.pfr_player_id.astype(str).isin(set(per.index))]'))
+mut_grade('grade3: only the placed snap rows are read by name',
+          ('    return snaps[~snaps.pfr_player_id.astype(str).isin(set(per[per == 1].index))]',
+           '    return snaps[snaps.pfr_player_id.astype(str).isin(set(per[per == 1].index))]'))
+
 
 def run_one(i: int):
     name, pairs, target = M[i]
@@ -3047,8 +3560,8 @@ SHOW = False
 #: nothing before them imports it. So the suite's earlier part is run ONCE,
 #: unbroken, and each revert of that file runs only the rest, in a child
 #: process forked from that point with the edited file first on its path.
-FAST_TARGET = "ff_sim_live.py"
-FAST_CUT = "# S28 — the live run (ff_sim_live.py)"
+FAST = {"ff_sim_live.py": "# S28 — the live run (ff_sim_live.py)",
+        "ff_sim_grade.py": "# S29 — grading the shadow runs (ff_sim_grade.py)"}
 
 
 def _verdict(i, name, text, err=""):
@@ -3061,8 +3574,8 @@ def _verdict(i, name, text, err=""):
     return i, name, "caught", f"{len(fails)} failed: " + " | ".join(fails[:2])
 
 
-def fast_run(ids, report):
-    """Run the reverts `ids` (all of `FAST_TARGET`) the fast way; `report`
+def fast_run(ids, report, fast_target):
+    """Run the reverts `ids` (all of `fast_target`) the fast way; `report`
     is called with each result as it comes. Refuses, by raising, unless the
     earlier part of the suite passes whole and has not imported the file:
     that is what makes a child's verdict the same as a full run's."""
@@ -3071,7 +3584,7 @@ def fast_run(ids, report):
     import io
     import time
     import traceback
-    cut = TEST.index(FAST_CUT)
+    cut = TEST.index(FAST[fast_target])
     head = TEST[:cut]
     tail = "\n" * head.count("\n") + TEST[cut:]       # keep the line numbers
     g = {"__name__": "__main__", "__file__": str(REPO / "test_sim.py")}
@@ -3081,7 +3594,7 @@ def fast_run(ids, report):
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         exec(compile(head, "test_sim.py", "exec"), g)
     atexit.unregister(g["_summary"])
-    module = FAST_TARGET[:-3]
+    module = fast_target[:-3]
     if g["fails"] or module in sys.modules or not g["ran"]:
         raise RuntimeError(
             f"--fast cannot be used: before the cut {len(g['fails'])} checks "
@@ -3166,13 +3679,15 @@ def main() -> int:
         if SHOW or (r[2] not in ("caught", "applies") and r[1] not in NULLS):
             print(f"[{r[0]:3d}] {r[2]:11s} {r[1]}  {r[3]}", flush=True)
 
-    quick = [i for i in only if fast and M[i][2] == FAST_TARGET]
+    quick = [i for i in only if fast and M[i][2] in FAST]
     with cf.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
         for r in ex.map(run_one, [i for i in only if i not in quick]):
             res.append(r)
             report(r)
-    if quick:
-        res += fast_run(quick, report)
+    for target in FAST:              # in this order: each cut is later than the last
+        mine = [i for i in quick if M[i][2] == target]
+        if mine:
+            res += fast_run(mine, report, target)
     # The unbroken suite once more, AFTER everything else: if the machine
     # went wrong part-way (a full disk, a dead cache), every revert after
     # that point "failed" for that reason and not because it was caught.
