@@ -11175,9 +11175,8 @@ chk("an absence that began long ago is taken when a current listing confirms it,
 for _lab95, _kw95, _say95 in (
         ("a confirmed time that is itself stale", dict(confirmed="2026-11-20 00:00+00:00"), "inside the last 72 hours"),
         ("a confirmed time in the future", dict(confirmed="2026-11-26 00:00+00:00"), "inside the last 72 hours"),
-        ("a confirmed time before the absence began", dict(at="2026-11-23 12:00+00:00", confirmed="2026-11-23 00:00+00:00"), "after the absence began"),
-        ("a confirmed time with no zone", dict(confirmed="2026-11-24 00:10"), "time zone"),
-        ("a confirmed time on news that is not an absence", dict(kind="BACK"), "only for a standing absence")):
+        ("a confirmed time before the news itself", dict(at="2026-11-23 12:00+00:00", confirmed="2026-11-23 00:00+00:00"), "after the time of the news itself"),
+        ("a confirmed time with no zone", dict(confirmed="2026-11-24 00:10"), "time zone")):
     _a95 = dict(player="Ret Urner", team="CHI", position="WR", kind="OUT", source="x",
                 at="2026-10-27 00:00-04:00", now=_now95, confirmed="2026-11-23 23:55-05:00")
     _a95.update(_kw95)
@@ -11187,6 +11186,19 @@ for _lab95, _kw95, _say95 in (
     except ValueError as _e95:
         _r95 = str(_e95)
     chk(f"{_lab95} is refused", _say95 in _r95, _r95[:110])
+# B271. A finding carried from Monday's run to Friday's keeps Monday's time.
+_cf95 = _fn.manual_flag("Ret Urner", "CHI", "WR", "BACK", "beat report", "2026-11-20 15:31-05:00",
+                        "coach: he plays", now=_now95, confirmed="2026-11-23 23:55-05:00")
+chk("news of any kind older than 72 hours is kept at its FIRST time when a current source confirms it",
+    _cf95.kind == "BACK" and _cf95.at == _pd95.Timestamp("2026-11-20 20:31", tz="UTC")
+    and _cf95.detail == "coach: he plays; still so when read Tue 11-24 04:55 UTC", f"{_cf95.at}, {_cf95.detail}")
+try:
+    _fn.manual_flag("Ret Urner", "CHI", "WR", "BACK", "beat report", "2026-11-20 15:31-05:00", now=_now95)
+    _r95 = "no error"
+except ValueError as _e95:
+    _r95 = str(_e95)
+chk("without one it is still refused, and the refusal says how to keep it",
+    "too old to act on by itself" in _r95 and "keep this time and also give \"confirmed\"" in _r95, _r95[-170:])
 chk("news exactly 72 hours old is still taken",
     _fn.manual_flag("Al Alpha", "DET", "WR", "OUT", "x", "2026-11-21 05:00+00:00",
                     now=_now95).kind == "OUT")

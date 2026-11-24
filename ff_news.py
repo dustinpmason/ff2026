@@ -359,11 +359,16 @@ def manual_flag(player: str, team: str, position: str, kind: str, source: str,
     against a line's history, and last season's article reads like this
     week's.
 
-    One way past the 72 hours, for an absence that began long ago and that
-    the injury report does not carry (a player on injured reserve for a
-    month, or released): kind OUT, `at` when it began, and `confirmed` the
-    time a CURRENT listing was read that still has him out. `confirmed`
-    must itself be inside 72 hours."""
+    One way past the 72 hours: `at` when the news was FIRST reported, and
+    `confirmed` the time a CURRENT source was read that still says so.
+    `confirmed` must itself be inside 72 hours. Two uses. An absence that
+    began long ago and that the injury report does not carry (a player on
+    injured reserve for a month, or released). And any finding carried from
+    one run of a week to the next (B271): Monday's report that a player is
+    back is 96 hours old by Friday's kickoff, and the only other way to keep
+    it would be to re-enter it under a newer article's time, which makes
+    every line posted in between look like a line that failed to move. The
+    first time is the one the books could act on, so it is the one kept."""
     if kind not in KINDS:
         raise ValueError(f"kind is {kind!r}; it must be one of {KINDS}")
     code = team_code(team)
@@ -394,21 +399,19 @@ def manual_flag(player: str, team: str, position: str, kind: str, source: str,
         if c is None or not _zoned(confirmed):
             raise ValueError(f"the confirmed time on the flag on {player} ({confirmed!r}) "
                              f"is not a time with a time zone")
-        if kind != "OUT":
-            raise ValueError(f"the flag on {player} gives a confirmed time, which is only "
-                             f"for a standing absence (kind OUT), not {kind}")
         if c > now + pd.Timedelta(minutes=5) or c < t \
                 or (now - c).total_seconds() / 3600 > MAX_NEWS_HOURS:
             raise ValueError(f"the confirmed time on the flag on {player} "
-                             f"({c:%Y-%m-%d %H:%M} UTC) must be after the absence began "
-                             f"and inside the last {MAX_NEWS_HOURS:.0f} hours")
-        detail = (detail + "; " if detail else "") + f"still out when read {c:%a %m-%d %H:%M} UTC"
+                             f"({c:%Y-%m-%d %H:%M} UTC) must be after the time of the "
+                             f"news itself and inside the last {MAX_NEWS_HOURS:.0f} hours")
+        detail = (detail + "; " if detail else "") + (
+            f"still {'out' if kind == 'OUT' else 'so'} when read {c:%a %m-%d %H:%M} UTC")
     elif old:
         raise ValueError(f"the flag on {player} is from {t:%Y-%m-%d %H:%M} UTC, "
                          f"more than {MAX_NEWS_HOURS:.0f} hours ago: too old to "
-                         f"act on. If it still holds, a current report will say so. "
-                         f"(For an absence that began long ago, kind OUT, also give "
-                         f"\"confirmed\": when a current listing was read.)")
+                         f"act on by itself. If a current source still says so, keep "
+                         f"this time and also give \"confirmed\": when that source "
+                         f"was read. If none does, drop it.")
     return RoleFlag(player, code, position, kind, source.strip(), t, detail, url)
 
 

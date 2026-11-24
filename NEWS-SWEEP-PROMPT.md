@@ -6,10 +6,13 @@ catch news the lines have not moved for yet.
 
 | Run | When (Eastern) | Why then |
 |---|---|---|
-| A | Tuesday 11/24, any time | Earliest look. Lines opened Sunday and Monday; Tuesday's practice reports are the first news after that |
-| B | Wednesday 11/25, 2:00pm to 6:00pm | Packers at Rams kicks 8:00pm. Final injury reports for Thursday's games come out Wednesday afternoon |
-| C | Thursday 11/26, 10:00am to 12:15pm | Bears at Lions kicks 1:00pm; the two later games the same day |
-| D | Friday 11/27, 11:30am to 2:00pm | Broncos at Steelers kicks 3:00pm |
+| A | Tuesday 11/24 | DONE 3:23pm. Zero lines to look at: on a short week the lines opened Monday night, after Monday's news |
+| B | Wednesday 11/25, 4:30pm to 7:00pm | Final injury reports for Thursday's games come out Wednesday afternoon. Packers at Rams kicks 8:00pm and its inactives come at 6:30pm: run after 6:30pm if betting that game |
+| C | Thursday 11/26, 10:00am to 12:15pm | Bears at Lions kicks 1:00pm (inactives 11:30am); the two later games the same day |
+| D | Friday 11/27, 11:30am to 2:00pm | Broncos at Steelers kicks 3:00pm (inactives 1:30pm) |
+
+Before each run, the last run's `flags_wk12.json` must be in the repo: Step 5
+starts from it.
 
 Delete from GAMES any game Dustin is not betting. Nothing else needs editing.
 
@@ -102,12 +105,19 @@ STEP 4. Look for what the injury report does not have
        - a depth-1 quarterback who is not the * quarterback in ROLES
      Each of these is something to look up in (c).
   c. Web search. At least two searches a team, more where (a) or (b) raised
-     something:
-       "<team> injury report" with this week's date
-       "<team> practice report" with the weekday
-       "<player> ruled out" / "activated" / "will start" for a named player
-     Search results mix seasons: an article from 2023 or 2025 about the same
-     two teams reads like this week's. So for every result you mean to use:
+     something. A plain "<team> injury report" search returned 2021 to 2025
+     pages in Run A, and naming the site fixed it. So put 2026 and a site in
+     every search:
+       "<team> practice report 2026" on the team's own site
+         (packers.com, detroitlions.com, dallascowboys.com ...)
+       "<player> 2026" on cbssports.com/fantasy/football/news (it carries
+         each practice estimate with a time and zone)
+       "<player> 2026" on nbcsports.com/fantasy/football/player-news
+       the team's page at espn.com/nfl/team/transactions for call-ups,
+         signings, releases and activations
+     Search results still mix seasons: an article from 2023 or 2025 about the
+     same two teams reads like this week's. So for every result you mean to
+     use:
        1. OPEN the page.
        2. Find its publish date WITH THE YEAR. No year, or not 2026: do not
           use it.
@@ -137,7 +147,20 @@ STEP 4. Look for what the injury report does not have
      read this response yet and its shape is needed to build that.
 
 STEP 5. Write flags_wk12.json
-  One entry a finding. Skip a finding the injury report already carries,
+  START FROM THE LAST RUN'S FILE: flags_wk12.json in the repo folder. For each
+  entry in it:
+    - still true (you saw it again in Step 4, or a current listing says so):
+      KEEP its "at" exactly as it is and set "confirmed" to the time you read
+      the current source. Never replace an old "at" with a newer article's
+      time: the first report is when the books could act, and moving it later
+      makes every line posted in between look like a line that failed to move.
+    - superseded (a questionable player now ruled out, or cleared): replace it
+      with the new finding at the NEW finding's own time.
+    - cannot be confirmed today: delete it and name it in the report.
+  An entry older than 72 hours with no "confirmed" stops the script, and the
+  message names it.
+  Then add what is new. One entry a finding, timed at the EARLIEST report of
+  that fact you found. Skip a finding the injury report already carries,
   unless your source is EARLIER than the time printed beside it in FLAGS or
   gives a different status.
 
@@ -165,6 +188,8 @@ STEP 5. Write flags_wk12.json
             (Eastern in November is -05:00) or "2026-11-25 19:10 UTC".
             For a depth-chart observation with no date, use the time you
             pulled it, kind NOTE, and say "when it changed is not known".
+  confirmed only for an entry whose "at" is more than 72 hours old: when you
+            read a current source that still says so. Same format as "at".
   detail    a few words. Optional.
   url       the page. Optional.
 
@@ -199,12 +224,15 @@ STEP 7. Report, in this order, in plain words
      its time, and whether it is settled.
   4. OVERS TO BE CAREFUL WITH. Section 2 of each game (lines on a hot run),
      as one table, with the line the script prints about what a hot run has
-     been worth, once.
+     been worth, once. List only players marked * in section 3 (a real
+     role); give the count of the others and do not list them.
   5. FLAGS. Every flag by game: player, kind, detail, source, time (Eastern),
      link. Mark the ones you entered by hand.
   6. WHAT WAS SEARCHED. By team: the FantasyPros and depth-chart calls made,
      the searches run, the pages opened. Then "found but not entered": each
-     item, and whether it had no date, the wrong year, or was too old.
+     item, and whether it had no date, the wrong year, or was too old. Then
+     "carried from the last run": how many entries were kept with a new
+     "confirmed", replaced, and deleted, naming the replaced and deleted.
   7. The time (Eastern) the second pass ran.
 
 STEP 8. Give me flags_wk12.json and the news_2026_wk12_<time>.csv log as
