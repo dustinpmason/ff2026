@@ -1,0 +1,219 @@
+NEWS SWEEP, 2026 Week 12, run Tue 11-24 05:22 UTC. Flags read: 60 from the injury report; 6 entered by hand.
+Game log runs through Week 11 (24 teams have a game in that week).
+
+ACROSS 5 GAMES: 0 lines where news points one way and a book has not moved 10%; 1 possible return to check.
+   [PHI at DAL] possible return: Elijah Mitchell (PHI RB)
+   [KC at BUF] flagged OUT yet a line is posted: Dalton Kincaid (BUF TE)
+   [DEN at PIT] posted but not on either team's last four games: Michael Pittman Jr.
+   [DEN at PIT] flagged OUT yet a line is posted: Michael Pittman Jr. (PIT WR)
+
+=== NEWS SWEEP: GB at LA, kickoff Thu 11-26 01:00 UTC (44 hours away) ===
+Main lines read: 91 across 2 books (draftkings, fanduel), 18 players. No projection is made here, and nothing below is a probability.
+
+0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0): the news points one way and at least one book has not moved 10%
+   none. Every flagged line was posted after its news, has moved, or has no direction.
+
+1. FLAGS (9)
+   Josh Jacobs (GB RB): OUT, Out Finger; coach: unlikely to play; limited Mon; FantasyPros 42% to play  [PropLine injuries (ESPN) + FantasyPros news (HC Matt LaFleur), Thu 11-12 18:09 UTC]
+      a same-position teammate with a role is out: 38% of such lines moved up 10%+ by the close (12% of all lines). At the close the over was fair (47.9% against 48.8% priced); at the opener it came in 54.5%. 101 lines from 14 of the 41 games, Weeks 9 to 11 of 2026: a lead, too few to act on alone.
+      8 lines first posted AFTER this news, so priced with it from the start: MarShawn Lloyd, Chris Brooks, Kaleb Johnson
+      no main line posted yet for: Pierre Strong
+   Luke Musgrave (GB TE): OUT, Out Neck  [PropLine injuries (ESPN), Sun 11-22 14:23 UTC]
+      bears on nobody: he is not among this team's players of its last four games
+   Bo Melton (GB WR): QUESTIONABLE, Questionable Thigh  [PropLine injuries (ESPN), Sun 11-15 19:28 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Skyy Moore (GB WR): QUESTIONABLE, Questionable Ankle  [PropLine injuries (ESPN), Sun 11-15 18:57 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Davante Adams (LA WR): OUT, Injured Reserve Hamstring  [PropLine injuries (ESPN), Fri 11-20 18:09 UTC]
+      bears on nobody: he is not among this team's players of its last four games
+   Puka Nacua (LA WR): OUT, Injured Reserve Knee - MCL  [PropLine injuries (ESPN), Thu 11-19 20:48 UTC]
+      a same-position teammate with a role is out (what that has been worth: above)
+      14 lines first posted AFTER this news, so priced with it from the start: Colby Parkinson, Tyler Higbee, Tutu Atwell, Konata Mumpfield, Davis Allen, Xavier Smith, CJ Daniels
+      no main line posted yet for: Jordan Whittington, Alex Bachman, Max Klare, Brennan Presley
+   Terrance Ferguson (LA TE): OUT, Injured Reserve Ankle  [PropLine injuries (ESPN), Fri 11-20 17:38 UTC]
+      bears on nobody: he is not among this team's players of its last four games
+   Blake Corum (LA RB): NOTE, listed RB1 ahead of Kyren Williams; when the chart changed is not known  [FantasyPros depth chart, Tue 11-24 05:10 UTC]
+      his own lines: catches draftkings 2.5 -> 1.5 (-40%), fanduel 1.5 -> 1.5 (+0%); rec yds draftkings 10.5 -> 10.5 (+0%), fanduel 10.5 -> 10.5 (+0%); rush yds draftkings 56.5 -> 56.5 (+0%), fanduel 55.5 -> 55.5 (+0%); carries draftkings 12.5 -> 12.5 (+0%)
+      bears on nobody: a note is shown for reading; no bearing is drawn from it
+   Kyren Williams (LA RB): NOTE, toe soreness, expected to play  [FantasyPros news, Sat 11-21 22:47 UTC]
+      his own lines: catches draftkings 2.5 -> 3.5 (+40%), fanduel 3.5 -> 3.5 (+0%); rec yds draftkings 18.5 -> 21.5 (+16%), fanduel 20.5 -> 20.5 (+0%); rush yds draftkings 60.5 -> 55.5 (-8%), fanduel 54.5 -> 54.5 (+0%); carries draftkings 13.5 -> 13.5 (+0%)
+      bears on nobody: a note is shown for reading; no bearing is drawn from it
+
+1b. RETURNS TO CHECK (0): had a real role, sat the team's last game or more, and no flag has him out or back
+
+2. LINES SITTING ON A HOT RUN (4): a caution on the OVER, not a lean to the under.
+   What it has been worth: overs on lines like this came in 43.6% against 50.8% priced (287 lines, 41 games, Weeks 9 to 11 of 2026): a hot run is not a reason for the over.
+   Jordan Love (GB) comp: HOT: over 22.5 in 4 of his last 5 (23, 27, 30, 23, 17)
+   Matthew Golden (GB) catches: HOT: over 5.5 in 4 of his last 5 (6, 6, 7, 10, 5)
+   Blake Corum (LA) rush yds: HOT: over 56 in 4 of his last 5 (42, 93, 73, 58, 100)
+   Savion Williams (GB) rec yds: HOT: over 18.5 in 4 of his last 5 (32, 47, 5, 25, 27)
+
+3. ROLES going in (his last four games played for the team; * = a real role)
+   GB: *Jordan Love QB 96% snaps; *Josh Jacobs RB 3.5 tgt 10.0 car 42% snaps; Pierre Strong RB 2.0 tgt 5.0 car 31% snaps; MarShawn Lloyd RB 1.8 tgt 5.2 car 29% snaps; Chris Brooks RB 1.2 tgt 2.5 car 38% snaps; *Kaleb Johnson RB 0.0 tgt 8.0 car 21% snaps; *Matthew Golden WR 11.0 tgt 82% snaps; *Christian Watson WR 7.8 tgt 73% snaps; *Tucker Kraft TE 4.8 tgt 88% snaps; Savion Williams WR 2.8 tgt 1.5 car 50% snaps; Skyy Moore WR 2.5 tgt 27% snaps; J. Michael Sturdivant WR 1.2 tgt 22% snaps
+   LA: *Matthew Stafford QB 1.5 car 100% snaps; *Kyren Williams RB 3.0 tgt 14.8 car 59% snaps; *Blake Corum RB 2.0 tgt 14.0 car 40% snaps; Ronnie Rivers RB 0.2 tgt 5.0 car 9% snaps; *Puka Nacua WR 12.0 tgt 1.0 car 91% snaps; *Colby Parkinson TE 4.5 tgt 68% snaps; Tyler Higbee TE 3.5 tgt 76% snaps; Tutu Atwell WR 2.8 tgt 36% snaps; Konata Mumpfield WR 2.5 tgt 50% snaps; Davis Allen TE 2.0 tgt 67% snaps
+
+=== NEWS SWEEP: CHI at DET, kickoff Thu 11-26 18:00 UTC (61 hours away) ===
+Main lines read: 89 across 2 books (draftkings, fanduel), 17 players. No projection is made here, and nothing below is a probability.
+
+0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0): the news points one way and at least one book has not moved 10%
+   none. Every flagged line was posted after its news, has moved, or has no direction.
+
+1. FLAGS (2)
+   Roschon Johnson (CHI RB): QUESTIONABLE, Questionable Ankle  [PropLine injuries (ESPN), Sun 11-22 21:23 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Sam LaPorta (DET TE): QUESTIONABLE, Questionable Ankle  [PropLine injuries (ESPN), Tue 11-24 00:52 UTC]
+      his own lines: rec yds draftkings 42.5 -> 46.5 (+9%), fanduel 44.5 -> 44.5 (+0%); catches draftkings 4.5 -> 4.5 (+0%), fanduel 4.5 -> 4.5 (+0%)
+      status not settled: no direction until it is.
+      Amon-Ra St. Brown rec yds (watch): SHOWN. draftkings 90.5 -> 85.5 (-6%), fanduel 89.5 -> 84.5 (-6%)
+      Amon-Ra St. Brown catches (watch): SHOWN. draftkings 7.5 -> 7.5 (+0%), fanduel 7.5 -> 6.5 (-13%)
+      Brock Wright rec yds (watch): SHOWN. draftkings 2.5 -> 4.5 (+80%), fanduel 3.5 -> 4.5 (+29%)
+      5 other lines within 3% of the opener at every book
+      no main line posted yet for: Tyler Conklin, Tay Martin, DeAndre Carter
+
+1b. RETURNS TO CHECK (0): had a real role, sat the team's last game or more, and no flag has him out or back
+
+2. LINES SITTING ON A HOT RUN (9): a caution on the OVER, not a lean to the under.
+   What it has been worth: overs on lines like this came in 43.6% against 50.8% priced (287 lines, 41 games, Weeks 9 to 11 of 2026): a hot run is not a reason for the over.
+   Caleb Williams (CHI) comp: HOT: over 21.5 in 4 of his last 5 (30, 22, 24, 22, 15)
+   Colston Loveland (CHI) rec yds: HOT: over 52.5 in 4 of his last 5 (65, 69, 65, 54, 29)
+   Rome Odunze (CHI) catches: HOT: over 3.5 in 4 of his last 5 (3, 4, 4, 4, 4)
+   Jahmyr Gibbs (DET) carries: HOT: over 19.5 in 5 of his last 5 (29, 23, 20, 22, 23)
+   Jahmyr Gibbs (DET) rush yds: HOT: over 91 in 4 of his last 5 (116, 153, 74, 153, 98)
+   Jameson Williams (DET) catches: HOT: over 3.5 in 4 of his last 5 (5, 4, 1, 4, 4)
+   Kyle Monangai (CHI) carries: HOT: over 8.5 in 4 of his last 5 (10, 10, 10, 30, 8)
+   Sione Vaki (DET) rec yds: HOT: over 2.5 in 4 of his last 5 (0, 5, 7, 17, 7)
+   Sione Vaki (DET) catches: HOT: over 0.5 in 4 of his last 5 (0, 1, 2, 1, 1)
+
+3. ROLES going in (his last four games played for the team; * = a real role)
+   CHI: *Caleb Williams QB 4.0 car 100% snaps; *D'Andre Swift RB 2.5 tgt 18.5 car 70% snaps; *Kyle Monangai RB 1.0 tgt 14.5 car 39% snaps; Roschon Johnson RB 0.2 tgt 1.8 car 8% snaps; Salvon Ahmed RB 0.0 tgt 5.5 car 22% snaps; *Colston Loveland TE 7.5 tgt 89% snaps; *Luther Burden III WR 6.5 tgt 58% snaps; *Rome Odunze WR 5.5 tgt 90% snaps; *Kalif Raymond WR 4.0 tgt 70% snaps; Cole Kmet TE 2.2 tgt 61% snaps; Zavion Thomas WR 2.0 tgt 15% snaps
+   DET: *Jared Goff QB 3.2 car 96% snaps; Joshua Dobbs QB 1.5 car 10% snaps; *Jahmyr Gibbs RB 4.5 tgt 22.0 car 72% snaps; Sione Vaki RB 1.2 tgt 5.2 car 27% snaps; *Amon-Ra St. Brown WR 7.2 tgt 73% snaps; *Sam LaPorta TE 5.0 tgt 88% snaps; *Jameson Williams WR 4.8 tgt 81% snaps; Isaac TeSlaa WR 2.5 tgt 48% snaps; Brock Wright TE 1.0 tgt 67% snaps
+
+=== NEWS SWEEP: PHI at DAL, kickoff Thu 11-26 21:30 UTC (64 hours away) ===
+Main lines read: 72 across 2 books (draftkings, fanduel), 14 players. No projection is made here, and nothing below is a probability.
+
+0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0): the news points one way and at least one book has not moved 10%
+   none. Every flagged line was posted after its news, has moved, or has no direction.
+
+1. FLAGS (8)
+   Jake Ferguson (DAL TE): OUT, Out Knee  [PropLine injuries (ESPN), Tue 11-10 01:59 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Jonathan Mingo (DAL WR): OUT, Out Ankle  [PropLine injuries (ESPN), Fri 11-20 20:37 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Dameon Pierce (PHI RB): OUT, listed as a free agent, no longer on the Eagles; still out when read Tue 11-24 05:12 UTC  [FantasyPros listing, Tue 10-27 04:00 UTC]
+      a same-position teammate with a role is out: 38% of such lines moved up 10%+ by the close (12% of all lines). At the close the over was fair (47.9% against 48.8% priced); at the opener it came in 54.5%. 101 lines from 14 of the 41 games, Weeks 9 to 11 of 2026: a lead, too few to act on alone.
+      6 lines first posted AFTER this news, so priced with it from the start: Will Shipley, Saquon Barkley
+      no main line posted yet for: Elijah Mitchell, Jaydon Blue
+   Dontayvion Wicks (PHI WR): OUT, Injured Reserve Ankle  [PropLine injuries (ESPN), Sat 11-21 21:19 UTC]
+      bears on nobody: he is not among this team's players of its last four games
+   Dallas Goedert (PHI TE): QUESTIONABLE, Questionable Shin  [PropLine injuries (ESPN), Mon 11-23 22:30 UTC]
+      his own lines: rec yds draftkings 33.5 -> 32.5 (-3%), fanduel 37.5 -> 30.5 (-19%); catches draftkings 3.5 -> 3.5 (+0%), fanduel 3.5 -> 3.5 (+0%)
+      status not settled: no direction until it is.
+      Makai Lemon rec yds (watch): SHOWN. draftkings 32.5 -> 32.5 (+0%), fanduel 31.5 -> 29.5 (-6%)
+      Darius Cooper rec yds (watch): SHOWN. draftkings 25.5 -> 26.5 (+4%), fanduel 26.5 -> 26.5 (+0%)
+      4 other lines within 3% of the opener at every book
+      no main line posted yet for: Marquise Brown, Zach Ertz, Eli Stowers, Elijah Moore, Grant Calcaterra, Britain Covey, Johnny Mundt
+   Saquon Barkley (PHI RB): QUESTIONABLE, Questionable Neck  [PropLine injuries (ESPN), Sun 11-22 22:55 UTC]
+      his own lines: carries draftkings 15.5 -> 15.5 (+0%); rush yds draftkings 64.5 -> 64.5 (+0%), fanduel 64.5 -> 64.5 (+0%); rec yds draftkings 8.5 -> 6.5 (-24%), fanduel 9.5 -> 7.5 (-21%); catches draftkings 1.5 -> 1.5 (+0%), fanduel 1.5 -> 1.5 (+0%)
+      status not settled (what that has been worth: above)
+      2 lines first posted AFTER this news, so priced with it from the start: Will Shipley
+      no main line posted yet for: Elijah Mitchell, Jaydon Blue
+   Tanner McKee (PHI QB): QUESTIONABLE, Questionable Ribs  [PropLine injuries (ESPN), Mon 11-23 22:30 UTC]
+      bears on nobody: he did not start the team's last game
+   Will Shipley (PHI RB): QUESTIONABLE, Questionable Illness  [PropLine injuries (ESPN), Mon 11-23 22:30 UTC]
+      his own lines: rec yds draftkings 6.5 -> 6.5 (+0%), fanduel 6.5 -> 6.5 (+0%); catches draftkings 1.5 -> 1.5 (+0%), fanduel 1.5 -> 1.5 (+0%)
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+
+1b. RETURNS TO CHECK (1): had a real role, sat the team's last game or more, and no flag has him out or back
+   Elijah Mitchell (PHI RB): missed its last 1 game; 4.7 tgt 5.7 car a game before. If he is back, flag him BACK with the time it was reported; if he is still out or gone, flag him OUT (an absence older than 72 hours needs "confirmed").
+   Either way his teammates' lines depend on it, and nothing above has counted him.
+
+2. LINES SITTING ON A HOT RUN (4): a caution on the OVER, not a lean to the under.
+   What it has been worth: overs on lines like this came in 43.6% against 50.8% priced (287 lines, 41 games, Weeks 9 to 11 of 2026): a hot run is not a reason for the over.
+   Dallas Goedert (PHI) rec yds: HOT: over 31.5 in 4 of his last 5 (61, 48, 30, 50, 38)
+   Ryan Flournoy (DAL) rec yds: HOT: over 30.5 in 4 of his last 5 (70, 38, 53, 71, 11)
+   Dallas Goedert (PHI) catches: HOT: over 3.5 in 4 of his last 5 (6, 5, 4, 5, 1)
+   Brevyn Spann-Ford (DAL) catches: HOT: over 1.5 in 4 of his last 5 (2, 4, 2, 1, 2)
+
+3. ROLES going in (his last four games played for the team; * = a real role)
+   PHI: *Joe Milton III QB 7.0 car 100% snaps; Tanner McKee QB 2.0 car 100% snaps; *Elijah Mitchell RB 4.7 tgt 5.7 car 40% snaps; *Dameon Pierce RB 3.7 tgt 12.3 car 79% snaps; Will Shipley RB 1.2 tgt 3.8 car 33% snaps; *Saquon Barkley RB 1.0 tgt 12.5 car 43% snaps; *DeVonta Smith WR 11.8 tgt 84% snaps; *Makai Lemon WR 7.2 tgt 90% snaps; *Darius Cooper WR 5.5 tgt 93% snaps; *Dallas Goedert TE 4.5 tgt 81% snaps; Marquise Brown WR 2.0 tgt 43% snaps; Zach Ertz TE 2.0 tgt 20% snaps; Eli Stowers TE 1.2 tgt 12% snaps; Elijah Moore WR 1.0 tgt 29% snaps
+   DAL: *Dak Prescott QB 4.2 car 100% snaps; *Javonte Williams RB 2.8 tgt 19.5 car 70% snaps; Tyler Goodson RB 1.5 tgt 7.8 car 22% snaps; Jashaun Corbin RB 1.0 tgt 5.0 car 28% snaps; Israel Abanikanda RB 1.0 tgt 2.0 car 7% snaps; *CeeDee Lamb WR 13.0 tgt 86% snaps; *George Pickens WR 9.5 tgt 70% snaps; Ryan Flournoy WR 3.8 tgt 75% snaps; Brevyn Spann-Ford TE 3.2 tgt 73% snaps; KaVontae Turpin WR 2.0 tgt 18% snaps; Jake Ferguson TE 1.5 tgt 37% snaps; Jonathan Mingo WR 1.0 tgt 28% snaps; Jordan Hudson WR 1.0 tgt 1% snaps
+
+=== NEWS SWEEP: KC at BUF, kickoff Fri 11-27 01:15 UTC (68 hours away) ===
+Main lines read: 61 across 2 books (draftkings, fanduel), 12 players. No projection is made here, and nothing below is a probability.
+
+0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0): the news points one way and at least one book has not moved 10%
+   none. Every flagged line was posted after its news, has moved, or has no direction.
+
+1. FLAGS (5)
+   Dalton Kincaid (BUF TE): OUT, Out Thumb  [PropLine injuries (ESPN), Sun 11-22 16:41 UTC]
+      ! FLAGGED OUT, YET 2 books have a main line up for him (rec yds, catches): the listing is stale or the line is dead. Settle which before reading this team.
+      a same-position teammate with a role is out: 38% of such lines moved up 10%+ by the close (12% of all lines). At the close the over was fair (47.9% against 48.8% priced); at the opener it came in 54.5%. 101 lines from 14 of the 41 games, Weeks 9 to 11 of 2026: a lead, too few to act on alone.
+      6 lines first posted AFTER this news, so priced with it from the start: DJ Moore, Khalil Shakir, Keon Coleman
+      no main line posted yet for: Dawson Knox, Josh Palmer, Tyrell Shavers, Keleki Latu, Skyler Bell, Jackson Hawes, Greg Dortch, Trent Sherfield
+   Jared Wiley (KC TE): OUT, Injured Reserve Ankle  [PropLine injuries (ESPN), Wed 11-18 22:29 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Kenneth Walker III (KC RB): OUT, Out Groin  [PropLine injuries (ESPN), Fri 11-20 20:27 UTC]
+      a same-position teammate with a role is out (what that has been worth: above)
+      no main line posted yet for: Emmett Johnson, Jaydn Ott, Nate Carter, Ben VanSumeren
+   Ben VanSumeren (KC FB): QUESTIONABLE, Questionable Knee  [PropLine injuries (ESPN), Sun 11-22 21:03 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+   Noah Gray (KC TE): QUESTIONABLE, Questionable Ribs  [PropLine injuries (ESPN), Sun 11-22 20:43 UTC]
+      bears on nobody: he had no real role (under 4 targets and 8 carries a game)
+
+1b. RETURNS TO CHECK (0): had a real role, sat the team's last game or more, and no flag has him out or back
+
+2. LINES SITTING ON A HOT RUN (11): a caution on the OVER, not a lean to the under.
+   What it has been worth: overs on lines like this came in 43.6% against 50.8% priced (287 lines, 41 games, Weeks 9 to 11 of 2026): a hot run is not a reason for the over.
+   Josh Allen (BUF) pass yds: HOT: over 228.5 in 4 of his last 5 (255, 289, 234, 196, 304)
+   Khalil Shakir (BUF) catches: HOT: over 3.5 in 4 of his last 5 (4, 5, 4, 2, 5)
+   James Cook (BUF) rush yds: HOT: over 86 in 4 of his last 5 (95, 80, 107, 157, 89)
+   Patrick Mahomes (KC) pass yds: HOT: over 241.5 in 4 of his last 5 (165, 321, 242, 348, 324)
+   Rashee Rice (KC) catches: HOT: over 4.5 in 4 of his last 5 (0, 7, 5, 5, 6)
+   Patrick Mahomes (KC) pass TD: HOT: over 1.5 in 4 of his last 5 (0, 3, 2, 5, 3)
+   James Cook (BUF) carries: HOT: over 18.5 in 4 of his last 5 (22, 21, 31, 18, 22)
+   Patrick Mahomes (KC) comp: HOT: over 21.5 in 4 of his last 5 (19, 30, 23, 22, 27)
+   Ty Johnson (BUF) rec yds: HOT: over 17.5 in 4 of his last 5 (24, 19, 36, 4, 55)
+   Josh Allen (BUF) pass att: HOT: over 29.5 in 4 of his last 5 (33, 34, 31, 21, 45)
+   Josh Allen (BUF) comp: HOT: over 19.5 in 4 of his last 5 (23, 21, 21, 11, 27)
+
+3. ROLES going in (his last four games played for the team; * = a real role)
+   KC: *Patrick Mahomes QB 1.5 car 94% snaps; Justin Fields QB 1.2 car 8% snaps; *Kenneth Walker III RB 4.2 tgt 18.0 car 74% snaps; *Emmett Johnson RB 4.0 tgt 13.0 car 55% snaps; Jaydn Ott RB 0.0 tgt 2.0 car 6% snaps; Nate Carter RB 0.0 tgt 1.5 car; *Rashee Rice WR 6.8 tgt 51% snaps; *Travis Kelce TE 5.5 tgt 63% snaps; *Josh Downs WR 5.0 tgt 20% snaps; *Xavier Worthy WR 4.8 tgt 80% snaps; Cyrus Allen WR 3.0 tgt 33% snaps; Noah Gray TE 2.8 tgt 66% snaps; Jake Briningstool TE 1.2 tgt 24% snaps; Jalen Royals WR 1.0 tgt 32% snaps
+   BUF: *Josh Allen QB 4.5 car 96% snaps; Kyle Allen QB 2.0 car 4% snaps; Ty Johnson RB 3.5 tgt 1.5 car 25% snaps; *James Cook RB 1.8 tgt 23.0 car 58% snaps; Ray Davis RB 0.8 tgt 3.0 car 17% snaps; *DJ Moore WR 7.0 tgt 64% snaps; *Khalil Shakir WR 5.5 tgt 1.2 car 66% snaps; *Dalton Kincaid TE 5.0 tgt 56% snaps; *Keon Coleman WR 4.0 tgt 68% snaps; Dawson Knox TE 3.2 tgt 68% snaps; Josh Palmer WR 1.8 tgt 31% snaps; Tyrell Shavers WR 1.8 tgt 39% snaps; Keleki Latu TE 1.2 tgt 24% snaps; Skyler Bell WR 1.0 tgt 47% snaps
+
+=== NEWS SWEEP: DEN at PIT, kickoff Fri 11-27 20:01 UTC (87 hours away) ===
+Main lines read: 93 across 2 books (draftkings, fanduel), 19 players. No projection is made here, and nothing below is a probability.
+Posted, and not placed on either team from its last four games: Michael Pittman Jr.. A player back from a long absence or new to the team is news in itself: check him.
+
+0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0): the news points one way and at least one book has not moved 10%
+   none. Every flagged line was posted after its news, has moved, or has no direction.
+
+1. FLAGS (3)
+   Caleb Lohner (DEN TE): OUT, Injured Reserve Foot  [PropLine injuries (ESPN), Wed 11-18 20:22 UTC]
+      bears on nobody: he is not among this team's players of its last four games
+   RJ Harvey (DEN RB): OUT, injured reserve since Week 8 (start of that week entered); still out when read Tue 11-24 05:12 UTC  [FantasyPros listing, Mon 10-26 04:00 UTC]
+      a same-position teammate with a role is out: 38% of such lines moved up 10%+ by the close (12% of all lines). At the close the over was fair (47.9% against 48.8% priced); at the opener it came in 54.5%. 101 lines from 14 of the 41 games, Weeks 9 to 11 of 2026: a lead, too few to act on alone.
+      5 lines first posted AFTER this news, so priced with it from the start: Jonah Coleman, J.K. Dobbins
+      no main line posted yet for: Adam Prentice, Cody Schrader
+   Michael Pittman Jr. (PIT WR): OUT, Injured Reserve Foot; not activated from IR last week after full practices; books have lines up for him Friday  [PropLine injuries (ESPN) + FantasyPros news, Mon 11-02 15:56 UTC]
+      ! FLAGGED OUT, YET 2 books have a main line up for him (rec yds, catches): the listing is stale or the line is dead. Settle which before reading this team.
+      bears on nobody: he is not among this team's players of its last four games
+
+1b. RETURNS TO CHECK (0): had a real role, sat the team's last game or more, and no flag has him out or back
+
+2. LINES SITTING ON A HOT RUN (9): a caution on the OVER, not a lean to the under.
+   What it has been worth: overs on lines like this came in 43.6% against 50.8% priced (287 lines, 41 games, Weeks 9 to 11 of 2026): a hot run is not a reason for the over.
+   Bo Nix (DEN) pass yds: HOT: over 211.5 in 4 of his last 5 (107, 222, 222, 237, 225)
+   J.K. Dobbins (DEN) rush yds: HOT: over 6.5 in 4 of his last 5 (41, 23, 13, 18, 0)
+   Marvin Mims (DEN) rec yds: HOT: over 8 in 4 of his last 5 (13, 53, 10, 0, 36)
+   Pat Bryant (DEN) rec yds: HOT: over 27.5 in 4 of his last 5 (0, 44, 47, 56, 32)
+   Rico Dowdle (PIT) catches: HOT: over 1.5 in 4 of his last 5 (3, 6, 0, 2, 4)
+   Germie Bernard (PIT) rec yds: HOT: over 25.5 in 4 of his last 5 (87, 27, 30, 0, 40)
+   Roman Wilson (PIT) rec yds: HOT: over 16 in 4 of his last 5 (28, 60, 74, 0, 43)
+   Roman Wilson (PIT) catches: HOT: over 1.5 in 4 of his last 5 (5, 3, 3, 0, 3)
+   Marvin Mims Jr. (DEN) rush yds: HOT: over 1.5 in 4 of his last 5 (0, 3, 19, 5, 11)
+
+3. ROLES going in (his last four games played for the team; * = a real role)
+   DEN: *Bo Nix QB 5.2 car 100% snaps; *RJ Harvey RB 4.2 tgt 4.8 car 37% snaps; *Jonah Coleman RB 4.0 tgt 15.2 car 69% snaps; J.K. Dobbins RB 0.2 tgt 4.5 car 15% snaps; *Jaylen Waddle WR 5.0 tgt 43% snaps; *Courtland Sutton WR 5.0 tgt 76% snaps; *Evan Engram TE 4.8 tgt 46% snaps; Pat Bryant WR 3.5 tgt 57% snaps; Troy Franklin WR 2.5 tgt 51% snaps; Marvin Mims Jr. WR 2.2 tgt 1.2 car 25% snaps; Adam Trautman TE 1.8 tgt 58% snaps; Nate Adkins TE 1.0 tgt 34% snaps; Lil'Jordan Humphrey WR 1.0 tgt 24% snaps
+   PIT: *Aaron Rodgers QB 2.5 car 94% snaps; Mason Rudolph QB 1.0 car 8% snaps; *Jaylen Warren RB 3.8 tgt 12.8 car 57% snaps; *Rico Dowdle RB 3.2 tgt 8.5 car 43% snaps; Lew Nichols III RB 0.2 tgt 1.5 car 6% snaps; *Max Hurleman WR 7.0 tgt; *Germie Bernard WR 5.8 tgt 91% snaps; *DK Metcalf WR 5.5 tgt 82% snaps; *Roman Wilson WR 4.8 tgt 43% snaps; Pat Freiermuth TE 3.5 tgt 55% snaps; Darnell Washington TE 3.0 tgt 56% snaps; Brandon Smith WR 1.2 tgt 52% snaps
+
+Saved 182 rows (96 lines flagged or hot) to news_2026_wk12_1124-0522.csv

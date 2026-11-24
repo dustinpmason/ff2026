@@ -1408,7 +1408,7 @@ section("26. model abstains on low-event binary stats (B32)")
 # 24-point "gap" invites exactly the misreading the boost framing exists to
 # prevent. CAUTION, not VETO — the model abstaining is not the leg being
 # broken, and TD legs are a market actively in use.
-_reg26 = wk[wk.season_type == "REG"]
+_reg26 = wk[(wk.season_type == "REG") & (wk.week <= 10)]   # pinned: live weeks must not move a test
 for _who in ("Rome Odunze", "Travis Kelce"):
     _et = threshold_prob(player_series(_reg26, _who, "receiving_tds"), 0.5)
     _v, _r = boost_verdict(_et)
@@ -10984,6 +10984,602 @@ chk("a correlated slip's structure finding ends with that text",
 chk("the overstatement is described on the product, not on a floor",
     "the EV on the floor is" not in _insp94.getsource(ff_boost)
     and "the EV on the product is" in _insp94.getsource(ff_boost))
+
+
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# 95. B258 — role news, whether the line has moved, and the hot-run caution
+# ---------------------------------------------------------------------------
+# Built 2026-11-24 after the simulator was tested on 41 games of real closing
+# lines and found to know nothing the price did not. Two trends were then
+# tested against the price: role news is worth something only before the line
+# moves, and a hot run is not a reason for the over. `ff_news` holds flags,
+# reads each book's opener beside its latest line, and marks hot runs. Every
+# fixture here is made up in the shape of a real response (the keys were
+# copied from live pulls on 2026-11-24), and the game log is made up too, so
+# no check can move when a new week of data lands.
+section("95. role news, line movement and the hot-run caution (B258)")
+import ff_news as _fn
+import pandas as _pd95
+
+
+def _oc95(name, who, op, la, oat="2026-11-23T03:00:00Z", lat="2026-11-24T04:00:00Z", **kw):
+    return {"name": name, "description": who, "open_price": -114, "open_point": op,
+            "open_at": oat, "latest_price": -115, "latest_point": la, "latest_at": lat,
+            "prob_shift": 0, "point_shift": None, "direction": "flat",
+            "num_snapshots": 3, "redacted": False, **kw}
+
+
+def _ou95(key, who, op, la, **kw):
+    return {"key": key, "description": f"{who} O/U", "period": None, "team": None,
+            "outcomes": [_oc95("Over", who, op, la, **kw), _oc95("Under", who, op, la, **kw)]}
+
+
+_mv95 = {"id": 1, "sport_key": "americanfootball_nfl", "home_team": "Detroit Lions",
+         "away_team": "Chicago Bears", "commence_time": "2026-11-26T18:00:00Z",
+         "steam": [], "redacted": False, "bookmakers": [
+    {"key": "draftkings", "title": "DraftKings", "markets": [
+        _ou95("player_reception_yds", "Al Alpha", 50.5, 56.5),          # +11.9%
+        _ou95("player_receptions", "Al Alpha", 4.5, 4.5),
+        _ou95("player_reception_yds", "Bo Beta", 40.5, 41.5),           # +2.5%
+        _ou95("player_rush_yds", "Cy Gamma", 60.5, 52.5),               # -13.2%
+        _ou95("player_reception_yds", "Zed Nobody", 20.5, 20.5),
+        _ou95("player_anytime_td", "Al Alpha", 0.5, 0.5),               # not a stat read here
+        {"key": "player_reception_yds", "description": "Al Alpha rungs", "outcomes": [
+            _oc95("60+ Receiving Yards", "Al Alpha", None, None),
+            _oc95("70+ Receiving Yards", "Al Alpha", None, None)]},
+        {"key": "player_reception_yds", "description": "no opener", "outcomes": [
+            _oc95("Over", "Di Delta", None, 30.5), _oc95("Under", "Di Delta", None, 30.5)]}]},
+    {"key": "fanduel", "title": "FanDuel", "markets": [
+        _ou95("player_reception_yds", "Al Alpha", 51.5, 51.5),          # flat
+        _ou95("player_reception_yds", "Bo Beta", 40.5, 40.5)]}]}
+_M95 = _fn.line_moves(_mv95)
+_al95 = _M95[(_M95.key == "al alpha") & (_M95.stat == "receiving_yards")].set_index("book")
+chk("a main line is read with its opener, its latest and the move between them",
+    len(_al95) == 2 and _al95.loc["draftkings", "open"] == 50.5
+    and _al95.loc["draftkings", "latest"] == 56.5
+    and abs(_al95.loc["draftkings", "move"] - 6 / 50.5) < 1e-12
+    and _al95.loc["fanduel", "move"] == 0.0, str(_al95[["open", "latest", "move"]].to_dict()))
+chk("rungs, a market with no stat here, and a line with no opener are not read",
+    len(_M95) == 7 and set(_M95.stat) == {"receiving_yards", "receptions", "rushing_yards"}
+    and "di delta" not in set(_M95.key), f"{len(_M95)} rows, {sorted(set(_M95.stat))}")
+chk("the game, its teams and its kickoff ride on the table",
+    _M95.attrs["game"] == "CHI at DET" and _M95.attrs["away"] == "CHI"
+    and _M95.attrs["kickoff"] == _pd95.Timestamp("2026-11-26 18:00", tz="UTC"),
+    str(_M95.attrs))
+chk("the open and latest times are read as UTC",
+    _al95.loc["draftkings", "open_at"] == _pd95.Timestamp("2026-11-23 03:00", tz="UTC")
+    and _al95.loc["draftkings", "latest_at"] == _pd95.Timestamp("2026-11-24 04:00", tz="UTC"))
+chk("a book filter keeps only the books named",
+    set(_fn.line_moves(_mv95, books={"fanduel"}).book) == {"fanduel"})
+for _lab95, _bad95, _say95 in (
+        ("a redacted response", dict(_mv95, redacted=True), "redacted"),
+        ("something that is not a movement response", {"players": []}, "event_movement"),
+        ("a response with no kickoff", {k: v for k, v in _mv95.items() if k != "commence_time"},
+         "event_movement"),
+        ("a team it does not know", dict(_mv95, home_team="London Monarchs"), "London Monarchs")):
+    try:
+        _fn.line_moves(_bad95)
+        _r95 = "no error"
+    except ValueError as _e95:
+        _r95 = str(_e95)
+    chk(f"{_lab95} is refused, and the refusal says why", _say95 in _r95, _r95[:90])
+chk("a saved response is read from its JSON text and from the harness's wrapper",
+    len(_fn.line_moves(json.dumps(_mv95))) == 7
+    and len(_fn.line_moves([{"type": "text", "text": json.dumps(_mv95)}])) == 7)
+
+# --- flags -----------------------------------------------------------------
+_inj95 = {"sport": "football_nfl", "count": 6, "players": [
+    {"player_name": "Al Alpha", "team": "Detroit Lions", "team_abbr": "DET", "position": "WR",
+     "status": "Out", "status_code": "out", "injury_type": "Ankle",
+     "status_since": "2026-11-24T00:52:15.194929Z"},
+    {"player_name": "Ray Rams", "team": "Los Angeles Rams", "team_abbr": "LAR", "position": "TE",
+     "status": "Injured Reserve", "status_code": "injured_list", "injury_type": "Knee",
+     "status_since": "2026-11-19T20:48:00Z"},
+    {"player_name": "Quin Maybe", "team": "Detroit Lions", "team_abbr": "DET", "position": "RB",
+     "status": "Questionable", "status_code": "questionable", "injury_type": "Hip",
+     "status_since": "2026-11-23T12:00:00Z"},
+    {"player_name": "Dee Doubt", "team": "Chicago Bears", "team_abbr": "CHI", "position": "QB",
+     "status": "Doubtful", "status_code": "doubtful", "injury_type": "Hand",
+     "status_since": "2026-11-23T12:00:00Z"},
+    {"player_name": "Big Guard", "team": "Detroit Lions", "team_abbr": "DET", "position": "G",
+     "status": "Out", "status_code": "out", "injury_type": "Back",
+     "status_since": "2026-11-23T12:00:00Z"},
+    {"player_name": "Pro Bable", "team": "Detroit Lions", "team_abbr": "DET", "position": "WR",
+     "status": "Probable", "status_code": "probable", "injury_type": "Toe",
+     "status_since": "2026-11-23T12:00:00Z"}]}
+_fl95 = {f.player: f for f in _fn.flags_from_injuries(_inj95)}
+chk("out, injured reserve, doubtful and questionable become flags; a lineman and a "
+    "probable do not",
+    {k: v.kind for k, v in _fl95.items()} == {"Al Alpha": "OUT", "Ray Rams": "OUT",
+                                              "Quin Maybe": "QUESTIONABLE", "Dee Doubt": "DOUBTFUL"},
+    str({k: v.kind for k, v in _fl95.items()}))
+chk("a flag's time is when the status began, and another book's team code is put right",
+    _fl95["Al Alpha"].at == _pd95.Timestamp("2026-11-24 00:52:15.194929", tz="UTC")
+    and _fl95["Ray Rams"].team == "LA", f"{_fl95['Al Alpha'].at}, {_fl95['Ray Rams'].team}")
+try:
+    _fn.flags_from_injuries({"bookmakers": []})
+    _r95 = "no error"
+except ValueError as _e95:
+    _r95 = str(_e95)
+chk("an injuries response in another shape is refused", "get_injuries" in _r95, _r95[:90])
+_fp95 = {"practice_details": [
+    {"name": "Al Alpha", "status": "Questionable", "injury_type": "Foot", "team_id": "DET",
+     "position_id": "WR", "probability_of_playing": "0.76719", "practice_1": "DNP",
+     "practice_2": "Limit", "practice_3": "Limit", "injury_update_date": "2026-11-21 00:43:55"},
+    {"name": "Hurt Qb", "status": "IR", "injury_type": "", "team_id": "JAC", "position_id": "QB",
+     "probability_of_playing": None, "practice_1": None, "practice_2": None, "practice_3": None},
+    {"name": "Fine Guy", "status": "Healthy", "team_id": "DET", "position_id": "WR"}],
+    "player_news": [
+    {"player_name": "Al Alpha", "published": "2026-11-18 18:37:56 UTC", "news": "old", "url": "u1"},
+    {"player_name": "Al Alpha", "published": "2026-11-20 14:28:46 UTC", "news": "new", "url": "u2"}]}
+_ff95 = {f.player: f for f in _fn.flags_from_fantasypros(_fp95)}
+chk("FantasyPros: questionable and IR become flags, a healthy player does not, and "
+    "JAC is read as JAX",
+    {k: (v.kind, v.team) for k, v in _ff95.items()} == {"Al Alpha": ("QUESTIONABLE", "DET"),
+                                                        "Hurt Qb": ("OUT", "JAX")},
+    str({k: (v.kind, v.team) for k, v in _ff95.items()}))
+chk("its time is the NEWEST dated news item, and a player with none has no time",
+    _ff95["Al Alpha"].at == _pd95.Timestamp("2026-11-20 14:28:46", tz="UTC")
+    and _ff95["Al Alpha"].url == "u2" and _ff95["Hurt Qb"].at is None,
+    f"{_ff95['Al Alpha'].at}, {_ff95['Hurt Qb'].at}")
+chk("the practice line and the chance of playing are carried in the detail",
+    "practice DNP/Limit/Limit" in _ff95["Al Alpha"].detail
+    and "77% to play" in _ff95["Al Alpha"].detail, _ff95["Al Alpha"].detail)
+_now95 = _pd95.Timestamp("2026-11-24 05:00", tz="UTC")
+_ok95 = _fn.manual_flag("Al Alpha", "Detroit Lions", "WR", "OUT", "beat report",
+                        "2026-11-23 20:00-05:00", "ruled out", now=_now95)
+chk("a hand-entered finding is kept with its time read into UTC and its team as a code",
+    _ok95.team == "DET" and _ok95.at == _pd95.Timestamp("2026-11-24 01:00", tz="UTC"),
+    f"{_ok95.team}, {_ok95.at}")
+for _lab95, _kw95, _say95 in (
+        ("no source", dict(source="  "), "no source"),
+        ("no time", dict(at=None), "no time given"),
+        ("a time that does not parse", dict(at="yesterday-ish"), "no time given"),
+        ("a time with no time zone", dict(at="2026-11-24 01:00"), "no time zone"),
+        ("a date with no time", dict(at="2026-11-23"), "no time zone"),
+        ("a time in the future", dict(at="2026-11-25 05:00+00:00"), "future"),
+        ("news more than 72 hours old", dict(at="2026-11-20 04:00+00:00"), "too old"),
+        ("a kind it does not know", dict(kind="BENCHED"), "kind"),
+        ("a team it does not know", dict(team="London"), "London"),
+        ("a position it does not carry", dict(position="K"), "position")):
+    _a95 = dict(player="Al Alpha", team="DET", position="WR", kind="OUT", source="beat report",
+                at="2026-11-24 01:00+00:00", now=_now95)
+    _a95.update(_kw95)
+    try:
+        _fn.manual_flag(**_a95)
+        _r95 = "no error"
+    except ValueError as _e95:
+        _r95 = str(_e95)
+    chk(f"a hand-entered finding with {_lab95} is refused", _say95 in _r95, _r95[:80])
+chk("the codes other sources use for a team are put right when entered by hand",
+    _fn.manual_flag("Ray Rams", "LAR", "TE", "OUT", "x", "2026-11-24 01:00+00:00", now=_now95).team == "LA"
+    and _fn.manual_flag("A Jag", "JAC", "WR", "OUT", "x", "2026-11-24 01:00+00:00", now=_now95).team == "JAX"
+    and _fn.team_code("WSH") == "WAS" and _fn.team_code("Los Angeles Rams") == "LA"
+    and _fn.team_code("London") is None)
+chk("a time written with UTC or a Z is taken as one with an offset is",
+    _fn.manual_flag("Al Alpha", "DET", "WR", "OUT", "x", "2026-11-24 01:00 UTC", now=_now95).at == _ok95.at
+    and _fn.manual_flag("Al Alpha", "DET", "WR", "OUT", "x", "2026-11-24T01:00:00Z", now=_now95).at == _ok95.at)
+_st95 = _fn.manual_flag("Ret Urner", "CHI", "WR", "OUT", "FantasyPros listing", "2026-10-27 00:00-04:00",
+                        "injured reserve", now=_now95, confirmed="2026-11-23 23:55-05:00")
+chk("an absence that began long ago is taken when a current listing confirms it, and says so",
+    _st95.kind == "OUT" and _st95.at == _pd95.Timestamp("2026-10-27 04:00", tz="UTC")
+    and _st95.detail == "injured reserve; still out when read Tue 11-24 04:55 UTC", _st95.detail)
+for _lab95, _kw95, _say95 in (
+        ("a confirmed time that is itself stale", dict(confirmed="2026-11-20 00:00+00:00"), "inside the last 72 hours"),
+        ("a confirmed time in the future", dict(confirmed="2026-11-26 00:00+00:00"), "inside the last 72 hours"),
+        ("a confirmed time before the absence began", dict(at="2026-11-23 12:00+00:00", confirmed="2026-11-23 00:00+00:00"), "after the absence began"),
+        ("a confirmed time with no zone", dict(confirmed="2026-11-24 00:10"), "time zone"),
+        ("a confirmed time on news that is not an absence", dict(kind="BACK"), "only for a standing absence")):
+    _a95 = dict(player="Ret Urner", team="CHI", position="WR", kind="OUT", source="x",
+                at="2026-10-27 00:00-04:00", now=_now95, confirmed="2026-11-23 23:55-05:00")
+    _a95.update(_kw95)
+    try:
+        _fn.manual_flag(**_a95)
+        _r95 = "no error"
+    except ValueError as _e95:
+        _r95 = str(_e95)
+    chk(f"{_lab95} is refused", _say95 in _r95, _r95[:110])
+chk("news exactly 72 hours old is still taken",
+    _fn.manual_flag("Al Alpha", "DET", "WR", "OUT", "x", "2026-11-21 05:00+00:00",
+                    now=_now95).kind == "OUT")
+_mg95 = _fn.merge_flags(
+    [_fn.RoleFlag("Al Alpha", "DET", "WR", "QUESTIONABLE", "A", _pd95.Timestamp("2026-11-22", tz="UTC"), "q")],
+    [_fn.RoleFlag("Al Alpha", "DET", "WR", "OUT", "B", _pd95.Timestamp("2026-11-24", tz="UTC"), "late"),
+     _fn.RoleFlag("Al Alpha", "DET", "WR", "OUT", "C", _pd95.Timestamp("2026-11-23", tz="UTC"), "early"),
+     _fn.RoleFlag("Al Alpha", "DET", "WR", "OUT", "D", None, "undated"),
+     _fn.RoleFlag("Al Alpha", "CHI", "WR", "NOTE", "E", None, "another team's namesake")])
+_m95 = [f for f in _mg95 if f.team == "DET"][0]
+chk("merging keeps one flag a player and team: the most severe, at its EARLIEST time",
+    len(_mg95) == 2 and _m95.kind == "OUT"
+    and _m95.at == _pd95.Timestamp("2026-11-23", tz="UTC"), f"{len(_mg95)}, {_m95.kind}, {_m95.at}")
+_ts95 = lambda d: _pd95.Timestamp(d, tz="UTC")
+_bk95 = lambda *kt: _fn.merge_flags([_fn.RoleFlag("Al Alpha", "DET", "WR", k, k + str(i), t and _ts95(t))
+                                     for i, (k, t) in enumerate(kt)])[0].kind
+chk("a report that he is BACK, timed after the listing that has him out, wins",
+    _bk95(("OUT", "2026-11-02"), ("BACK", "2026-11-23")) == "BACK"
+    and _bk95(("BACK", "2026-11-23"), ("OUT", "2026-11-02"), ("QUESTIONABLE", "2026-11-20")) == "BACK")
+chk("a BACK older than the out listing, or with no time, does not",
+    _bk95(("OUT", "2026-11-23"), ("BACK", "2026-11-02")) == "OUT"
+    and _bk95(("OUT", "2026-11-23"), ("BACK", None)) == "OUT"
+    and _bk95(("OUT", "2026-11-23"), ("BACK", "2026-11-23")) == "OUT")
+chk("and every flag's detail is kept, the leading one first",
+    _m95.detail == "early; late; undated; q", _m95.detail)
+chk("and no source is lost in the merge",
+    all(s in _m95.source for s in "ABCD") and _m95.source.startswith("C"), _m95.source)
+
+# --- roles and bearings, on a made-up game log -------------------------------
+def _g95(t, team, pid, name, pos, tgt=0, car=0, snaps=0.5, start=False, ry=0.0, rec=0, att=0):
+    return dict(season=t // 100, week=t % 100, t=t, team=team, player_id=pid, name=name,
+                position=pos, targets=tgt, carries=car, offense_pct=snaps, qb_start=start,
+                receiving_yards=ry, receptions=rec, rushing_yards=0.0, attempts=att,
+                completions=0, passing_yards=0.0, passing_tds=0)
+
+
+_rows95 = []
+for _t95, _ry95, _rc95 in zip((202606, 202607, 202608, 202609, 202610, 202611),
+                              (10.0, 60.0, 58.0, 0.0, 61.0, 70.0), (5, 5, 1, 1, 5, 5)):
+    _rows95 += [_g95(_t95, "DET", "a", "Al Alpha", "WR", tgt=8, ry=_ry95, rec=_rc95),
+                _g95(_t95, "DET", "b", "Bo Beta", "WR", tgt=4, ry=30.0, rec=2),
+                _g95(_t95, "DET", "e", "Ed Edge", "TE", tgt=1, ry=5.0),
+                _g95(_t95, "DET", "c", "Cy Gamma", "RB", tgt=2, car=15),
+                _g95(_t95, "DET", "h", "Hal Half", "RB", tgt=1, car=7),
+                _g95(_t95, "DET", "q", "Qu Bee", "QB", start=True, att=30),
+                _g95(_t95, "CHI", "x", "Xi Other", "WR", tgt=9, ry=80.0)]
+    if _t95 <= 202609:      # had a role, then sat CHI's last two games
+        _rows95.append(_g95(_t95, "CHI", "r", "Ret Urner", "WR", tgt=6, ry=40.0))
+_rows95 += [_g95(202611, "DET", "q2", "Bak Up", "QB", snaps=0.05, att=2),    # played, did not start
+            _g95(202604, "DET", "old", "Long Gone", "WR", tgt=12),      # not in the last four
+            _g95(202612, "DET", "a", "Al Alpha", "WR", tgt=1, ry=999.0)]   # the week itself
+_G95 = _pd95.DataFrame(_rows95).sort_values("t").reset_index(drop=True)
+_R95 = _fn.team_roles(_G95, "DET", 2026, 12).set_index("name")
+chk("a team's players are those active in one of its last four games",
+    set(_R95.index) == {"Al Alpha", "Bo Beta", "Ed Edge", "Cy Gamma", "Hal Half", "Qu Bee", "Bak Up"},
+    str(sorted(_R95.index)))
+chk("a real role is 4 targets or 8 carries a game, and a quarterback who started",
+    _R95.role.to_dict() == {"Al Alpha": True, "Bo Beta": True, "Ed Edge": False,
+                            "Cy Gamma": True, "Hal Half": False, "Qu Bee": True, "Bak Up": False},
+    str(_R95.role.to_dict()))
+chk("the week being swept is not in a player's averages",
+    _R95.loc["Al Alpha", "targets"] == 8.0, str(_R95.loc["Al Alpha", "targets"]))
+_Rc95 = _fn.team_roles(_G95, "CHI", 2026, 12).set_index("name")
+chk("how many of the team's latest games a player has sat is counted",
+    _Rc95.missed.to_dict() == {"Xi Other": 0, "Ret Urner": 2} and bool(_Rc95.loc["Ret Urner", "role"])
+    and set(_R95.missed) == {0}, str(_Rc95.missed.to_dict()))
+_Rr95 = _R95.reset_index()
+_f95 = lambda who, pos, kind: _fn.RoleFlag(who, "DET", pos, kind, "s", _now95)
+_b95 = _fn.bearings(_f95("Al Alpha", "WR", "OUT"), _Rr95)
+chk("a receiver with a role out: the other receivers and tight ends are UP, and nobody else",
+    {b.player for b in _b95} == {"Bo Beta", "Ed Edge"} and {b.direction for b in _b95} == {"UP"}
+    and _b95[0].stats == ("receiving_yards", "receptions"),
+    str([(b.player, b.direction) for b in _b95]))
+chk("a player with no real role out bears on nobody",
+    _fn.bearings(_f95("Ed Edge", "TE", "OUT"), _Rr95) == []
+    and _fn.bearings(_f95("Hal Half", "RB", "OUT"), _Rr95) == [])
+chk("a player the team has not had in its last four games bears on nobody",
+    _fn.bearings(_f95("Long Gone", "WR", "OUT"), _Rr95) == [])
+_b95 = _fn.bearings(_f95("Cy Gamma", "RB", "OUT"), _Rr95)
+chk("a back with a role out: the other backs are UP, on rushing and receiving",
+    [(b.player, b.direction) for b in _b95] == [("Hal Half", "UP")]
+    and set(_b95[0].stats) == {"rushing_yards", "carries", "receiving_yards", "receptions"},
+    str([(b.player, b.stats) for b in _b95]))
+_b95 = _fn.bearings(_f95("New Guy", "WR", "BACK"), _Rr95)
+chk("a receiver back: the receivers and tight ends are DOWN",
+    {b.player for b in _b95} == {"Al Alpha", "Bo Beta", "Ed Edge"}
+    and {b.direction for b in _b95} == {"DOWN"}, str([(b.player, b.direction) for b in _b95]))
+_b95 = _fn.bearings(_f95("Qu Bee", "QB", "OUT"), _Rr95)
+chk("the starting quarterback out: everyone who catches is QB, on receiving stats only",
+    {b.player for b in _b95} == {"Al Alpha", "Bo Beta", "Ed Edge", "Cy Gamma", "Hal Half"}
+    and {b.direction for b in _b95} == {"QB"}
+    and all(b.stats == ("receiving_yards", "receptions") for b in _b95))
+chk("a NEW_QB flag does the same whoever it names",
+    {b.direction for b in _fn.bearings(_f95("Rookie Arm", "QB", "NEW_QB"), _Rr95)} == {"QB"})
+chk("a questionable player with a role puts his group on WATCH, with no direction",
+    {b.direction for b in _fn.bearings(_f95("Al Alpha", "WR", "QUESTIONABLE"), _Rr95)} == {"WATCH"}
+    and _fn.bearings(_f95("Ed Edge", "TE", "QUESTIONABLE"), _Rr95) == [])
+
+# --- is it in the price ------------------------------------------------------
+def _ln95(*books):
+    return _pd95.DataFrame([dict(book=b, open=o, latest=l, move=(l - o) / o,
+                                 open_at=_pd95.Timestamp(oa, tz="UTC"))
+                            for b, o, l, oa in books])
+
+
+_t95 = _pd95.Timestamp("2026-11-23 12:00", tz="UTC")
+_before95, _after95 = "2026-11-23 03:00", "2026-11-23 18:00"
+chk("no line posted reads NO LINE",
+    _fn.priced("UP", _ln95(), _t95)[0] == "NO LINE")
+chk("every book 10%+ the way the news points reads PRICED",
+    _fn.priced("UP", _ln95(("dk", 50, 56, _before95), ("fd", 50, 55, _before95)), _t95)[0] == "PRICED")
+_v95 = _fn.priced("UP", _ln95(("dk", 50, 56, _before95), ("fd", 50, 51, _before95)), _t95)
+chk("one book moved and one not reads PARTLY, and names the one that has not",
+    _v95[0] == "PARTLY" and "Not moved: fd." in _v95[1], str(_v95))
+chk("no book 3% from its opener reads NOT MOVED",
+    _fn.priced("UP", _ln95(("dk", 50, 51, _before95), ("fd", 50, 50, _before95)), _t95)[0] == "NOT MOVED")
+chk("a move between 3% and 10% reads SMALL MOVE",
+    _fn.priced("UP", _ln95(("dk", 50, 53, _before95), ("fd", 50, 50, _before95)), _t95)[0] == "SMALL MOVE")
+chk("a book 10%+ the other way reads MOVED AGAINST",
+    _fn.priced("UP", _ln95(("dk", 50, 44, _before95), ("fd", 50, 56, _before95)), _t95)[0] == "MOVED AGAINST")
+chk("for volume DOWN the same line moves read the other way round",
+    _fn.priced("DOWN", _ln95(("dk", 50, 44, _before95)), _t95)[0] == "PRICED"
+    and _fn.priced("DOWN", _ln95(("dk", 50, 56, _before95)), _t95)[0] == "MOVED AGAINST")
+chk("lines first posted after the news read POSTED AFTER, whatever they did since",
+    _fn.priced("UP", _ln95(("dk", 50, 50, _after95), ("fd", 50, 56, _after95)), _t95)[0] == "POSTED AFTER")
+chk("one line posted before the news is enough for it not to be POSTED AFTER",
+    _fn.priced("UP", _ln95(("dk", 50, 50, _before95), ("fd", 50, 50, _after95)), _t95)[0] == "NOT MOVED")
+_v95 = _fn.priced("UP", _ln95(("dk", 50, 50, _after95)), None)
+chk("news with no time is never POSTED AFTER, and the reading says the time is missing",
+    _v95[0] == "NOT MOVED" and "no time" in _v95[1], str(_v95))
+chk("news with no direction only shows the moves",
+    _fn.priced("QB", _ln95(("dk", 50, 56, _before95)), _t95)[0] == "SHOWN"
+    and _fn.priced("WATCH", _ln95(("dk", 50, 44, _before95)), _t95)[0] == "SHOWN")
+chk("the reading lists each book's opener, latest line and move",
+    "dk 50 -> 56 (+12%)" in _fn.priced("UP", _ln95(("dk", 50, 56, _before95)), _t95)[1])
+
+# --- the hot-run caution -------------------------------------------------------
+# Al Alpha's receiving yards going into Week 12: 10, 60, 58, 0, 61, 70 (oldest first).
+_h95 = _fn.form(_G95, "a", "receiving_yards", 55.5, 2026, 12)
+chk("over the line in 4 of his last 5 reads HOT, and the count and the games are shown",
+    _h95.read == "HOT" and _h95.over5 == 4 and _h95.values == (60.0, 58.0, 0.0, 61.0, 70.0)
+    and "4 of his last 5" in _h95.text, f"{_h95.read}, {_h95.over5}, {_h95.values}")
+chk("a game he played and recorded nothing in counts as one of the five",
+    0.0 in _h95.values)
+chk("3 of 5 reads nothing, and 1 of 5 reads COLD",
+    _fn.form(_G95, "a", "receiving_yards", 59.5, 2026, 12).read == ""
+    and _fn.form(_G95, "a", "receiving_yards", 65.5, 2026, 12).read == "COLD"
+    and _fn.form(_G95, "a", "receiving_yards", 65.5, 2026, 12).over5 == 1)
+chk("2 of 5 reads nothing: cold starts at 1",
+    _fn.form(_G95, "a", "receiving_yards", 60.5, 2026, 12).read == ""
+    and _fn.form(_G95, "a", "receiving_yards", 60.5, 2026, 12).over5 == 2)
+chk("a result equal to the line is not over it",
+    _fn.form(_G95, "a", "receiving_yards", 58.0, 2026, 12).over5 == 3)
+chk("only games before the week are counted",
+    999.0 not in _fn.form(_G95, "a", "receiving_yards", 55.5, 2026, 12).values
+    and _fn.form(_G95, "a", "receiving_yards", 55.5, 2026, 11).values == (10.0, 60.0, 58.0, 0.0, 61.0))
+chk("fewer than five games reads nothing either way",
+    _fn.form(_G95, "a", "receiving_yards", 5.5, 2026, 10).read == ""
+    and _fn.form(_G95, "a", "receiving_yards", 5.5, 2026, 10).over5 is None
+    and _fn.form(_G95, "nobody", "receiving_yards", 5.5, 2026, 12).text == "no game log")
+chk("what role news has been worth is stated with its sample, and as a lead",
+    "54.5%" in _fn.EVIDENCE["UP"] and "101 lines from 14 of the 41 games" in _fn.EVIDENCE["UP"]
+    and "too few to act on alone" in _fn.EVIDENCE["UP"] and "Shown as context" in _fn.EVIDENCE["DOWN"]
+    and "not established" in _fn.EVIDENCE["QB"])
+chk("what a hot run has been worth is stated with its sample",
+    "43.6%" in _fn.HOT_TEXT and "50.8%" in _fn.HOT_TEXT and "287 lines" in _fn.HOT_TEXT
+    and "41 games" in _fn.HOT_TEXT)
+
+# --- one game's sweep -----------------------------------------------------------
+_flags95 = [_fn.RoleFlag("Cy Gamma", "DET", "RB", "OUT", "s", _t95),          # Hal Half UP: no line
+            _fn.RoleFlag("Bo Beta", "DET", "WR", "OUT", "s", _t95),            # Al Alpha UP
+            _fn.RoleFlag("Xi Other", "CHI", "WR", "QUESTIONABLE", "s", _t95),
+            _fn.RoleFlag("Far Away", "SEA", "WR", "OUT", "s", _t95)]           # another game
+_S95 = _fn.sweep_game(_mv95, _flags95, _G95, season=2026, week=12, now=_now95)
+chk("flags for teams not in the game are left out of its sweep",
+    {f.team for f in _S95.flags} == {"DET", "CHI"} and "Far Away" not in _S95.text)
+_top95 = _S95.text.split("1. FLAGS")[0]
+chk("news the line may not have caught up with is listed first, with the book that has not moved",
+    "0. NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (2)" in _top95
+    and "Al Alpha (DET) rec yds: Bo Beta OUT, volume UP. PARTLY." in _top95
+    and "Not moved: fanduel." in _top95
+    and "Al Alpha (DET) catches: Bo Beta OUT, volume UP. NOT MOVED." in _top95, _top95[-420:])
+_l95 = {ln.split(":")[0].strip(): ln for ln in _top95.splitlines() if "Bo Beta OUT" in ln}
+chk("there, a line the news points UP on that is also on a hot run says so, and one that is not does not",
+    "BUT he is on a hot run" in _l95["Al Alpha (DET) rec yds"]
+    and "hot run" not in _l95["Al Alpha (DET) catches"], str(_l95))
+chk("a teammate the news bears on who has no main line posted is named",
+    "no main line posted yet for: Hal Half" in _S95.text
+    and "no main line posted yet for: Ed Edge" in _S95.text)
+chk("the roles are listed with a star on a real role, and a quarterback without target counts",
+    "*Qu Bee QB 50% snaps" in _S95.text and "*Cy Gamma RB 2.0 tgt 15.0 car" in _S95.text
+    and "; Hal Half RB 1.0 tgt 7.0 car" in _S95.text, _S95.text.split("3. ROLES")[1])
+chk("a hot run is marked on a flagged line and listed in its own section with what it has been worth",
+    "! HOT: over 54 in 4 of his last 5" in _S95.text
+    and "2. LINES SITTING ON A HOT RUN (1)" in _S95.text and _fn.HOT_TEXT in _S95.text,
+    _S95.text.split("2. LINES")[1][:300] if "2. LINES" in _S95.text else "no section 2")
+chk("a player with a role who sat the team's last games and carries no flag is listed to check",
+    "1b. RETURNS TO CHECK (1)" in _S95.text
+    and "Ret Urner (CHI WR): missed its last 2 games; 6.0 tgt" in _S95.text,
+    _S95.text.split("1b.")[1][:300])
+_S95r = _fn.sweep_game(_mv95, [_fn.RoleFlag("Ret Urner", "CHI", "WR", "OUT", "s", _t95),
+                               _fn.RoleFlag("Qu Bee", "DET", "QB", "QUESTIONABLE", "s", _t95),
+                               _fn.RoleFlag("Ed Edge", "DET", "TE", "OUT", "s", _t95),
+                               _fn.RoleFlag("Bak Up", "DET", "QB", "OUT", "s", _t95),
+                               _fn.RoleFlag("No Body", "DET", "WR", "OUT", "s", _t95)],
+                       _G95, season=2026, week=12, now=_now95)
+chk("and he is not listed once a flag has him out",
+    "1b. RETURNS TO CHECK (0)" in _S95r.text)
+chk("a flag that bears on nobody says which of four reasons applies",
+    "no bearing is drawn from this kind of news at his position" in _S95r.text
+    and "he did not start the team's last game" in _S95r.text
+    and "he had no real role (under 4 targets and 8 carries a game)" in _S95r.text
+    and "he is not among this team's players of its last four games" in _S95r.text)
+_S95p = _fn.sweep_game(_mv95, [_fn.RoleFlag("Bo Beta", "DET", "WR", "OUT", "s", _ts95("2026-11-22")),
+                               _fn.RoleFlag("Cy Gamma", "DET", "RB", "QUESTIONABLE", "s", _t95),
+                               _fn.RoleFlag("Joshua Dobbs", "DET", "QB", "QUESTIONABLE", "s", _t95)],
+                       _G95.assign(name=_G95.name.replace({"Hal Half": "Zed Nobody"})),
+                       season=2026, week=12, now=_now95)
+chk("lines first posted after the news are counted in one line, not listed, and are not in section 0",
+    "2 lines first posted AFTER this news, so priced with it from the start: Al Alpha" in _S95p.text
+    and "NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0)" in _S95p.text
+    and "Al Alpha rec yds (volume UP)" not in _S95p.text, _S95p.text.split("1b.")[0][-600:])
+chk("but they are still in the log, as POSTED AFTER",
+    set(_S95p.rows.verdict[_S95p.rows.flag_player == "Bo Beta"]) == {"POSTED AFTER"}
+    and int((_S95p.rows.flag_player == "Bo Beta").sum()) == 3)
+chk("a watched line that no book has moved 3% is counted, not listed",
+    "1 other line within 3% of the opener at every book" in _S95p.text
+    and "Zed Nobody rec yds (watch)" not in _S95p.text, _S95p.text.split("1b.")[0][-400:])
+_S95o = _fn.sweep_game(_mv95, [_fn.RoleFlag("Bo Beta", "DET", "WR", "OUT", "s", _t95),
+                               _fn.RoleFlag("Al Alpha", "DET", "WR", "OUT", "s", _t95)],
+                       _G95, season=2026, week=12, now=_now95)
+chk("a teammate who is out himself is not listed as gaining from another's absence",
+    "NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0)" in _S95o.text and len(_S95o.rows[_S95o.rows.why == "flag"]) == 0,
+    _S95o.text.split("1b.")[0][-500:])
+_S95n = _fn.sweep_game(_mv95, [_fn.RoleFlag("Al Alpha", "DET", "WR", "NOTE", "s", _t95, "moved to the slot"),
+                               _fn.RoleFlag("Bo Beta", "DET", "WR", "OUT", "s", _t95)],
+                       _G95, season=2026, week=12, now=_now95)
+chk("a flagged player who is not out has his own lines shown beside the flag",
+    "his own lines: rec yds draftkings 50.5 -> 56.5 (+12%), fanduel 51.5 -> 51.5 (+0%); "
+    "catches draftkings 4.5 -> 4.5 (+0%)" in _S95n.text
+    and "a note is shown for reading; no bearing is drawn from it" in _S95n.text,
+    _S95n.text.split("1b.")[0][-700:])
+chk("a player who is out does not: his lines are dead",
+    _S95n.text.count("his own lines:") == 1)
+_own95 = _S95n.rows[_S95n.rows.why == "own"]
+chk("a line a flag bears on is logged as that, not a second time as his own",
+    len(_own95) == 0 and len(_S95n.rows) == 3 and set(_S95n.rows.flag_player) == {"Bo Beta"}
+    and not _S95n.rows.duplicated(["player", "stat", "book"]).any(),
+    str(_S95n.rows[["player", "stat", "book", "why"]].values.tolist()))
+_S95m = _fn.sweep_game(_mv95, [_fn.RoleFlag("Al Alpha", "DET", "WR", "NOTE", "s", _t95)],
+                       _G95, season=2026, week=12, now=_now95)
+_own95 = _S95m.rows[_S95m.rows.why == "own"]
+chk("with no flag bearing on it, his own line is logged as his own, once",
+    len(_own95) == 3 and set(_own95.flag_kind) == {"NOTE"} and set(_own95.verdict) == {"SHOWN"}
+    and len(_S95m.rows) == 3, str(_S95m.rows[["player", "stat", "book", "why"]].values.tolist()))
+_S95z = _fn.sweep_game(_mv95, [_fn.RoleFlag("Zed Nobody", "DET", "WR", "OUT", "s", _t95),
+                               _fn.RoleFlag("Bo Beta", "DET", "WR", "OUT", "s", _t95),
+                               _fn.RoleFlag("Ed Edge", "DET", "TE", "OUT", "s", _t95)],
+                       _G95, season=2026, week=12, now=_now95)
+chk("a player flagged out who has a main line posted is called out, on the team or new to it",
+    _S95z.clashes == ["Bo Beta (DET WR)", "Zed Nobody (DET WR)"]
+    and "! FLAGGED OUT, YET 2 books have a main line up for him (rec yds)" in _S95z.text
+    and "! FLAGGED OUT, YET 1 book has a main line up for him (rec yds)" in _S95z.text
+    and _S95z.text.count("FLAGGED OUT, YET") == 2, f"{_S95z.clashes}")
+chk("what a kind of news has been worth is printed once a game, then referred back to",
+    _S95.text.count(_fn.EVIDENCE["UP"]) == 1
+    and _S95.text.count("a same-position teammate with a role is out (what that has been worth: above)") == 1
+    and set(_fn.WHAT) == set(_fn.EVIDENCE) and all(_fn.EVIDENCE[k].startswith(_fn.WHAT[k]) for k in _fn.WHAT),
+    f"{_S95.text.count(_fn.EVIDENCE['UP'])}")
+chk("a sweep carries its kickoff, its section 0 lines, its returns and its unplaced players",
+    _S95.kickoff == _pd95.Timestamp("2026-11-26 18:00", tz="UTC") and len(_S95.look) == 2
+    and _S95.returns == ["Ret Urner (CHI WR)"] and _S95.unplaced == ["Zed Nobody"],
+    f"{_S95.kickoff}, {len(_S95.look)}, {_S95.returns}, {_S95.unplaced}")
+chk("a posted player on neither team's recent games is named, not dropped",
+    "not placed on either team" in _S95.text and "Zed Nobody" in _S95.text)
+chk("the sweep says it makes no projection",
+    "No projection is made here" in _S95.text)
+_L95 = _S95.rows
+chk("the log has one row a flagged player, stat and book, with the flag and the line",
+    list(_L95.columns) == _fn.LOG_COLS and len(_L95) == 3
+    and set(zip(_L95.player, _L95.stat, _L95.book)) == {
+        ("Al Alpha", "receiving_yards", "draftkings"), ("Al Alpha", "receiving_yards", "fanduel"),
+        ("Al Alpha", "receptions", "draftkings")}
+    and set(_L95.flag_player) == {"Bo Beta"} and set(_L95.verdict) == {"PARTLY", "NOT MOVED"},
+    str(_L95[["player", "stat", "book", "verdict"]].values.tolist()))
+chk("and a hot line is logged once, not a second time as hot",
+    int((_L95.why == "hot").sum()) == 0 and set(_L95.form[_L95.stat == "receiving_yards"]) == {"HOT"})
+_S95b = _fn.sweep_game(_mv95, [], _G95, season=2026, week=12, now=_now95)
+chk("with no flags the sweep says so, lists nothing to look at, and still logs the hot line",
+    "1. FLAGS (0)" in _S95b.text and "NEWS THE LINE MAY NOT HAVE CAUGHT UP WITH (0)" in _S95b.text
+    and list(_S95b.rows.why.unique()) == ["hot"] and len(_S95b.rows) == 2,
+    str(_S95b.rows[["player", "stat", "why"]].values.tolist()))
+import tempfile as _tf95
+with _tf95.TemporaryDirectory() as _d95:
+    _saved95 = _fn.save_log([_S95, _S95b], _d95 + "/news_log.csv")
+    _back95 = _pd95.read_csv(_d95 + "/news_log.csv")
+chk("the log of several sweeps saves as one table and reads back whole",
+    len(_saved95) == 5 and len(_back95) == 5 and list(_back95.columns) == _fn.LOG_COLS)
+chk("every market the sweep asks for has a stat, and every direction has its evidence",
+    set(_fn.SWEEP_MARKETS.split(",")) == set(_fn.MARKET_STAT)
+    and set(_fn.EVIDENCE) == {"UP", "DOWN", "QB", "WATCH"}
+    and all(s in _fn.PLAIN for s in _fn.MARKET_STAT.values()))
+
+# --- the command line ---------------------------------------------------------
+import contextlib as _cx95, io as _io95
+
+
+def _run95(argv, games=_G95):
+    buf = _io95.StringIO()
+    with _cx95.redirect_stdout(buf):
+        code = _fn.main(argv, games=games)
+    return code, buf.getvalue()
+
+
+with _tf95.TemporaryDirectory() as _d95:
+    _p95 = lambda name, obj: (open(f"{_d95}/{name}", "w").write(
+        obj if isinstance(obj, str) else json.dumps(obj)), f"{_d95}/{name}")[1]
+    _late95 = _p95("late.json", dict(_mv95, commence_time="2026-11-27T01:15:00Z",
+                                     away_team="Kansas City Chiefs", home_team="Buffalo Bills"))
+    _early95 = _p95("early.json", _mv95)
+    _inj95f = _p95("inj.json", dict(_inj95, players=[
+        dict(x, player_name="Bo Beta", status="Questionable", status_code="questionable")
+        if x["player_name"] == "Al Alpha" else x for x in _inj95["players"]]))
+    _good95 = _p95("flags.json", {"flags": [
+        {"player": "Bo Beta", "team": "DET", "position": "WR", "kind": "OUT",
+         "source": "beat report", "at": "2026-11-23 12:00+00:00", "detail": "ruled out",
+         "url": "https://example.com/a"}]})
+    _c95, _o95 = _run95(["--week", "12", "--now", "2026-11-24 05:00+00:00", "--injuries", _inj95f,
+                         "--flags", _good95, "--out", f"{_d95}/log.csv", _late95, _early95])
+    _lg95 = _pd95.read_csv(f"{_d95}/log.csv")
+    chk("the command line runs, says what it read, and saves the log",
+        _c95 == 0 and "NEWS SWEEP, 2026 Week 12, run Tue 11-24 05:00 UTC" in _o95
+        and "4 from the injury report; 1 entered by hand" in _o95
+        and "Game log runs through Week 11" in _o95
+        and list(_lg95.columns) == _fn.LOG_COLS and len(_lg95) > 0, _o95[:300])
+    chk("games are printed in kickoff order whatever order the files came in",
+        0 < _o95.index("=== NEWS SWEEP: CHI at DET") < _o95.index("=== NEWS SWEEP: KC at BUF"))
+    _sum95 = _o95.split("=== NEWS SWEEP")[0]
+    chk("the top of the printout gathers every game's open lines, returns and unplaced players",
+        "ACROSS 2 GAMES: 2 lines where news points one way" in _sum95
+        and "[CHI at DET] Al Alpha (DET) rec yds: Bo Beta OUT, volume UP. PARTLY." in _sum95
+        and "[CHI at DET] possible return: Ret Urner (CHI WR)" in _sum95
+        and "[KC at BUF] posted but not on either team's last four games:" in _sum95, _sum95)
+    chk("and a player flagged out with a line posted is named at the top",
+        "[CHI at DET] flagged OUT yet a line is posted: Bo Beta (DET WR)" in _sum95, _sum95)
+    chk("a hand-entered flag and the injury report's flag on one player are merged",
+        "Bo Beta (DET WR): OUT, ruled out; Questionable Ankle  [beat report + PropLine injuries (ESPN), "
+        "Mon 11-23 12:00 UTC]" in _o95 and _o95.count("Bo Beta (DET WR):") == 1,
+        [ln for ln in _o95.splitlines() if "Bo Beta (DET" in ln])
+    _c95, _o95 = _run95(["--week", "12", "--now", "2026-11-24 05:00+00:00", "--no-save",
+                         "--out", f"{_d95}/never.csv", _early95])
+    chk("a first pass with --no-save prints the sweep and saves no log",
+        _c95 == 0 and "=== NEWS SWEEP: CHI at DET" in _o95 and "First pass: nothing saved" in _o95
+        and "Saved " not in _o95 and not pathlib.Path(f"{_d95}/never.csv").exists(), _o95[-200:])
+    _stand95 = _p95("standing.json", {"flags": [
+        {"player": "Ret Urner", "team": "CHI", "position": "WR", "kind": "OUT",
+         "source": "FantasyPros listing", "at": "2026-10-27 00:00-04:00",
+         "confirmed": "2026-11-24 00:00-05:00"}]})
+    _c95, _o95 = _run95(["--week", "12", "--now", "2026-11-24 05:00+00:00", "--flags", _stand95,
+                         "--out", f"{_d95}/log4.csv", _early95])
+    chk("a standing absence in the flags file is read, and takes him off the returns list",
+        _c95 == 0 and "Ret Urner (CHI WR): OUT, still out when read Tue 11-24 05:00 UTC" in _o95
+        and "0 possible returns to check" in _o95, _o95[:500])
+    _c95, _o95 = _run95(["--week", "12", "--now", "2026-11-24 05:00+00:00",
+                         "--out", f"{_d95}/log2.csv", _early95])
+    chk("with no injury report given it says that no flags means nothing",
+        _c95 == 0 and "Flags read: NONE" in _o95 and "no injury report was given" in _o95)
+    _c95, _o95 = _run95(["--week", "12", "--books", "fanduel", "--now", "2026-11-24 05:00+00:00",
+                         "--out", f"{_d95}/log3.csv", _early95])
+    chk("the book filter reaches the sweep", "across 1 books (fanduel)" in _o95, _o95[:400])
+    for _lab95, _obj95, _say95 in (
+            ("a missing time", {"flags": [{"player": "Bo Beta", "team": "DET", "position": "WR",
+                                           "kind": "OUT", "source": "x"}]}, "entry 1 (Bo Beta): missing at"),
+            ("a misspelt field", {"flags": [{"player": "Bo Beta", "team": "DET", "position": "WR",
+                                             "kind": "OUT", "source": "x", "at": "2026-11-23 12:00+00:00",
+                                             "link": "u"}]}, "unknown field link"),
+            ("news too old", {"flags": [{"player": "Bo Beta", "team": "DET", "position": "WR",
+                                         "kind": "OUT", "source": "x", "at": "2026-11-01 12:00+00:00"}]},
+             "entry 1: the flag on Bo Beta is from"),
+            ("no flags list", [{"player": "Bo Beta"}], "top-level"),
+            ("text that is not JSON", "{not json", "STOPPED")):
+        _bad95 = _p95("bad.json", _obj95)
+        _c95, _o95 = _run95(["--week", "12", "--now", "2026-11-24 05:00+00:00", "--flags", _bad95,
+                             "--out", f"{_d95}/never.csv", _early95])
+        chk(f"a flags file with {_lab95} stops the run, names the entry, and saves nothing",
+            _c95 == 2 and _o95.startswith("STOPPED:") and _say95 in _o95
+            and not pathlib.Path(f"{_d95}/never.csv").exists(), _o95[:160])
+    _c95, _o95 = _run95(["--week", "12", "--injuries", _early95, "--out", f"{_d95}/never.csv", _early95])
+    chk("the wrong file given as the injury report stops the run",
+        _c95 == 2 and "not a propline_get_injuries response" in _o95, _o95[:160])
+    _c95, _o95 = _run95(["--week", "12", "--out", f"{_d95}/never.csv", f"{_d95}/nothing.json"])
+    chk("a movement file that is not there stops the run", _c95 == 2 and _o95.startswith("STOPPED:"),
+        _o95[:160])
 
 _summary()
 raise SystemExit(1 if fails else 0)
