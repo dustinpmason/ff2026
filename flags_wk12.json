@@ -1,0 +1,234 @@
+{
+ "flags": [
+  {
+   "player": "Josh Jacobs",
+   "team": "GB",
+   "position": "RB",
+   "kind": "DOUBTFUL",
+   "source": "FantasyPros news (head coach)",
+   "at": "2026-11-23 16:58:34 UTC",
+   "detail": "coach: unlikely to play; limited Monday; officially listed questionable Tuesday",
+   "url": "https://www.fantasypros.com/nfl/news/622157/josh-jacobs-finger-unlikely-to-play-week-12-against-rams.php"
+  },
+  {
+   "player": "Jonnu Smith",
+   "team": "GB",
+   "position": "TE",
+   "kind": "NOTE",
+   "source": "FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "listed TE2, not in the roles of the last four games; last played Week 7; when it changed is not known"
+  },
+  {
+   "player": "Puka Nacua",
+   "team": "LA",
+   "position": "WR",
+   "kind": "OUT",
+   "source": "FantasyPros news (placed on injured reserve)",
+   "at": "2026-11-13 07:53:08 UTC",
+   "confirmed": "2026-11-24 15:20-05:00",
+   "detail": "injured reserve since 11-13; MCL surgery reported 11-20",
+   "url": "https://www.fantasypros.com/nfl/news/619701/puka-nacua-kneetoe-placed-on-ir.php"
+  },
+  {
+   "player": "Kyren Williams",
+   "team": "LA",
+   "position": "RB",
+   "kind": "NOTE",
+   "source": "FantasyPros news",
+   "at": "2026-11-21 22:47:04 UTC",
+   "detail": "toe soreness; expected to play",
+   "url": "https://www.fantasypros.com/nfl/news/621746/kyren-williams-toe-expected-to-be-good-to-go-week-12.php"
+  },
+  {
+   "player": "Colby Parkinson",
+   "team": "LA",
+   "position": "TE",
+   "kind": "NOTE",
+   "source": "FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "listed TE2 behind Tyler Higbee; when it changed is not known"
+  },
+  {
+   "player": "Cole Kmet",
+   "team": "CHI",
+   "position": "TE",
+   "kind": "OUT",
+   "source": "CBS Sports/RotoWire (placed on injured reserve); FantasyPros listing (IR)",
+   "at": "2026-10-23 17:36-04:00",
+   "confirmed": "2026-11-24 15:20-05:00",
+   "detail": "season-ending knee injury; on injured reserve since 10-23",
+   "url": "https://www.cbssports.com/fantasy/football/news/bears-cole-kmet-officially-placed-on-ir/"
+  },
+  {
+   "player": "Sam LaPorta",
+   "team": "DET",
+   "position": "TE",
+   "kind": "QUESTIONABLE",
+   "source": "detroitlions.com practice report",
+   "at": "2026-11-23 00:00-05:00",
+   "detail": "limited in Monday's estimated practice (ankle, new); time not given, start of day used",
+   "url": "https://www.detroitlions.com/news/lions-vs-bears-practice-report-nov-23-clark-laporta-reed"
+  },
+  {
+   "player": "Dameon Pierce",
+   "team": "PHI",
+   "position": "RB",
+   "kind": "OUT",
+   "source": "NBC Sports PFT (placed on injured reserve); FantasyPros listing (free agent)",
+   "at": "2026-10-28 00:00-04:00",
+   "confirmed": "2026-11-24 15:20-05:00",
+   "detail": "placed on IR 10-28, released with an injury settlement 11-06; time not given, start of day used",
+   "url": "https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/eagles-place-rb-dameon-pierce-on-ir-sign-jaydon-blue-to-active-roster"
+  },
+  {
+   "player": "Elijah Mitchell",
+   "team": "PHI",
+   "position": "RB",
+   "kind": "NOTE",
+   "source": "ESPN transactions page; FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "practice squad; elevated 10-26, 10-31 and 11-07, not elevated or signed for Week 11; listed RB3; no move for Thursday seen yet",
+   "url": "https://www.espn.com/nfl/team/transactions/_/name/phi/philadelphia-eagles"
+  },
+  {
+   "player": "Dallas Goedert",
+   "team": "PHI",
+   "position": "TE",
+   "kind": "QUESTIONABLE",
+   "source": "FantasyPros news (team's estimated practice report)",
+   "at": "2026-11-23 22:16:11 UTC",
+   "detail": "limited Monday (estimate), shin, new",
+   "url": "https://www.fantasypros.com/nfl/news/622219/dallas-goedert-shin-limited-estimated-practice-monday.php"
+  },
+  {
+   "player": "Tanner McKee",
+   "team": "PHI",
+   "position": "QB",
+   "kind": "QUESTIONABLE",
+   "source": "FantasyPros news (team's estimated practice report)",
+   "at": "2026-11-23 22:16:52 UTC",
+   "detail": "limited Monday (estimate), ribs; the backup",
+   "url": "https://www.fantasypros.com/nfl/news/622220/tanner-mckee-rib-limited-estimated-practice-monday.php"
+  },
+  {
+   "player": "Tyler Goodson",
+   "team": "DAL",
+   "position": "RB",
+   "kind": "OUT",
+   "source": "FantasyPros news (placed on injured reserve)",
+   "at": "2026-11-14 20:09:14 UTC",
+   "confirmed": "2026-11-24 15:20-05:00",
+   "detail": "injured reserve (knee), at least four games",
+   "url": "https://www.fantasypros.com/nfl/news/620039/tyler-goodson-ankleknee-placed-on-ir.php"
+  },
+  {
+   "player": "Jake Ferguson",
+   "team": "DAL",
+   "position": "TE",
+   "kind": "QUESTIONABLE",
+   "source": "CBS Sports/RotoWire (Cowboys' Monday practice estimate)",
+   "at": "2026-11-23 18:01-05:00",
+   "detail": "DNP Monday (estimate), knee/ankle; missed the last two games; team site: likely to be ruled out",
+   "url": "https://www.cbssports.com/fantasy/football/news/cowboys-jake-ferguson-estimated-as-dnp-monday/"
+  },
+  {
+   "player": "Kendre Miller",
+   "team": "DAL",
+   "position": "RB",
+   "kind": "NOTE",
+   "source": "FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "listed RB3, not in the roles; signed to the practice squad 11-11; when the chart changed is not known"
+  },
+  {
+   "player": "Kenneth Walker III",
+   "team": "KC",
+   "position": "RB",
+   "kind": "QUESTIONABLE",
+   "source": "CBS Sports/RotoWire (Chiefs' Monday practice estimate)",
+   "at": "2026-11-23 17:45-05:00",
+   "detail": "DNP Monday (estimate), groin; missed the last two games",
+   "url": "https://www.cbssports.com/fantasy/football/news/chiefs-kenneth-walker-deemed-dnp-on-practice-estimate/"
+  },
+  {
+   "player": "Kenneth Walker III",
+   "team": "KC",
+   "position": "RB",
+   "kind": "NOTE",
+   "source": "CBS Sports/RotoWire (head coach)",
+   "at": "2026-11-24 13:03-05:00",
+   "detail": "coach: will practice Tuesday, not much work expected",
+   "url": "https://www.cbssports.com/fantasy/football/news/chiefs-kenneth-walker-returning-to-practice-tuesday/"
+  },
+  {
+   "player": "Emmett Johnson",
+   "team": "KC",
+   "position": "RB",
+   "kind": "NOTE",
+   "source": "FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "listed RB1 ahead of Kenneth Walker III; when it changed is not known"
+  },
+  {
+   "player": "Dalton Kincaid",
+   "team": "BUF",
+   "position": "TE",
+   "kind": "QUESTIONABLE",
+   "source": "CBS Sports/RotoWire (Bills' Monday practice estimate)",
+   "at": "2026-11-23 17:53-05:00",
+   "detail": "limited Monday (estimate), thumb/ankle: up from no practice last week; inactive Week 11",
+   "url": "https://www.cbssports.com/fantasy/football/news/bills-dalton-kincaid-limited-listing-on-mondays-practice-estimate/"
+  },
+  {
+   "player": "RJ Harvey",
+   "team": "DEN",
+   "position": "RB",
+   "kind": "OUT",
+   "source": "ESPN injuries listing (placed on injured reserve); NBC Sports Rotoworld 11-23",
+   "at": "2026-10-31 00:00-04:00",
+   "confirmed": "2026-11-24 15:20-05:00",
+   "detail": "placed on IR 10-31 (knee), date only, start of day used; 11-23 report: will miss Friday, expected to practice when first eligible",
+   "url": "https://www.nbcsports.com/fantasy/football/player-news/2026-11-23/harvey-expected-to-practice-when-first-eligible"
+  },
+  {
+   "player": "Courtland Sutton",
+   "team": "DEN",
+   "position": "WR",
+   "kind": "NOTE",
+   "source": "FantasyPros depth chart",
+   "at": "2026-11-24 15:20-05:00",
+   "detail": "listed WR3 behind Jaylen Waddle and Pat Bryant; when it changed is not known"
+  },
+  {
+   "player": "Michael Pittman Jr.",
+   "team": "PIT",
+   "position": "WR",
+   "kind": "BACK",
+   "source": "NBC Sports Rotoworld (head coach)",
+   "at": "2026-11-23 20:31:38 UTC",
+   "detail": "coach: very confident he plays; full practices Thursday and Friday last week; designated to return 11-18; still on IR, not yet activated",
+   "url": "https://www.nbcsports.com/fantasy/football/player-news/2026-11-23/mccarthy-very-confident-pittman-plays-week-12"
+  },
+  {
+   "player": "DK Metcalf",
+   "team": "PIT",
+   "position": "WR",
+   "kind": "NOTE",
+   "source": "FantasyPros news",
+   "at": "2026-11-23 21:18:17 UTC",
+   "detail": "ejected in Week 11; league not expected to suspend him, a fine is possible",
+   "url": "https://www.fantasypros.com/nfl/news/622213/dk-metcalf-will-not-be-suspended-by-nfl.php"
+  },
+  {
+   "player": "Max Hurleman",
+   "team": "PIT",
+   "position": "WR",
+   "kind": "NOTE",
+   "source": "FantasyPros news",
+   "at": "2026-11-23 20:12:29 UTC",
+   "detail": "Week 11 was a practice-squad elevation; not on the depth chart; needs another elevation or a signing to play",
+   "url": "https://www.fantasypros.com/nfl/news/622199/max-hurleman-shines-career-debut.php"
+  }
+ ]
+}
