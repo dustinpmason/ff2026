@@ -11581,5 +11581,317 @@ with _tf95.TemporaryDirectory() as _d95:
     chk("a movement file that is not there stops the run", _c95 == 2 and _o95.startswith("STOPPED:"),
         _o95[:160])
 
+
+
+
+# ---------------------------------------------------------------------------
+# 96. B267-B270 — the four defects of the 2026-11-17 guillotine waiver run
+# ---------------------------------------------------------------------------
+# All four were reproduced on the real league on 2026-11-24 before anything
+# was changed: (B267) with a team's only quarterback out, a quarterback on
+# the wire printed "NOT REACHABLE ... a bid is unjustified", any other
+# candidate killed the whole board, and a rival in that state read 0.000pp
+# and was left out of the contested price; (B268) KC Concepcion Jr. was not
+# taken off his team on his bye, because the bye list spelt him without the
+# suffix; (B269) 28 of the 146 unrostered players averaging 6 or more had
+# not played in three of their team's games; (B270) a 16-man roster had
+# 4,025 legal lineups and 4,000 were kept without a word.
+section("96. guillotine: holes, bye spelling, idle players, the lineup cap "
+        "(B267-B270)")
+import ff_guillotine as _g96
+import pandas as _pd96
+
+
+def _a96(*v):
+    return np.array(v, dtype=float)
+
+
+_names96 = {
+    "QB1": ("QB", (22, 18, 20, 20)), "QBX": ("QB", (26, 22, 24, 24)),
+    "RB1": ("RB", (20, 16, 18, 18)), "RB2": ("RB", (13, 11, 12, 12)),
+    "RB3": ("RB", (9, 7, 8, 8)),
+    "WR1": ("WR", (18, 14, 16, 16)), "WR2": ("WR", (12, 10, 11, 11)),
+    "WR3": ("WR", (8, 6, 7, 7)), "TE1": ("TE", (9, 7, 8, 8)),
+    "STAR": ("WR", (40, 36, 38, 38)), "RBX": ("RB", (30, 26, 28, 28)),
+    "KC Concepcion": ("WR", (15, 13, 14, 14)), "A.J. Brown": ("WR", (14, 12, 13, 13)),
+    "Kenneth Walker": ("RB", (17, 15, 16, 16)),
+}
+for _i96 in range(1, 5):                     # the wire's low end, at each position
+    _names96[f"QBL{_i96}"] = ("QB", (8, 6, 7, 7))
+    _names96[f"RBL{_i96}"] = ("RB", (4, 3, 5, 4))
+    _names96[f"WRL{_i96}"] = ("WR", (4, 3, 5, 4))
+    _names96[f"TEL{_i96}"] = ("TE", (3, 2, 4, 3))
+_meta96 = {n: ("AAA", p) for n, (p, _) in _names96.items()}
+_base96 = {"QB": ["QB1"], "RB": ["RB1", "RB2", "RB3"],
+           "WR": ["WR1", "WR2", "WR3"], "TE": ["TE1"]}
+
+
+def _pool96():
+    return _g96.Pool({n: _a96(*v) for n, (_, v) in _names96.items()})
+
+
+def _teams96(n=4, **mine):
+    t = [{"team_id": str(i), "team_name": f"team{i}",
+          "roster": {k: list(v) for k, v in _base96.items()}} for i in range(n)]
+    t[0]["roster"].update({k: list(v) for k, v in mine.items()})
+    return t
+
+
+# --- B268: unavailable players are matched on the normalised name ------------
+_t96 = _teams96(WR=["WR1", "WR2", "WR3", "KC Concepcion Jr."])
+_t96[1]["roster"]["WR"] = ["WR1", "WR2", "WR3", "AJ Brown"]
+_t96[2]["roster"]["RB"] = ["RB1", "RB2", "RB3", "Kenneth Walker III"]
+_r96 = _g96.run(_t96, _pool96(), my_team_id="0", n_sims=2000, meta=_meta96, week=11,
+                unavailable={"KC Concepcion", "A. J. Brown", "kenneth walker", "Nobody Rostered"})
+chk("a player on the bye list under another spelling is taken off his roster",
+    _r96.excluded == ["AJ Brown", "KC Concepcion Jr.", "Kenneth Walker III"], str(_r96.excluded))
+chk("and he is in none of my lineups",
+    not any("KC Concepcion Jr." in L for L in _r96.lineups) and len(_r96.lineups) > 0)
+_r96b = _g96.run(_t96, _pool96(), my_team_id="0", n_sims=2000, meta=_meta96, week=11)
+chk("with nobody unavailable, nobody is excluded and he is in a lineup",
+    _r96b.excluded == [] and any("KC Concepcion Jr." in L for L in _r96b.lineups))
+chk("an opponent's bye player no longer props his total up",
+    _r96.opp_scores_mean["team2"] < _r96b.opp_scores_mean["team2"] - 1.0,
+    f"{_r96.opp_scores_mean['team2']:.1f} vs {_r96b.opp_scores_mean['team2']:.1f}")
+_v96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="Kenneth Walker III",
+                         n_sims=2000, meta=_meta96, unavailable={"Kenneth Walker"})
+chk("a CANDIDATE on the unavailable list under another spelling is marked unavailable",
+    _v96.unavailable and not _v96.reachable and "UNAVAILABLE THIS WEEK" in _v96.describe()
+    and "unjustified" not in _v96.describe(), _v96.describe()[:120])
+
+_v96b = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="A.J. Brown",
+                          n_sims=2000, meta=_meta96, unavailable={"AJ Brown"})
+chk("and so is one the list spells differently from the data",
+    _v96b.unavailable and not _v96b.reachable, _v96b.describe()[:120])
+
+# --- B270: the lineup cap is larger, and says when it binds --------------------
+_big96 = {"QB": ["QB1"], "TE": ["TE1", "TEL1"],
+          "RB": ["RB1", "RB2", "RB3", "RBX", "Kenneth Walker", "RBL1", "RBL2"],
+          "WR": ["WR1", "WR2", "WR3", "STAR", "KC Concepcion", "A.J. Brown", "WRL1"]}
+_L96 = _g96.enumerate_lineups(_big96, _pool96())
+chk("a 17-man roster is enumerated whole: more than the old 4,000 and nothing cut",
+    _g96.MAX_LINEUPS == 20_000 and len(_L96) == _L96.total > 4000 and not _L96.capped,
+    f"{len(_L96):,} of {_L96.total:,}")
+_C96 = _g96.enumerate_lineups(_big96, _pool96(), max_lineups=500)
+_mean96 = lambda L: sum(float(np.mean(_names96[p][1])) for p in L)
+chk("over the cap the list says so: how many were legal and that it was cut",
+    len(_C96) == 500 and _C96.total == _L96.total and _C96.capped)
+chk("and the ones kept are the highest-mean ones",
+    min(_mean96(L) for L in _C96) >= sorted((_mean96(L) for L in _L96), reverse=True)[499] - 1e-9)
+chk("a list is still a list of tuples to every caller",
+    isinstance(_L96, list) and isinstance(_L96[0], tuple) and len(set(map(frozenset, _L96))) == len(_L96))
+_tb96 = _teams96(**_big96)
+_keep96 = _g96.MAX_LINEUPS
+try:
+    _g96.MAX_LINEUPS = 500
+    _rc96 = _g96.run(_tb96, _pool96(), my_team_id="0", n_sims=1000, meta=_meta96, week=12)
+    _db96 = _g96.drop_board(_tb96, _pool96(), my_team_id="0", candidates=["RBL2"], n_sims=1000,
+                            meta=_meta96, week=12)
+    _wc96 = _g96.waiver_value(_tb96, _pool96(), my_team_id="0", candidate="WRL2", n_sims=1000,
+                              meta=_meta96, week=12)
+finally:
+    _g96.MAX_LINEUPS = _keep96
+chk("a capped run reports it at the top, with both counts",
+    _rc96.capped and _rc96.lineups_total == _L96.total
+    and f"! LINEUP CAP: only the 500 highest-MEAN of {_L96.total:,} legal lineups" in _rc96.report(),
+    _rc96.report().splitlines()[2][:140])
+chk("the drop board and a waiver value made from a capped run say so too",
+    "! LINEUP CAP:" in _db96 and _wc96.capped and "[lineup cap bound]" in _wc96.describe()
+    and "LINEUP CAP bound" in _g96.render_waiver_board([_wc96], n_sims=1000))
+_ru96 = _g96.run(_teams96(), _pool96(), my_team_id="0", n_sims=1000, meta=_meta96, week=12)
+chk("a run under the cap says nothing about it",
+    not _ru96.capped and _ru96.lineups_total == len(_ru96.lineups) and "LINEUP CAP" not in _ru96.report()
+    and _ru96.cap_note() == "")
+
+# --- B267: a roster with a hole --------------------------------------------------
+chk("a roster that can field a lineup has no holes",
+    _g96.lineup_holes(_base96) == {})
+chk("holes are counted by position, and a flex shortage is counted at RB",
+    _g96.lineup_holes(dict(_base96, QB=[])) == {"QB": 1}
+    and _g96.lineup_holes(dict(_base96, RB=[])) == {"RB": 3}
+    and _g96.lineup_holes(dict(_base96, WR=["WR1", "WR2"])) == {"RB": 1}
+    and _g96.lineup_holes(dict(_base96, TE=[])) == {"TE": 1},
+    str(_g96.lineup_holes(dict(_base96, RB=[]))))
+chk("no legal lineup is its own error, and still a ValueError",
+    issubclass(_g96.NoLegalLineup, ValueError)
+    and _raises(lambda: _g96.enumerate_lineups(dict(_base96, QB=[]), _pool96()), _g96.NoLegalLineup)
+    and _raises(lambda: _g96.enumerate_lineups(dict(_base96, RB=["RB1"]), _pool96()), _g96.NoLegalLineup))
+_out96 = {"QB1"}
+_vq96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="QBX", n_sims=4000,
+                          meta=_meta96, week=12, unavailable=_out96)
+chk("my only quarterback out: a quarterback on the wire is VALUED, against a replacement pickup",
+    _vq96.reachable and _vq96.fill == "QB" and not _vq96.required and not _vq96.blocked
+    and _vq96.delta < -0.005 and _vq96.in_best_lineup, _vq96.describe()[:160])
+chk("and the line says what he was measured against, not that a bid is unjustified",
+    "HOLE at QB" in _vq96.describe() and "replacement-level pickup" in _vq96.describe()
+    and "unjustified" not in _vq96.describe() and "NOT REACHABLE" not in _vq96.describe())
+_vs96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="STAR", n_sims=4000,
+                          meta=_meta96, week=12, unavailable=_out96)
+chk("a receiver is valued on that roster too, with the hole named, instead of ending the run",
+    _vs96.reachable and _vs96.fill == "QB" and _vs96.delta < -0.005, _vs96.describe()[:160])
+_bd96 = _g96.waiver_board(_teams96(), _pool96(), my_team_id="0", candidates=["QBX", "STAR", "RBL3"],
+                          n_sims=3000, meta=_meta96, week=12, unavailable=_out96, idle={})
+chk("the board for a roster with a hole ranks every candidate and explains the hole once",
+    "3 reachable, 0 not" in _bd96 and _bd96.count("A HOLE means this roster cannot field a lineup") == 1,
+    _bd96.splitlines()[0])
+_vn96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="STAR", n_sims=2000,
+                          meta=_meta96, week=12)
+chk("a roster with no hole is valued as before, with no fill",
+    _vn96.reachable and _vn96.fill == "" and "HOLE" not in _vn96.describe() and _vn96.delta < -0.005)
+_v2 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="RBX", n_sims=3000,
+                        meta=_meta96, week=12, unavailable={"RB1", "RB2", "RB3"})
+chk("two bodies short at one position are both filled, each under its own name",
+    _v2.reachable and _v2.fill == "RB x3" and _v2.delta < -0.005, _v2.describe()[:140])
+# Without meta there is no replacement level, so no delta can be made. The
+# two cases must then say what they are, and neither is "he does not help".
+_pdict96 = {n: _a96(*v) for n, (_, v) in _names96.items()}       # a plain dict: no fill
+_tq96 = _teams96(QB=[])
+_vr96 = _g96.waiver_value(_tq96, _pdict96, my_team_id="0", candidate="QBX", n_sims=2000, meta=_meta96)
+chk("with no replacement level, the player who fills the hole is REQUIRED, not unreachable",
+    _vr96.required and not _vr96.reachable and "FILLS A HOLE" in _vr96.describe()
+    and "NOT a player who does not help" in _vr96.describe()
+    and "unjustified" not in _vr96.describe(), _vr96.describe()[:150])
+_vb96 = _g96.waiver_value(_tq96, _pdict96, my_team_id="0", candidate="STAR", n_sims=2000, meta=_meta96)
+chk("and a player who does not fill it is CANNOT BE VALUED, returned rather than raised",
+    _vb96.blocked == "roster has no QB" and not _vb96.reachable
+    and "CANNOT BE VALUED" in _vb96.describe() and "Fill that hole first" in _vb96.describe())
+_bq96 = _g96.render_waiver_board([_vb96, _vr96, _vn96], n_sims=2000)
+chk("on a board those two are listed apart from the ranking, the hole-filler first",
+    "1 reachable, 2 not" in _bq96
+    and _bq96.index("FILLS A HOLE") < _bq96.index("CANNOT BE VALUED"), _bq96)
+_rt96 = _g96.run(_teams96(TE=[]), _pool96(), my_team_id="0", n_sims=1000, meta=_meta96, week=12)
+chk("my own roster with no tight end says the slot scores nothing",
+    _rt96.my_empty_slots == ["TE"] and "! EMPTY SLOT: this roster has nobody available at TE" in _rt96.report()
+    and _ru96.my_empty_slots == [] and "EMPTY SLOT" not in _ru96.report())
+_rp96 = _g96.run(_teams96(QB=[_g96.replacement_name("QB")]), _pool96(), my_team_id="0", n_sims=1000,
+                 meta=_meta96, week=12)
+chk("a replacement-level stand-in is not reported as a player the correlation could not place",
+    _rp96.correlation_unresolved == {} and "NOT CORRELATED" not in _rp96.report(),
+    str(_rp96.correlation_unresolved))
+# The rival's side: the team with the hole is the one that needs him.
+_bud96 = {"0": 500, "1": 300, "2": 800, "3": 900}
+_tr96 = _teams96()
+_tr96[2]["roster"]["QB"] = ["QB1b"]                  # team2's only quarterback...
+_pr96 = _pool96(); _pr96["QB1b"] = _a96(22, 18, 20, 20)
+_mr96 = dict(_meta96, QB1b=("AAA", "QB"))
+_dq96 = _g96.waiver_demand(_tr96, _pr96, candidate="QBX", n_sims=4000, meta=_mr96, week=12,
+                           unavailable={"QB1b"}, budgets=_bud96)        # ...is out
+_d2 = next(d for d in _dq96 if d.team_id == "2")
+_fq96 = _g96.faab_read(_dq96, my_team_id="0", my_budget=500, weeks_left=6)
+chk("a rival whose only quarterback is out is MEASURED as helped by a quarterback",
+    _d2.gain_pp > 0.5 and _d2.value.fill == "QB" and not _d2.unvalued, f"{_d2.gain_pp:.3f}pp")
+chk("he is in the contested price, and the report says he has a hole",
+    "2" in [d.team_id for d in _fq96.contested] and _fq96.lock_contested == 801.0
+    and "(HOLE at QB: measured against a replacement-level pickup)" in _fq96.report(),
+    _fq96.report())
+_td96 = _teams96(); _td96[2]["roster"]["QB"] = []
+_dr96 = _g96.waiver_demand(_td96, _pdict96, candidate="QBX", n_sims=3000, meta=_meta96, budgets=_bud96)
+_dr2 = next(d for d in _dr96 if d.team_id == "2")
+_fr96 = _g96.faab_read(_dr96, my_team_id="0", my_budget=500, weeks_left=6)
+chk("with no replacement level, that rival NEEDS him: counted as contesting, never as not helped",
+    _dr2.needs_him and _dr2.gain_pp == 0.0 and "2" in [d.team_id for d in _fr96.contested]
+    and _fr96.lock_contested == 801.0
+    and "HAS NO LEGAL LINEUP WITHOUT HIM" in _fr96.report()
+    and "(not valued:" not in _fr96.report().split("team2")[1].splitlines()[0], _fr96.report())
+
+_db96b = _g96.waiver_demand(_td96, _pdict96, candidate="STAR", n_sims=2000, meta=_meta96, budgets=_bud96)
+_db2 = next(d for d in _db96b if d.team_id == "2")
+_fb96 = _g96.faab_read(_db96b, my_team_id="0", my_budget=500, weeks_left=6)
+chk("a rival with no lineup even with him is still counted as contesting, with the reason",
+    _db2.unvalued == "roster has no QB" and _db2.value.blocked == "roster has no QB"
+    and "2" in [d.team_id for d in _fb96.contested] and "COULD NOT BE VALUED" in _fb96.report(),
+    _fb96.report())
+
+# --- B269: players who have stopped playing --------------------------------------
+_rows96 = []
+for _w96 in (1, 2, 3, 4, 5, 6):
+    _rows96 += [dict(season=2026, season_type="REG", week=_w96, team="AAA", player_display_name="WR1"),
+                dict(season=2026, season_type="REG", week=_w96, team="BBB", player_display_name="Other Guy")]
+    if _w96 <= 3:
+        _rows96.append(dict(season=2026, season_type="REG", week=_w96, team="AAA", player_display_name="STAR"))
+    if _w96 <= 5:
+        _rows96.append(dict(season=2026, season_type="REG", week=_w96, team="AAA", player_display_name="A.J. Brown"))
+_rows96 += [dict(season=2026, season_type="REG", week=2, team="CCC", player_display_name="Bye Guy"),
+            dict(season=2026, season_type="REG", week=4, team="CCC", player_display_name="Bye Guy"),
+            dict(season=2026, season_type="REG", week=4, team="CCC", player_display_name="Team Mate"),
+            dict(season=2026, season_type="POST", week=7, team="AAA", player_display_name="WR1"),
+            dict(season=2025, season_type="REG", week=9, team="AAA", player_display_name="Last Year")]
+_idle96 = _g96.idle_games(_pd96.DataFrame(_rows96), 2026)
+chk("idle is the number of his team's latest games with no stat line for him",
+    _idle96["star"] == 3 and _idle96["wr1"] == 0 and _idle96["aj brown"] == 1, str(_idle96))
+chk("a week his team did not play is not a game he missed, and other seasons do not count",
+    _idle96["bye guy"] == 0 and "last year" not in _idle96 and _idle96["other guy"] == 0)
+_vi96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="STAR", n_sims=2000,
+                          meta=_meta96, week=12, idle=_idle96)
+_vj96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="AJ Brown", n_sims=2000,
+                          meta=_meta96, week=12, idle=_idle96)
+chk("a value carries how long he has been idle, found under any spelling",
+    _vi96.idle == 3 and _vi96.is_idle and _vj96.idle == 1 and not _vj96.is_idle
+    and _vn96.idle is None and not _vn96.is_idle, f"{_vi96.idle}, {_vj96.idle}, {_vn96.idle}")
+chk("and its line says so",
+    "[IDLE: no stat line in his team's last 3 games — confirm he is playing]" in _vi96.describe()
+    and "[IDLE: no stat line in his team's last 1 game — confirm he is playing]" in _vj96.describe()
+    and "IDLE" not in _vn96.describe())
+_bi96 = _g96.waiver_board(_teams96(), _pool96(), my_team_id="0", candidates=["STAR", "AJ Brown", "RBX"],
+                          n_sims=2000, meta=_meta96, week=12, idle=_idle96)
+_li96 = _bi96.splitlines()
+_at96 = lambda s: _bi96.find(s)
+chk("a player idle three games is listed apart from the ranking, below it, with why",
+    "2 reachable, 0 not, 1 idle" in _li96[0]
+    and 0 < _at96("RBX:") < _at96("IDLE 3+ GAMES — not ranked with the players above") < _at96("STAR:")
+    and 0 < _at96("AJ Brown:") < _at96("IDLE 3+ GAMES"), _bi96)
+chk("a board made with no idle map says players idle for weeks are ranked in it",
+    "! no idle= map was passed" in _g96.waiver_board(
+        _teams96(), _pool96(), my_team_id="0", candidates=["RBX"], n_sims=1000, meta=_meta96, week=12)
+    and "no idle= map" not in _bi96 and "no idle= map" not in _bq96)
+_di96 = _g96.waiver_demand(_teams96(), _pool96(), candidate="STAR", n_sims=1000, meta=_meta96,
+                           week=12, idle=_idle96)
+chk("the demand run carries the idle count on every team's value",
+    [d.value.idle for d in _di96] == [3, 3, 3, 3])
+_pt96 = _pool96(); _pt96["One Game"] = _a96(30.0); _pt96["Two Games"] = _a96(9.0, 7.0)
+_mt96 = dict(_meta96, **{"One Game": ("AAA", "WR"), "Two Games": ("AAA", "WR")})
+_vt96 = _g96.waiver_value(_teams96(), _pt96, my_team_id="0", candidate="One Game", n_sims=2000,
+                          meta=_mt96, week=12)
+chk("a player with one game on file is tagged THIN, and one with a full log is not",
+    _vt96.games == 1 and "[THIN: 1 game on file — this is that game, not a level]" in _vt96.describe()
+    and _vn96.games == 4 and "THIN" not in _vn96.describe(), _vt96.describe()[:200])
+_ct96, _tt96 = _g96.wire_sweep(_pt96, _mt96, _teams96(), idle=_idle96)
+chk("the sweep keeps a thin-sample player and names him with his game count",
+    "One Game" in _ct96 and "Two Games" in _ct96
+    and "KEPT on fewer than 3 games (games in brackets)" in _tt96
+    and "One Game (1), Two Games (2)" in _tt96, _tt96)
+_ps96 = _pool96(); _ps96["Last Year"] = _a96(20, 18, 19, 19); _ps96.stale.add("Last Year")
+_ps96["Kick Er"] = _a96(9, 9, 9, 9)
+_ms96 = dict(_meta96, **{"Kick Er": ("AAA", "K")})
+_g96.add_replacement_level(_ps96, _ms96, n_teams=4)
+_tw96 = _teams96(WR=["WR1", "WR2", "WR3", "KC Concepcion Jr."])
+_c96, _tx96 = _g96.wire_sweep(_ps96, _ms96, _tw96, idle=_idle96)
+chk("the sweep is the unrostered players at or over the bar, best first",
+    _c96 == ["RBX", "QBX", "Kenneth Walker", "A.J. Brown", "QBL1", "QBL2", "QBL3", "QBL4"], str(_c96))
+chk("a rostered player is left out under any spelling, and so is a kicker and a stand-in",
+    "KC Concepcion" not in _c96 and "Kick Er" not in _c96
+    and not any(n.startswith("__replacement") for n in _c96))
+chk("players idle three games and last season's players are left off BY NAME",
+    "STAR" not in _c96 and "Last Year" not in _c96 and "STAR (3)" in _tx96
+    and "no game this season (last season's numbers only): Last Year" in _tx96
+    and "A.J. Brown" not in _tx96 and _tx96.startswith("WIRE SWEEP — 8 unrostered")
+    and "KEPT on fewer" not in _tx96, _tx96)
+chk("a player with one quiet game is kept: one missing stat line is not an absence",
+    "A.J. Brown" in _c96 and _idle96["aj brown"] == 1)
+_c96b, _tx96b = _g96.wire_sweep(_ps96, _ms96, _tw96, min_mean=20)
+chk("with no idle map the sweep keeps them and says so; the bar is the caller's",
+    _c96b == ["STAR", "RBX", "QBX"] and "NO idle map was passed" in _tx96b)
+_bu96 = _g96.waiver_board(_teams96(), _pool96(), my_team_id="0",
+                          candidates=["RBX", "A.J. Brown", "AJ Brown", "RBX", "Nobody At All"],
+                          n_sims=1000, meta=_meta96, week=12, idle=_idle96)
+chk("a candidate named twice, under either spelling, gets one row",
+    _bu96.count("RBX:") == 1 and _bu96.count("Brown:") == 1 and "2 reachable, 1 not" in _bu96, _bu96)
+_vu96 = _g96.waiver_value(_teams96(), _pool96(), my_team_id="0", candidate="Nobody At All",
+                          n_sims=1000, meta=_meta96)
+chk("a name with no game log says NOT IN THE DATA, not that he enters no lineup",
+    _vu96.unknown and not _vu96.reachable and "NOT IN THE DATA" in _vu96.describe()
+    and "enters no legal lineup" not in _vu96.describe() and "NOT IN THE DATA" in _bu96
+    and not _vn96.unknown, _vu96.describe())
+
 _summary()
 raise SystemExit(1 if fails else 0)

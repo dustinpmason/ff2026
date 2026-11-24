@@ -1,0 +1,115 @@
+alive 7; WEEKS_LEFT 6
+WIRE SWEEP — 119 unrostered players averaging 6 or more
+  left off, no stat line in more than 2 of his team's latest games (games missed in brackets): Jalen Hurts (5), Lamar Jackson (3), Jaxson Dart (8), Case Keenum (5), Kyler Murray (3), Jawhar Jordan (4), Marcus Mariota (6), RJ Harvey (3), Tyquan Thornton (6), Athan Kaliakmanis (6), Tyler Huntley (3), Emanuel Wilson (3), Dameon Pierce (3), Romeo ...
+WAIVER BOARD — 12 reachable, 0 not, n_sims=80,000, floor 0.250pp
+  Brock Bowers: 13.195% -> 7.121%  (-6.074pp)  [IDLE: no stat line in his team's last 1 game — confirm he is playing]  RESOLVED
+  Max Hurleman: 13.211% -> 9.646%  (-3.565pp)  [THIN: 1 game on file — this is that game, not a level]  RESOLVED
+  Kyren Williams: 13.189% -> 11.451%  (-1.737pp)  RESOLVED
+  C.J. Stroud: 13.021% -> 11.402%  (-1.619pp)  RESOLVED
+  Omar Cooper Jr.: 13.182% -> 12.012%  (-1.170pp)  [IDLE: no stat line in his team's last 2 games — confirm he is playing]  RESOLVED
+  Jayden Daniels: 13.331% -> 12.661%  (-0.670pp)  RESOLVED
+  Jared Goff: 13.284% -> 13.164%  (-0.120pp)  inside the 0.250pp floor — treat as zero
+  Drake Maye: 12.825% -> 12.825%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Kirk Cousins: 13.001% -> 13.001%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Bryce Young: 13.084% -> 13.084%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Tyler Shough: 13.299% -> 13.299%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Matthew Stafford: 13.046% -> 13.046%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+WAIVER BOARD — 10 reachable, 2 not, n_sims=80,000, floor 0.250pp
+  Max Hurleman: 10.205% -> 7.296%  (-2.909pp)  [THIN: 1 game on file — this is that game, not a level]  RESOLVED
+  C.J. Stroud: 10.220% -> 8.701%  (-1.519pp)  RESOLVED
+  Kyren Williams: 10.095% -> 8.706%  (-1.389pp)  RESOLVED
+  Jayden Daniels: 9.910% -> 9.402%  (-0.507pp)  RESOLVED
+  Jared Goff: 10.189% -> 10.189%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Drake Maye: 10.176% -> 10.176%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Kirk Cousins: 10.068% -> 10.068%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Bryce Young: 10.204% -> 10.204%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Tyler Shough: 10.103% -> 10.103%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Matthew Stafford: 10.016% -> 10.016%  (+0.000pp)  inside the 0.250pp floor — treat as zero  [not in the best lineup]
+  Brock Bowers: UNAVAILABLE THIS WEEK — on a bye or listed out, so he is worth nothing this week whoever he is. Price him on next week's board.
+  Omar Cooper Jr.: UNAVAILABLE THIS WEEK — on a bye or listed out, so he is worth nothing this week whoever he is. Price him on next week's board.
+DROP BOARD — 10 priced, 2 not, n_sims=80,000, 65 legal lineups
+  1 se of simulation noise is 0.119pp, so a gap under 0.239pp between two cuts is NOT an ordering
+  Blake Corum: 13.094% -> 13.094%  (+0.000pp)  in 50/65 lineups  [free on THIS roster — never in the best lineup]
+  Carnell Tate: 13.094% -> 13.094%  (+0.000pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Kenneth Walker III: 13.094% -> 13.094%  (+0.000pp)  in 0/65 lineups  [free STRUCTURALLY — he is in no legal lineup, so this number cannot be anything else]
+  Stefon Diggs: 13.094% -> 13.094%  (+0.000pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Rashee Rice: 13.094% -> 13.107%  (+0.014pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Luther Burden III: 13.094% -> 13.337%  (+0.244pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  DeVonta Smith: 13.094% -> 14.645%  (+1.551pp)  in 40/65 lineups
+  D'Andre Swift: 13.094% -> 17.017%  (+3.924pp)  in 50/65 lineups
+  Javonte Williams: 13.094% -> 18.277%  (+5.184pp)  in 50/65 lineups
+  Jaxon Smith-Njigba: 13.094% -> 27.148%  (+14.054pp)  in 40/65 lineups
+  Colston Loveland: CANNOT BE PRICED — in all 65 legal lineups. Colston Loveland is in EVERY legal lineup — cutting him leaves no lineup at all, so there is no comparison to make
+  Trevor Lawrence: CANNOT BE PRICED — in all 65 legal lineups. Trevor Lawrence is in EVERY legal lineup — cutting him leaves no lineup at all, so there is no comparison to make
+DROP BOARD — 10 priced, 2 not, n_sims=80,000, 65 legal lineups
+  1 se of simulation noise is 0.106pp, so a gap under 0.213pp between two cuts is NOT an ordering
+  Blake Corum: 10.082% -> 10.082%  (+0.000pp)  in 50/65 lineups  [free on THIS roster — never in the best lineup]
+  Carnell Tate: 10.082% -> 10.082%  (+0.000pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Kenneth Walker III: 10.082% -> 10.082%  (+0.000pp)  in 0/65 lineups  [free STRUCTURALLY — he is in no legal lineup, so this number cannot be anything else]
+  Stefon Diggs: 10.082% -> 10.082%  (+0.000pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Luther Burden III: 10.082% -> 10.297%  (+0.215pp)  in 40/65 lineups  [free on THIS roster — never in the best lineup]
+  Rashee Rice: 10.082% -> 10.339%  (+0.256pp)  in 40/65 lineups
+  DeVonta Smith: 10.082% -> 11.568%  (+1.485pp)  in 40/65 lineups
+  D'Andre Swift: 10.082% -> 13.551%  (+3.469pp)  in 50/65 lineups
+  Javonte Williams: 10.082% -> 14.606%  (+4.524pp)  in 50/65 lineups
+  Jaxon Smith-Njigba: 10.082% -> 22.074%  (+11.991pp)  in 40/65 lineups
+  Colston Loveland: CANNOT BE PRICED — in all 65 legal lineups. Colston Loveland is in EVERY legal lineup — cutting him leaves no lineup at all, so there is no comparison to make
+  Trevor Lawrence: CANNOT BE PRICED — in all 65 legal lineups. Trevor Lawrence is in EVERY legal lineup — cutting him leaves no lineup at all, so there is no comparison to make
+FAAB READ — C.J. Stroud, for Ballin On A Budget ($987 left, 6 week(s) to play)
+  worth to me this week : 1.865pp of P(elim)
+  worth to each rival this week, and what they hold:
+     brandon's Best Team           1.468pp   $400
+     Show me those TD's            0.713pp   $750
+     Big Blue Crew                 0.163pp   $65  (no measurable help)
+     Ilhan's Brother               0.000pp   $990  (no measurable help)
+     The Quadfather Part II        0.000pp   $450  (no measurable help)
+     The Dunnernator               0.000pp   $1,000  (no measurable help)
+  certain to win  : $1,001  — MORE THAN I HOLD. Ilhan's Brother, The Dunnernator can outbid anything I offer
+  beats everyone he helps this week (2 team(s)): $751
+  even pace       : $164 a week. Unspent FAAB is worth nothing at the end, and each week's released roster is stronger than the last.
+  These are bounds and evidence, NOT a predicted winning bid: a rival may bid for later weeks, to block, or not at all. Last week's winning bids in this league are the only direct evidence of what teams actually pay.
+GUILLOTINE SURVIVAL — Ballin On A Budget — WEEK 12
+  80,000 simulations, 65 legal lineups  (1 se on P(elim) = 0.12 pts)
+    Do not quote a difference smaller than 0.24 pts as a measurement at this sim count — that is 2 se. For 0.10 pt resolution use n_sims=447,914.
+  opponents' weekly minimum averages 103.4 pts
+
+  MAX EXPECTED POINTS    131.5 pts (sd 20.7)   P(eliminated) = 13.06%
+  MIN ELIMINATION RISK   131.2 pts (sd 20.2)   P(eliminated) = 12.85%
+
+  trade-off this week: +1 sd costs +0.79 pts of elimination risk; 1 sd ~ 0.8 expected points
+
+  THEY DIFFER. Switching cuts elimination risk by 0.21 points, costing 0.3 expected points.
+    out: Stefon Diggs
+    in : Rashee Rice
+
+  Safest lineups:
+   1. P(elim) 12.85%  131.2 pts (sd 20.2)  Trevor Lawrence, Colston Loveland, Javonte Williams, D'Andre Swift, Jaxon Smith-Njigba, Luther Burden III, Rashee Rice, DeVonta Smith
+   2. P(elim) 13.06%  131.5 pts (sd 20.7)  Trevor Lawrence, Colston Loveland, Javonte Williams, D'Andre Swift, Jaxon Smith-Njigba, Luther Burden III, DeVonta Smith, Stefon Diggs
+   3. P(elim) 13.27%  130.4 pts (sd 19.8)  Trevor Lawrence, Colston Loveland, Javonte Williams, D'Andre Swift, Jaxon Smith-Njigba, Rashee Rice, DeVonta Smith, Stefon Diggs
+   4. P(elim) 14.53%  128.8 pts (sd 19.5)  Trevor Lawrence, Colston Loveland, Javonte Williams, D'Andre Swift, Jaxon Smith-Njigba, Luther Burden III, Rashee Rice, Stefon Diggs
+   5. P(elim) 14.65%  129.8 pts (sd 20.8)  Trevor Lawrence, Colston Loveland, Javonte Williams, D'Andre Swift, Jaxon Smith-Njigba, Luther Burden III, Blake Corum, DeVonta Smith
+
+  Projected opponent means:
+      121.7  The Dunnernator
+      125.8  Show me those TD's
+      128.0  Ilhan's Brother
+      141.4  The Quadfather Part II
+      143.8  brandon's Best Team
+      157.6  Big Blue Crew
+
+  ELIMINATED, excluded from the pool: david's Daring Team, Table Smashing Therapy, susan's Smart Team
+  Every P(elim) here is relative to the 7 teams still alive.
+
+  ! NOT CORRELATED — these players could not be matched
+    to a team and position, so every pair involving them
+    was drawn as INDEPENDENT. That is not a measurement:
+    a QB and his own receiver sit at +0.31, and removing
+    the correlation signal entirely moves P(elim) by about
+    2pp, so treat their lineups' spread as understated.
+     no team: De'Zhaun Stribling
+
+  excluded as unavailable (bye / out / IR): Kenneth Walker III
+
+  ! UNRESOLVED PLAYER NAMES — no stats found, EXCLUDED from
+    projections. These teams are understated:
+     The Dunnernator: De'Zhaun Stribling

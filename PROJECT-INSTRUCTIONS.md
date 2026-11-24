@@ -1588,8 +1588,11 @@ once, in the first reply, then carry on with whatever he gives:
 2. Last week's winning bids (player, amount, who won). These are the only
    direct evidence of what this league pays.
 3. When claims process.
-4. The roster that was just released, if he has it. Without it, sweep every
-   unrostered player whose pool mean is 6 or more; that is a superset.
+4. The roster that was just released, if he has it. Without it, use
+   `wire_sweep` (below): every unrostered player averaging 6 or more who has
+   played lately. Never build that list by hand from the pool: on
+   2026-11-24, 28 of the 146 names a hand-built sweep returned had not
+   played in three of their team's games (Jalen Hurts since Week 5).
 
 **Check byes before naming anyone.** Get the byes for the week being played
 from the connector, pass them as `unavailable=`, and never name a starter or
@@ -1597,16 +1600,26 @@ an add without having looked. On 2026-11-14 a lineup answer recommended two
 players on bye.
 
 ```python
-from ff_guillotine import (build_pool, build_meta, players_on_bye,
-                           waiver_board, drop_board, waiver_demand, faab_read)
+from ff_guillotine import (build_pool, build_meta, players_on_bye, idle_games,
+                           wire_sweep, waiver_board, drop_board,
+                           waiver_demand, faab_read)
 wk   = load_weekly([2025, 2026])
 pool = build_pool(wk, LEAGUES["guillotine"], season=2026)
 meta = build_meta(wk[wk.season == 2026])
+idle = idle_games(wk, 2026)      # games each player has gone without a stat line
+# BYE_TEAMS is the set of team codes off this week, from the connector; an
+# empty set is fine in a week with no byes. (A {team: week} map with nobody
+# on that week is refused on purpose: it usually means the map is stale.)
 out  = players_on_bye(WEEK, meta, BYE_TEAMS) | set(OUT_OR_IR_PLAYERS)
+
+# 0. Only when Dustin has not given the released roster: who is on the wire.
+cands, left_off = wire_sweep(pool, meta, teams, idle=idle)
+print(left_off)                  # names the idle and last-season players it dropped
 
 # 1. What each free agent is worth to ME this week (one paired run each).
 print(waiver_board(teams, pool, my_team_id=ME, candidates=cands,
-                   n_sims=80_000, meta=meta, week=WEEK, unavailable=out))
+                   n_sims=80_000, meta=meta, week=WEEK, unavailable=out,
+                   idle=idle))
 # 2. What each cut costs me (one run for the whole roster).
 print(drop_board(teams, pool, my_team_id=ME, n_sims=80_000, meta=meta,
                  week=WEEK, unavailable=out))
@@ -1634,6 +1647,33 @@ print(faab_read(d, my_team_id=ME, my_budget=MY_DOLLARS,
   history is from the old offense; compare the connector's depth chart with
   `meta`). `[STALE]` and `[position ASSUMED]` on a board line mean what they
   say.
+- **Names in `unavailable=` may be spelt any source's way.** They are matched
+  with suffixes, dots and hyphens ignored, so "KC Concepcion" takes
+  "KC Concepcion Jr." off his roster. Check the report's "excluded as
+  unavailable" line against the list you passed: a name missing from it is on
+  nobody's roster, or is misspelt past recognition.
+- **Reading a board line** (all of these are printed by the engine; quote
+  them, do not paraphrase them into "he does not help"):
+  - `[HOLE at QB: ...]` the roster cannot field a lineup this week without a
+    pickup at that slot, so he was measured against a replacement-level
+    pickup there. A team with a hole needs somebody; say so.
+  - `[IDLE: no stat line in his team's last N games]` he has not played
+    lately. At three or more he is listed apart from the ranking: his number
+    is his average from before he stopped. Check `injury_status` and name
+    him only if he is confirmed playing.
+  - `[THIN: N games on file]` his number is one or two games, not a level.
+    A practice-squad call-up with one big game ranks beside a starter on
+    it. Say what the one game was and whether the role still exists.
+  - `UNAVAILABLE THIS WEEK` he is on a bye or on the list you passed. Price
+    him on next week's board.
+  - `FILLS A HOLE` and `CANNOT BE VALUED` appear only when `meta=` was not
+    passed. Pass it.
+  - `NOT REACHABLE` is the only line that means the simulation finds no use
+    for him on this roster.
+- **A `! LINEUP CAP` line** means the roster handed in was so large (16 or
+  more players) that only the highest-mean lineups were simulated. Value
+  adds one at a time on the real roster; do not build one roster carrying
+  every claim.
 
 **Reading `faab_read`.** It reports bounds and evidence, not a predicted
 winning bid.
@@ -1650,9 +1690,12 @@ winning bid.
   a reference and not a cap.
 - If a rival's budget is missing, the lock prices are withheld. Do not fill
   the gap with a guess.
-- A rival marked COULD NOT BE VALUED has no legal lineup as its roster
-  stands (usually its only quarterback is on a bye). It is counted as
-  contesting, because a team in that position has to add somebody.
+- A rival marked `HOLE at <slot>` cannot field a lineup this week without a
+  pickup there. Its figure is what the player is worth to it over a
+  replacement-level pickup, and it is in the contested price like anyone
+  else he helps. That team has to add somebody: expect it to bid.
+- A rival marked COULD NOT BE VALUED or HAS NO LEGAL LINEUP WITHOUT HIM
+  (seen only when `meta=` was not passed) is counted as contesting too.
 
 **Then give the bid, under the committed-resource rule below:** the number
 first, the evidence that would move it, and only then Dustin's view. Say
@@ -1674,6 +1717,12 @@ meta = build_meta(wk[wk.season == 2026])
 byes = players_on_bye(9, meta, {"PIT", "TEN"})   # from the CONNECTOR
 r    = run(teams, pool, my_team_id=..., meta=meta, unavailable=byes, week=9)
 ```
+
+Add every player who is Out, on IR or Doubtful to `unavailable` as well, in
+any source's spelling. Read the top of `r.report()` before the lineups:
+`! EMPTY SLOT` means the roster has nobody available at tight end and that
+slot scores nothing; "roster has no QB" (an error, not a report) means the
+lineup cannot be set at all until a quarterback is added.
 
 A 2026-only pool makes any player returning from a full-season absence
 permanently unresolvable. Zach Charbonnet has 0 rows in 2026 and 17 in 2025 —

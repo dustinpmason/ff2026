@@ -64,8 +64,18 @@ HONEST LIMITATIONS — read before trusting a number
 3. Distributions are bootstrapped from 2026 game logs only — 3 to 7 games per
    player. That is a thin sample and it cannot see a role change. Cross-check
    anyone flagged by `ff_props.usage_trend` before relying on their line.
-4. Injuries and byes are NOT modeled. Check them separately; a player on bye
-   scores zero and this will happily project him at his average.
+4. Injuries and byes are applied only as far as they are HANDED IN: every
+   name in `unavailable=` is taken off his roster (matched with suffixes and
+   punctuation ignored, B268), and nothing else is. A player who is hurt and
+   not on that list is projected at his average. `idle_games()` counts how
+   long each player has gone without a stat line and the waiver board prints
+   it (B269), but that is a prompt to check him, not an injury report.
+5. A roster that cannot field a lineup: an OPPONENT's empty slot is filled at
+   replacement level and reported under SHORT ROSTERS; a waiver candidate is
+   valued against a replacement-level pickup in the empty slot (B267); MY
+   roster with no quarterback, back or receiver to start is refused with the
+   slot named, and with no tight end is simulated with that slot empty and
+   says so.
 """
 
 from __future__ import annotations
@@ -789,20 +799,53 @@ def best_lineup(roster: dict[str, list[str]], pool: dict[str, np.ndarray],
     return out
 
 
+class NoLegalLineup(ValueError):
+    """This roster cannot field a legal lineup. A ValueError, so every
+    caller that caught one still does; its own type so that a caller can
+    tell "this team has a hole" from every other refusal `run()` makes."""
+
+
+class LineupList(list):
+    """The lineups `enumerate_lineups` kept, plus how many were legal.
+
+    `total` is the number of legal lineups before the cap. When it is
+    larger than `len(self)` the list is the highest-MEAN ones only, and the
+    lowest-risk lineup is not guaranteed to be among them."""
+    total: int = 0
+
+    @property
+    def capped(self) -> bool:
+        return self.total > len(self)
+
+
+#: B270. The cap was 4,000 and SILENT. A real 12- or 13-man roster has 160
+#: to 550 legal lineups, so it never bound on a lineup question; it bound on
+#: a hypothetical roster carrying four or more adds at once (16 players:
+#: 4,025; 17: 6,860), which is exactly the roster a waiver thread builds to
+#: ask "what is my lineup if every claim lands". Raised to where a 17-man
+#: roster fits whole, and reported wherever it does bind.
+MAX_LINEUPS = 20_000
+
+
 def enumerate_lineups(roster: dict[str, list[str]],
                       pool: dict[str, np.ndarray],
-                      max_lineups: int = 4000) -> list[tuple[str, ...]]:
-    """Every legal starting lineup. Capped for tractability — when the roster
-    is large, keep the combinations with the best expected points, since a
-    lineup far off the EV frontier is not a serious candidate under either
-    objective.
+                      max_lineups: int | None = None) -> LineupList:
+    """Every legal starting lineup, as a `LineupList`.
+
+    Capped for tractability at `max_lineups` (default `MAX_LINEUPS`). Over
+    the cap, the combinations with the best expected points are kept, and
+    the list says so: `.total` is the full count and `.capped` is True.
+    Highest mean is an EV rule feeding a floor objective, so a capped list
+    can miss the lowest-risk lineup; `Result.report()` prints that.
     """
+    if max_lineups is None:
+        max_lineups = MAX_LINEUPS
     qbs = roster.get("QB", [])
     tes = roster.get("TE", [])
     rbs = roster.get("RB", [])
     wrs = roster.get("WR", [])
     if not qbs:
-        raise ValueError("roster has no QB")
+        raise NoLegalLineup("roster has no QB")
 
     # B132. This was `qb = max(qbs, key=lambda p: _mean_of(pool, p))` — a
     # single QB, hard-picked by MEAN, never enumerated, while TEs, RBs and
@@ -828,7 +871,7 @@ def enumerate_lineups(roster: dict[str, list[str]],
     # same lineup — enumerating them inflates the count and fills the output
     # with duplicate rows.
     seen: set[frozenset[str]] = set()
-    out: list[tuple[str, ...]] = []
+    out = LineupList()
     for qb in qbs:
         for te in (tes or [None]):
             for rb2 in combinations(rbs, SLOTS["RB"]):
@@ -847,14 +890,17 @@ def enumerate_lineups(roster: dict[str, list[str]],
 
     if not out:
         counts = {k: len(v) for k, v in roster.items()}
-        raise ValueError(
+        raise NoLegalLineup(
             f"no legal lineup can be built from this roster: {counts}. "
             f"Needs {SLOTS}. Returning an empty list here made run() fail "
             f"later with an opaque error instead of naming the cause.")
 
+    out.total = len(out)
     if len(out) > max_lineups:
         out.sort(key=lambda L: -sum(_mean_of(pool, p) for p in L))
-        out = out[:max_lineups]
+        kept = LineupList(out[:max_lineups])
+        kept.total = out.total
+        return kept
     return out
 
 
@@ -893,6 +939,27 @@ class Result:
     # correlation signal is removed entirely. An ndarray has nowhere to
     # report a miss, so the miss is reported here instead.
     correlation_unresolved: dict[str, list[str]] = field(default_factory=dict)
+    # B270. How many lineups were legal before the cap. Larger than
+    # len(lineups) means only the highest-mean ones were simulated.
+    lineups_total: int | None = None
+    # B267. Slots on MY roster that nobody could fill, so they score nothing
+    # in every lineup below (today only a missing tight end gets this far;
+    # a missing quarterback, back or receiver is refused outright).
+    my_empty_slots: list[str] = field(default_factory=list)
+
+    @property
+    def capped(self) -> bool:
+        return self.lineups_total is not None and self.lineups_total > len(self.lineups)
+
+    def cap_note(self) -> str:
+        """One sentence when the lineup cap bound, else ''."""
+        if not self.capped:
+            return ""
+        return (f"only the {len(self.lineups):,} highest-MEAN of "
+                f"{self.lineups_total:,} legal lineups were simulated, so the "
+                f"lowest-risk lineup may not be among them. Cut the roster to "
+                f"the players actually in question, or raise "
+                f"ff_guillotine.MAX_LINEUPS")
 
     def se(self, i: int | None = None) -> float:
         """Standard error on P(eliminated) for lineup `i` (default: the best)."""
@@ -933,6 +1000,13 @@ class Result:
         _i = self._idx_min_risk()
         L.append(f"  {self.n_sims:,} simulations, {len(self.lineups):,} legal "
                  f"lineups  (1 se on P(elim) = {self.se()*100:.2f} pts)")
+        if self.capped:
+            L.append(f"  ! LINEUP CAP: {self.cap_note()}.")
+        if self.my_empty_slots:
+            L.append(f"  ! EMPTY SLOT: this roster has nobody available at "
+                     f"{', '.join(self.my_empty_slots)}, so that slot scores "
+                     f"NOTHING in every lineup below. A pickup there is worth "
+                     f"more than any swap.")
         if self.se() * 100 > 0.10:
             L.append(f"    Do not quote a difference smaller than "
                      f"{self.se()*200:.2f} pts as a measurement at this sim "
@@ -1068,8 +1142,16 @@ def run(teams: list[dict],
     # be selected, wasting a starting slot — worse than excluding him outright.
     # Only players actually on a roster are worth reporting — `unavailable`
     # is typically every player on a bye team, which is hundreds of names.
+    #
+    # B268. Matched on the NORMALISED name. `players_on_bye` returns the
+    # data's spelling ("KC Concepcion") and the connector's roster carries
+    # its own ("KC Concepcion Jr."); an exact match let him through, and on
+    # the real league in Week 11 he was projected at his average on his bye.
+    # This is the fourth name-join bug in this project and the rule is the
+    # same as the first three: never match a player on a raw name.
     rostered = {p for t in teams for names in t["roster"].values() for p in names}
-    out_set = set(unavailable or ()) & rostered
+    canon_out = {normalize_name(p) for p in (unavailable or ())}
+    out_set = {p for p in rostered if normalize_name(p) in canon_out}
     if out_set:
         teams = [{**t, "roster": {pos: [p for p in names if p not in out_set]
                                   for pos, names in t["roster"].items()}}
@@ -1149,7 +1231,8 @@ def run(teams: list[dict],
     corr_unres: dict[str, list[str]] = {}
     if use_corr:
         _seen = sorted({p for t in teams
-                        for names in t["roster"].values() for p in names})
+                        for names in t["roster"].values() for p in names
+                        if not p.startswith(REPL_PREFIX)})
         _cov = correlation_coverage(_seen, meta)
         if _cov["no_team"]:
             corr_unres["no_team"] = _cov["no_team"]
@@ -1158,6 +1241,7 @@ def run(teams: list[dict],
 
     # My side: draw each candidate player once, reuse across all lineups.
     lineups = enumerate_lineups(me["roster"], pool)
+    my_empty = [pos for pos in ("TE",) if not me["roster"].get(pos)]
     players = sorted({p for L in lineups for p in L})
     idx = {p: i for i, p in enumerate(players)}
     if use_corr:
@@ -1188,7 +1272,9 @@ def run(teams: list[dict],
                   unresolved_names=unres, excluded=sorted(out_set),
                   short_rosters=short,
         eliminated_teams=eliminated, stale_projections=stale,
-                  correlation_unresolved=corr_unres)
+                  correlation_unresolved=corr_unres,
+                  lineups_total=getattr(lineups, "total", len(lineups)),
+                  my_empty_slots=my_empty)
 
 
 # ---------------------------------------------------------------------------
@@ -1222,6 +1308,137 @@ def run(teams: list[dict],
 # that threw away its own first sweep after noticing the impossible sign.
 
 
+#: B269. A free agent with no stat line in this many of his team's most
+#: recent games is listed apart from the ranked board. Three, not one: the
+#: weekly table leaves out a game he played and recorded nothing in.
+IDLE_GAMES = 3
+
+
+def idle_games(weekly: pd.DataFrame, season: int) -> dict[str, int]:
+    """{player: how many of his team's most recent games have no stat line
+    for him}, for everyone with a game in `season`.
+
+    0 means he was in his team's last game. A player on injured reserve
+    since Week 5 keeps his season average in the pool, and a sweep of
+    "everyone unrostered averaging 6 or more" ranks him beside players who
+    are on the field: on 2026-11-24, 28 of the 146 names such a sweep
+    returned had not played in three or more of their team's games (Jalen
+    Hurts since Week 5, Lamar Jackson since Week 8).
+
+    Keyed by `normalize_name`, so any source's spelling finds him. A player
+    with no game this season is not here at all; the pool marks him stale.
+    The table has no row for a game he played and recorded nothing in, so
+    a 1 can be a quiet game. That is why `IDLE_GAMES` is 3.
+    """
+    df = weekly[weekly.season == season] if "season" in weekly.columns else weekly
+    if "season_type" in df.columns:
+        df = df[df.season_type == "REG"]
+    if df.empty:
+        return {}
+    team_weeks = {t: sorted(set(g.week)) for t, g in df.groupby("team")}
+    last = df.sort_values("week").groupby("player_display_name").tail(1)
+    out: dict[str, int] = {}
+    for name, team, wk_ in zip(last.player_display_name, last.team, last.week):
+        out[normalize_name(name)] = sum(1 for w in team_weeks.get(team, ()) if w > wk_)
+    return out
+
+
+def wire_sweep(pool: dict[str, np.ndarray], meta: dict, teams: list[dict], *,
+               min_mean: float = 6.0, idle: dict | None = None,
+               max_idle: int = IDLE_GAMES - 1) -> tuple[list[str], str]:
+    """Every UNROSTERED quarterback, back, receiver and tight end averaging
+    `min_mean` or more: (candidates, a printable account of who was left off).
+
+    Left off, and named: players idle more than `max_idle` of their team's
+    games (pass `idle=idle_games(weekly, season)`), and players whose only
+    games are a prior season's. Both can still be priced by naming them to
+    `waiver_board` directly; they are kept out of a blind sweep because a
+    sweep has no injury report in it.
+    """
+    rostered = {normalize_name(p) for t in teams
+                for names in t.get("roster", {}).values() for p in names}
+    stale = getattr(pool, "stale", set())
+    keep, off_idle, off_stale, thin = [], [], [], []
+    for name, v in pool.items():
+        if name.startswith(REPL_PREFIX) or not len(v):
+            continue
+        pos = _meta_field(meta_lookup(name, meta)[1]) if meta else None
+        if pos not in ("QB", "RB", "WR", "TE") and name not in stale:
+            continue
+        key = normalize_name(name)
+        m = float(np.mean(v))
+        if key in rostered or m < min_mean:
+            continue
+        if name in stale:
+            off_stale.append((m, name))
+            continue
+        n = None if idle is None else idle.get(key)
+        if n is not None and n > max_idle:
+            off_idle.append((m, f"{name} ({n})"))
+            continue
+        keep.append((m, name))
+        if len(v) < MIN_GAMES:
+            thin.append((m, f"{name} ({len(v)})"))
+    by = lambda x: (-x[0], x[1])            # best first, ties by name
+    keep.sort(key=by); off_idle.sort(key=by); off_stale.sort(key=by)
+    thin.sort(key=by)
+    L = [f"WIRE SWEEP — {len(keep)} unrostered players averaging "
+         f"{min_mean:g} or more"
+         + ("" if idle is not None else
+            ". NO idle map was passed, so players who have not played in "
+            "weeks are IN this list")]
+    if off_idle:
+        L.append(f"  left off, no stat line in more than {max_idle} of his "
+                 f"team's latest games (games missed in brackets): "
+                 + ", ".join(n for _, n in off_idle))
+    if off_stale:
+        L.append("  left off, no game this season (last season's numbers "
+                 "only): " + ", ".join(n for _, n in off_stale))
+    if thin:
+        L.append(f"  KEPT on fewer than {MIN_GAMES} games (games in brackets), "
+                 f"so the average is one or two games and not a level: "
+                 + ", ".join(n for _, n in thin))
+    L.append("  This is a list from the game log, not from an injury report: "
+             "check every name you mean to bid on.")
+    return [n for _, n in keep], "\n".join(L)
+
+
+_NEED = (("QB", 1), ("RB", 2), ("WR", 2), ("TE", 1))
+
+
+def lineup_holes(roster: dict[str, list[str]]) -> dict[str, int]:
+    """{position: how many bodies short} for one legal lineup, {} when the
+    roster can field one. A flex shortage is counted at RB, which is where
+    `best_lineup` fills it."""
+    short = {pos: need - len(roster.get(pos, []))
+             for pos, need in _NEED if len(roster.get(pos, [])) < need}
+    have = sum(len(roster.get(p, [])) for p in FLEX_ELIGIBLE) + sum(
+        v for k, v in short.items() if k in FLEX_ELIGIBLE)
+    need = sum(SLOTS[p] for p in FLEX_ELIGIBLE) + SLOTS["FLEX"]
+    if have < need:
+        short["RB"] = short.get("RB", 0) + (need - have)
+    return short
+
+
+def _fill_names(pool: dict, holes: dict[str, int]) -> dict[str, list[str]] | None:
+    """Placeholder names for `holes`, each a replacement-level distribution
+    already in `pool`, or None when the pool has no replacement level for
+    one of the positions. A second body at one position needs its own name
+    (a lineup is a SET of players), so it is an alias of the first."""
+    out: dict[str, list[str]] = {}
+    for pos, n in holes.items():
+        base = replacement_name(pos)
+        if base not in pool:
+            return None
+        names = [base]
+        for k in range(2, n + 1):
+            alias = f"{base}{k}"
+            pool[alias] = pool[base]
+            names.append(alias)
+        out[pos] = names
+    return out
+
+
 @dataclass
 class WaiverValue:
     player: str
@@ -1240,19 +1457,83 @@ class WaiverValue:
     # has no team and no position, and this used to fall through to "WR"
     # silently, which is a guess wearing a measurement's clothes.
     position_defaulted: bool = False
+    # B267. Four ways a team with a HOLE in its lineup used to read as "he
+    # does not help", which is the opposite of the truth: the team that
+    # cannot field a lineup is the one that needs a pickup most.
+    #   fill         the roster had a hole without him, so the without-him
+    #                side was simulated with a replacement-level pickup in
+    #                that slot. The delta is his worth OVER a waiver body.
+    #   required     he is in every legal lineup and no replacement level
+    #                was available to compare against. No delta exists.
+    #   blocked      the roster has no legal lineup even WITH him.
+    #   unavailable  he himself is on a bye or listed out this week.
+    fill: str = ""
+    required: bool = False
+    blocked: str = ""
+    unavailable: bool = False
+    # B269. How many of his team's most recent games carry no stat line for
+    # him. None when no `idle=` map was passed.
+    idle: int | None = None
+    # B269. Games behind his distribution. Under MIN_GAMES the simulation
+    # keeps his mean and widens the spread, so one big game ranks a
+    # practice-squad call-up beside a starter: on 2026-11-24 Max Hurleman,
+    # one game, came second on the real board.
+    games: int | None = None
+    # B270. The lineup cap bound in the run this came from.
+    capped: bool = False
+    # The name matched nobody in the pool, in any season. That is "nothing
+    # is known", which is not the same as "he enters no lineup".
+    unknown: bool = False
 
     @property
     def delta(self) -> float:
         """Change in best-lineup P(elim). Never positive, by construction."""
         return self.p_with - self.p_without
 
+    @property
+    def is_idle(self) -> bool:
+        return self.idle is not None and self.idle >= IDLE_GAMES
+
     def describe(self, floor: float | None = None) -> str:
+        if self.unknown:
+            return (f"{self.player}: NOT IN THE DATA — no game log under "
+                    f"this name in any season loaded (check the spelling). "
+                    f"The simulation has nothing to say about him, so a bid "
+                    f"is unjustified on survival grounds and would have to "
+                    f"rest on something else.")
+        if self.blocked:
+            return (f"{self.player}: CANNOT BE VALUED — this roster has no "
+                    f"legal lineup this week even with him ({self.blocked}). "
+                    f"Fill that hole first. Nothing here says he does not help.")
+        if self.unavailable:
+            return (f"{self.player}: UNAVAILABLE THIS WEEK — on a bye or "
+                    f"listed out, so he is worth nothing this week whoever he "
+                    f"is. Price him on next week's board.")
+        if self.required:
+            return (f"{self.player}: FILLS A HOLE — without him this roster "
+                    f"has no legal lineup this week, and there was no "
+                    f"replacement level to compare him against (pass meta=). "
+                    f"With him: P(elim) {self.p_with:.3%}. That is a level, "
+                    f"not a delta, and he is NOT a player who does not help.")
         if not self.reachable:
             return (f"{self.player}: NOT REACHABLE — he enters no legal "
                     f"lineup, so the simulation has nothing to say about him. "
                     f"A bid is unjustified on survival grounds.")
         s = (f"{self.player}: {self.p_without:.3%} -> {self.p_with:.3%}  "
              f"({self.delta * 100:+.3f}pp)")
+        if self.fill:
+            s += (f"  [HOLE at {self.fill}: without him that slot is a "
+                  f"replacement-level pickup, so this is his worth OVER a "
+                  f"waiver-wire body]")
+        if self.games is not None and self.games < MIN_GAMES:
+            s += (f"  [THIN: {self.games} game{'s' if self.games != 1 else ''} "
+                  f"on file — this is that game, not a level]")
+        if self.idle:
+            s += (f"  [IDLE: no stat line in his team's last {self.idle} "
+                  f"game{'s' if self.idle != 1 else ''} — confirm he is "
+                  f"playing]")
+        if self.capped:
+            s += "  [lineup cap bound]"
         if self.stale:
             s += "  [STALE: projected from a prior season]"
         if self.position_defaulted:
@@ -1276,12 +1557,23 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
                  *, my_team_id: str, candidate: str,
                  n_sims: int = 80_000, meta: dict | None = None,
                  week: int | None = None,
-                 unavailable=None, **kw) -> WaiverValue:
+                 unavailable=None, idle: dict | None = None,
+                 **kw) -> WaiverValue:
     """What `candidate` is worth to `my_team_id`, as a paired delta.
 
     The candidate is added to the roster and the sim runs ONCE. Both numbers
     come off those same draws, so the comparison carries no between-run noise.
     Never run this twice and subtract — see the note above this function.
+
+    A ROSTER WITH A HOLE (B267). When the roster cannot field a lineup
+    without him (its only quarterback is out, say), the without-him side is
+    simulated with a replacement-level pickup in the empty slot, in the same
+    run, and `.fill` names the slot. That is what a manager would really do,
+    and it is how every opponent with a hole is already simulated. It needs
+    `meta=`; without it he comes back `required` and no delta is claimed.
+
+    `idle` is `idle_games(weekly, season)`; with it the value carries how
+    many of his team's latest games he has no stat line in.
     """
     me = next((t for t in teams if str(t.get("team_id")) == str(my_team_id)),
               None)
@@ -1293,7 +1585,7 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
                            n_sims, False,
                            f"{candidate!r} does not resolve to anyone in the "
                            f"pool — check the spelling before reading "
-                           f"anything into this")
+                           f"anything into this", unknown=True)
     pos = None
     if meta:
         # `meta_lookup` returns (team, position); `_meta_field` cleans ONE
@@ -1308,15 +1600,48 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
     pos = pos or from_roster or "WR"
     is_stale = who in getattr(pool, "stale", ())
 
+    n_idle = None if idle is None else idle.get(normalize_name(who))
+    tags = dict(stale=is_stale, position_defaulted=defaulted, idle=n_idle,
+                games=len(pool[who]))
+
     grown = {k: list(v) for k, v in me["roster"].items()}
     grown.setdefault(pos, [])
     if who not in grown[pos]:
         grown[pos].append(who)
+
+    # B267. Can this roster field a lineup WITHOUT him, on the players
+    # actually available this week? If not, give the empty slot a
+    # replacement-level pickup, so that "without him" is a lineup and not a
+    # void. Nothing here draws a random number, so a roster with no hole
+    # runs exactly as it always did.
+    canon_out = {normalize_name(p) for p in (unavailable or ())}
+    is_out = normalize_name(who) in canon_out or normalize_name(candidate) in canon_out
+    base = {k: [p for p in v if p != who and normalize_name(p) not in canon_out]
+            for k, v in me["roster"].items()}
+    holes, filled = lineup_holes(base), ""
+    if holes and kw.get("fill_replacement", True) and meta is not None \
+            and isinstance(pool, Pool):
+        add_replacement_level(pool, meta, n_teams=len(teams))
+        names = _fill_names(pool, holes)
+        if names is not None:
+            for hp, ns in names.items():
+                grown.setdefault(hp, []).extend(ns)
+            filled = ", ".join(f"{hp}" + (f" x{n}" if n > 1 else "")
+                               for hp, n in holes.items())
     patched = [({**t, "roster": grown} if str(t.get("team_id")) ==
                 str(my_team_id) else t) for t in teams]
 
-    r = run(patched, pool, my_team_id=my_team_id, n_sims=n_sims, meta=meta,
-            week=week, unavailable=unavailable, **kw)
+    try:
+        r = run(patched, pool, my_team_id=my_team_id, n_sims=n_sims, meta=meta,
+                week=week, unavailable=unavailable, **kw)
+    except NoLegalLineup as e:
+        # No lineup even WITH him: a hole somewhere he does not play, and no
+        # replacement level to stand in it. Returned, not raised, so that
+        # one such candidate cannot take a whole board down with him.
+        return WaiverValue(candidate, float("nan"), float("nan"), False,
+                           n_sims, False, str(e), blocked=str(e).split(". ")[0],
+                           unavailable=is_out, **tags)
+    tags["capped"] = r.capped
     with_him = [i for i, L in enumerate(r.lineups) if who in L]
     without = [i for i, L in enumerate(r.lineups) if who not in L]
     if not with_him:
@@ -1325,33 +1650,46 @@ def waiver_value(teams: list[dict], pool: dict[str, np.ndarray],
                            f"{who} is on the roster but enters no legal "
                            f"lineup — on a bye, or crowded out of every "
                            f"slot. The simulation cannot value him.",
-                           stale=is_stale, position_defaulted=defaulted)
+                           unavailable=is_out, **tags)
     if not without:
         return WaiverValue(candidate, float(min(r.p_last)), float("nan"),
                            True, n_sims, False,
                            f"{who} appears in EVERY legal lineup, so there is "
                            f"no without-him comparison on this roster",
-                           stale=is_stale, position_defaulted=defaulted)
+                           required=True, **tags)
     p_with = float(min(r.p_last))
     p_without = float(min(r.p_last[without]))
     best = r.lineups[int(np.argmin(r.p_last))]
     return WaiverValue(candidate, p_with, p_without, who in best, n_sims,
-                       True, "paired within one run", stale=is_stale,
-                       position_defaulted=defaulted)
+                       True, "paired within one run", fill=filled, **tags)
 
 
 def waiver_board(teams: list[dict], pool: dict[str, np.ndarray], *,
                  my_team_id: str, candidates, n_sims: int = 80_000,
                  meta: dict | None = None, week: int | None = None,
-                 unavailable=None, floor: float = 0.25, **kw) -> str:
-    """Every candidate, ranked, with the unreachable ones named not hidden."""
+                 unavailable=None, floor: float = 0.25,
+                 idle: dict | None = None, **kw) -> str:
+    """Every candidate, ranked, with the unreachable ones named not hidden.
+
+    Pass `idle=idle_games(weekly, season)` and a free agent who has not had
+    a stat line in his team's last three games is listed apart from the
+    ranking, with how long it has been."""
+    # One row a player. A released roster joined to a sweep names the same
+    # man twice, and two runs of him print two slightly different numbers
+    # that read as two findings.
+    seen: set[str] = set()
+    once = [c for c in candidates
+            if not (normalize_name(c) in seen or seen.add(normalize_name(c)))]
     vals = [waiver_value(teams, pool, my_team_id=my_team_id, candidate=c,
                          n_sims=n_sims, meta=meta, week=week,
-                         unavailable=unavailable, **kw) for c in candidates]
-    return render_waiver_board(vals, n_sims=n_sims, floor=floor)
+                         unavailable=unavailable, idle=idle, **kw)
+            for c in once]
+    return render_waiver_board(vals, n_sims=n_sims, floor=floor,
+                               idle_checked=idle is not None)
 
 
-def render_waiver_board(vals, *, n_sims: int, floor: float = 0.25) -> str:
+def render_waiver_board(vals, *, n_sims: int, floor: float = 0.25,
+                        idle_checked: bool | None = None) -> str:
     """Format a list of `WaiverValue`s.
 
     Separate from `waiver_board` so the impossible-sign alarm below can be
@@ -1360,14 +1698,42 @@ def render_waiver_board(vals, *, n_sims: int, floor: float = 0.25) -> str:
     written against the combined function passed on an `or True` clause,
     which is no check at all.
     """
-    ok = sorted([v for v in vals if v.reachable], key=lambda v: v.delta)
-    no = [v for v in vals if not v.reachable]
+    ok = sorted([v for v in vals if v.reachable and not v.is_idle],
+                key=lambda v: v.delta)
+    idl = sorted([v for v in vals if v.reachable and v.is_idle],
+                 key=lambda v: v.delta)
+    # Not-reachable rows, the ones that are NOT "he does not help" first.
+    no = sorted([v for v in vals if not v.reachable],
+                key=lambda v: (not v.required, not v.blocked, not v.unavailable))
     L = [f"WAIVER BOARD — {len(ok)} reachable, {len(no)} not, "
-         f"n_sims={n_sims:,}, floor {floor:.3f}pp"]
+         + (f"{len(idl)} idle, " if idl else "")
+         + f"n_sims={n_sims:,}, floor {floor:.3f}pp"]
     for v in ok:
         L.append("  " + v.describe(floor))
+    if idl:
+        L.append(f"  IDLE {IDLE_GAMES}+ GAMES — not ranked with the players "
+                 f"above. These numbers are his season average from before "
+                 f"he stopped playing; they mean something only if he is "
+                 f"confirmed back:")
+        for v in idl:
+            L.append("    " + v.describe(floor))
     for v in no:
         L.append("  " + v.describe())
+    if any(v.fill for v in vals):
+        L.append("  A HOLE means this roster cannot field a lineup this week "
+                 "without a pickup at that slot. Every player marked that way "
+                 "is measured against a replacement-level pickup there.")
+    if idle_checked is False:
+        # At the foot, so the ranked rows stay where every reader of this
+        # board already looks for them.
+        L.append("  ! no idle= map was passed, so a player who has not "
+                 "played in weeks is ranked above on his season average with "
+                 "nothing to say so. Pass idle=idle_games(weekly, season).")
+    if any(v.capped for v in vals):
+        L.append("  ! LINEUP CAP bound on a row marked so: only the highest-"
+                 "mean lineups were simulated for it. Value candidates one at "
+                 "a time on the real roster, not on a roster carrying "
+                 "several adds.")
     if any(v.delta > 0 for v in ok):
         L.append("  !! a POSITIVE delta appeared, which is IMPOSSIBLE — "
                  "adding a player cannot raise the best lineup's P(elim). "
@@ -1517,6 +1883,8 @@ def drop_board(teams: list[dict], pool: dict[str, np.ndarray], *,
         L.append("  " + v.describe(floor))
     for v in bad:
         L.append("  " + v.describe(floor))
+    if r.capped:
+        L.append(f"  ! LINEUP CAP: {r.cap_note()}.")
     if any(v.cost < -1e-12 for v in ok):
         L.append("  !! a NEGATIVE cost appeared, which is impossible — "
                  "removing a player cannot shrink the best lineup's P(elim). "
@@ -1557,6 +1925,13 @@ class Demand:
     unvalued: str = ""
 
     @property
+    def needs_him(self) -> bool:
+        """B267. This team has NO legal lineup without him and nothing to
+        compare him against. It is the team likeliest to pay, never a team
+        he "does not help"."""
+        return bool(self.value.required)
+
+    @property
     def gain_pp(self) -> float:
         """Points of P(elim) he takes off this team this week (>= 0)."""
         d = self.value.delta
@@ -1567,7 +1942,7 @@ def waiver_demand(teams: list[dict], pool: dict[str, np.ndarray], *,
                   candidate: str, n_sims: int = 40_000,
                   meta: dict | None = None, week: int | None = None,
                   unavailable=None, budgets: dict | None = None,
-                  **kw) -> list[Demand]:
+                  idle: dict | None = None, **kw) -> list[Demand]:
     """`waiver_value` for `candidate` from EVERY live team's side.
 
     One paired run per team, so the cost is (live teams) simulations per
@@ -1591,7 +1966,11 @@ def waiver_demand(teams: list[dict], pool: dict[str, np.ndarray], *,
         try:
             v = waiver_value(teams, pool, my_team_id=tid,
                              candidate=candidate, n_sims=n_sims, meta=meta,
-                             week=week, unavailable=unavailable, **kw)
+                             week=week, unavailable=unavailable, idle=idle,
+                             **kw)
+            # A team with no lineup even with him used to arrive here as an
+            # exception; it is now a value marked `blocked`. Same meaning.
+            why = v.blocked
         except ValueError as e:
             why = str(e)
             v = WaiverValue(who or candidate, float("nan"), float("nan"),
@@ -1620,7 +1999,8 @@ class FaabRead:
         """Rivals he measurably helps THIS week, biggest gain first, plus
         any rival that could not be valued: unknown is not "no help"."""
         return sorted([d for d in self.rivals
-                       if d.gain_pp > self.floor_pp or d.unvalued],
+                       if d.gain_pp > self.floor_pp or d.unvalued
+                       or d.needs_him],
                       key=lambda d: -d.gain_pp)
 
     @property
@@ -1667,8 +2047,16 @@ class FaabRead:
                 tag = (f"  (COULD NOT BE VALUED: {d.unvalued[:50]} — this "
                        f"team has no legal lineup as it stands, so it is "
                        f"counted as contesting)")
+            elif d.needs_him:
+                tag = ("  (HAS NO LEGAL LINEUP WITHOUT HIM — counted as "
+                       "contesting, and the likeliest to pay)")
+            elif d.value.unavailable:
+                tag = "  (he is unavailable this week)"
             elif not d.value.reachable:
                 tag = f"  (not valued: {d.value.why[:60]})"
+            elif d.value.fill:
+                tag += (f"  (HOLE at {d.value.fill}: measured against a "
+                        f"replacement-level pickup)")
             L.append(f"     {d.team_name:<28} {d.gain_pp:6.3f}pp   {b}{tag}")
         if self.missing_budgets:
             L.append(f"  !! no budget for: {', '.join(self.missing_budgets)}. "
