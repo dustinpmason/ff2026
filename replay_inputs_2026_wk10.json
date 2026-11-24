@@ -1,0 +1,444 @@
+{
+ "pulled": [
+  "jelani woods",
+  "tim patrick",
+  "aj dillon",
+  "jatavion sanders",
+  "brevin jordan",
+  "carsen ryan",
+  "cle browns d/st",
+  "david montgomery",
+  "hou texans d/st",
+  "jaleel mclaughlin",
+  "malachi corley",
+  "marvin harrison",
+  "michael burton",
+  "zaire mitchell paden",
+  "carnell tate",
+  "cj williams",
+  "kalel mullings",
+  "michael carter",
+  "nicholas singleton",
+  "atl falcons d/st",
+  "ben vansumeren",
+  "jared wiley",
+  "kc chiefs d/st",
+  "kenneth walker",
+  "nikko remigio",
+  "brenen thompson",
+  "elijah sarratt",
+  "hayden rucci",
+  "ladd mcconkey",
+  "carlos washington",
+  "chris bell",
+  "ind colts d/st",
+  "jalen reagor",
+  "jared wayne",
+  "justin joly",
+  "mia dolphins d/st",
+  "mo alie cox",
+  "will mallory",
+  "coleman owen",
+  "devin culp",
+  "jauan jennings",
+  "jordan addison",
+  "josh whyle",
+  "pierre strong",
+  "tj hockenson",
+  "det lions d/st",
+  "jackson meeks",
+  "ne patriots d/st",
+  "tanner arkin",
+  "tay martin",
+  "eli heidenreich",
+  "michael pittman",
+  "donte thornton",
+  "emanuel wilson",
+  "irvin charles",
+  "lv raiders d/st",
+  "malik benson",
+  "brandin cooks",
+  "jonathan mingo",
+  "colson yankoff",
+  "jaden bradley",
+  "thomas fidone"
+ ],
+ "starters": {
+  "BUF": "00-0034857",
+  "NYJ": "00-0030565",
+  "CAR": "00-0039150",
+  "NO": "00-0040743",
+  "HOU": "00-0039163",
+  "CLE": "00-0033537",
+  "JAX": "00-0036971",
+  "TEN": "00-0040676",
+  "KC": "00-0033873",
+  "ATL": "00-0039917",
+  "LAC": "00-0036355",
+  "BAL": "00-0033119",
+  "LA": "00-0026498",
+  "ARI": "00-0041561",
+  "MIA": "00-0040014",
+  "IND": "00-0035710",
+  "MIN": "00-0029604",
+  "GB": "00-0036264",
+  "NE": "00-0039851",
+  "DET": "00-0033106",
+  "PIT": "00-0023459",
+  "CIN": "00-0036442",
+  "SEA": "00-0035704",
+  "LV": "00-0041562",
+  "SF": "00-0037834",
+  "DAL": "00-0033077",
+  "WAS": "00-0039910",
+  "NYG": "00-0039923"
+ },
+ "add": [
+  {
+   "team": "CAR",
+   "player": "00-0039342",
+   "position": "WR"
+  },
+  {
+   "team": "GB",
+   "player": "00-0038685",
+   "position": "RB"
+  },
+  {
+   "team": "KC",
+   "player": "00-0038997",
+   "position": "WR"
+  },
+  {
+   "team": "LAC",
+   "player": "00-0033885",
+   "position": "TE"
+  },
+  {
+   "team": "NO",
+   "player": "00-0036973",
+   "position": "RB"
+  },
+  {
+   "team": "SF",
+   "player": "00-0030279",
+   "position": "WR"
+  }
+ ],
+ "chances": [
+  {
+   "team": "CLE",
+   "player": "00-0039373",
+   "chance": 0.0
+  },
+  {
+   "team": "KC",
+   "player": "00-0038519",
+   "chance": 0.0
+  },
+  {
+   "team": "ARI",
+   "player": "00-0033119",
+   "chance": 0.0
+  },
+  {
+   "team": "IND",
+   "player": "00-0030279",
+   "chance": 0.0
+  },
+  {
+   "team": "IND",
+   "player": "00-0038997",
+   "chance": 0.0
+  },
+  {
+   "team": "LV",
+   "player": "00-0029604",
+   "chance": 0.0
+  },
+  {
+   "team": "HOU",
+   "player": "00-0039849",
+   "chance": 0.0
+  },
+  {
+   "team": "TEN",
+   "player": "00-0041438",
+   "chance": 0.0
+  },
+  {
+   "team": "KC",
+   "player": "00-0038134",
+   "chance": 0.0
+  },
+  {
+   "team": "MIA",
+   "player": "00-0041525",
+   "chance": 0.0
+  },
+  {
+   "team": "MIN",
+   "player": "00-0035229",
+   "chance": 0.0
+  },
+  {
+   "team": "MIN",
+   "player": "00-0038994",
+   "chance": 0.0
+  },
+  {
+   "team": "GB",
+   "player": "00-0038098",
+   "chance": 0.0
+  }
+ ],
+ "aliases": [
+  {
+   "team": "TEN",
+   "name": "Cameron Ward",
+   "player": "00-0040676"
+  },
+  {
+   "team": "KC",
+   "name": "Nathan Carter",
+   "player": "00-0040547"
+  },
+  {
+   "team": "ARI",
+   "name": "Zonovan Knight",
+   "player": "00-0037157"
+  },
+  {
+   "team": "IND",
+   "name": "Drew Ogletree",
+   "player": "00-0037292"
+  },
+  {
+   "team": "MIN",
+   "name": "Benjamin Yurosek",
+   "player": "00-0040509"
+  },
+  {
+   "team": "SEA",
+   "name": "Irv Charles",
+   "player": "00-0037156"
+  },
+  {
+   "team": "NYG",
+   "name": "Cameron Skattebo",
+   "player": "00-0040715"
+  },
+  {
+   "team": "WAS",
+   "name": "Chigoziem Okonkwo",
+   "player": "00-0037809"
+  },
+  {
+   "team": "NYG",
+   "name": "Greg Desrosiers Jr.",
+   "player": "00-0041376"
+  }
+ ],
+ "log": [
+  "starter CLE: Deshaun Watson has the passing line (last game's starter was Shedeur Sanders)",
+  "starter BAL: Jacoby Brissett has the passing line (last game's starter was Joe Fagnano)",
+  "starter ARI: Carson Beck has the passing line (last game's starter was Gardner Minshew)",
+  "starter MIA: Kyle McCord has the passing line (last game's starter was Malik Willis)",
+  "starter MIN: Kirk Cousins has the passing line (last game's starter was Carson Wentz)",
+  "starter LV: Fernando Mendoza has the passing line (last game's starter was Kirk Cousins)",
+  "alias: the books' 'Cameron Ward' read as Cam Ward (TEN)",
+  "alias: the books' 'Nathan Carter' read as Nate Carter (KC)",
+  "alias: the books' 'Zonovan Knight' read as Bam Knight (ARI)",
+  "alias: the books' 'Drew Ogletree' read as Andrew Ogletree (IND)",
+  "alias: the books' 'Benjamin Yurosek' read as Ben Yurosek (MIN)",
+  "alias: the books' 'Irv Charles' read as Irvin Charles (SEA)",
+  "alias: the books' 'Cameron Skattebo' read as Cam Skattebo (NYG)",
+  "alias: the books' 'Chigoziem Okonkwo' read as Chig Okonkwo (WAS)",
+  "alias: the books' 'Greg Desrosiers Jr.' read as Gregory Desrosiers (NYG)",
+  "moved: Audric Estime is on CLE's slate and posted in [('CAR', 'NO')]: chance 0 for CLE",
+  "moved: Nikko Remigio is on KC's slate and posted in [('HOU', 'CLE')]: chance 0 for KC",
+  "moved: Jacoby Brissett is on ARI's slate and posted in [('LAC', 'BAL')]: chance 0 for ARI",
+  "moved: Keenan Allen is on IND's slate and posted in [('SF', 'DAL')]: chance 0 for IND",
+  "moved: Josh Downs is on IND's slate and posted in [('KC', 'ATL')]: chance 0 for IND",
+  "moved: Kirk Cousins is on LV's slate and posted in [('MIN', 'GB')]: chance 0 for LV",
+  "ruled out: Marvin Harrison Jr. (HOU), his lines were pulled before kickoff: chance 0",
+  "ruled out: Carnell Tate (TEN), his lines were pulled before kickoff: chance 0",
+  "ruled out: Kenneth Walker III (KC), his lines were pulled before kickoff: chance 0",
+  "ruled out: Chris Bell (MIA), his lines were pulled before kickoff: chance 0",
+  "ruled out: T.J. Hockenson (MIN), his lines were pulled before kickoff: chance 0",
+  "ruled out: Jordan Addison (MIN), his lines were pulled before kickoff: chance 0",
+  "ruled out: Pierre Strong (GB), his lines were pulled before kickoff: chance 0",
+  "left off: Hunter Long (ARI) is posted for touchdowns only",
+  "left off: Zay Jones (ARI) is posted for touchdowns only",
+  "left off: Chris Moore (BAL) is posted for touchdowns only",
+  "added: Xavier Legette (CAR, WR), 44 posted lines",
+  "left off: Israel Abanikanda (DAL) is posted for touchdowns only",
+  "added: Chris Brooks (GB, RB), 11 posted lines",
+  "left off: Skyy Moore (GB) is posted for touchdowns only",
+  "left off: Nikko Remigio (HOU) is posted for touchdowns only",
+  "left off: Nick Westbrook-Ikhine (IND) is posted for touchdowns only",
+  "left off: Quez Watkins (IND) is posted for touchdowns only",
+  "left off: Jacob De Jesus (KC) is posted for touchdowns only",
+  "added: Josh Downs (KC, WR), 60 posted lines",
+  "left off: Nate Carter (KC) is posted for touchdowns only",
+  "left off: Brennan Presley (LA) is posted for touchdowns only",
+  "left off: Xavier Smith (LA) is posted for touchdowns only",
+  "added: David Njoku (LAC, TE), 44 posted lines",
+  "left off: Carter Runyon (LV) is posted for touchdowns only",
+  "left off: Reggie Gilliam (NE) is posted for touchdowns only",
+  "added: Travis Etienne (NO, RB), 90 posted lines",
+  "added: Keenan Allen (SF, WR), 53 posted lines",
+  "left off: Robert Henry Jr. (WAS) is posted for touchdowns only",
+  "left off: Hunter Long (ARI) is posted for touchdowns only",
+  "left off: Zay Jones (ARI) is posted for touchdowns only",
+  "left off: Chris Moore (BAL) is posted for touchdowns only",
+  "left off: Israel Abanikanda (DAL) is posted for touchdowns only",
+  "left off: Skyy Moore (GB) is posted for touchdowns only",
+  "left off: Nikko Remigio (HOU) is posted for touchdowns only",
+  "left off: Nick Westbrook-Ikhine (IND) is posted for touchdowns only",
+  "left off: Quez Watkins (IND) is posted for touchdowns only",
+  "left off: Jacob De Jesus (KC) is posted for touchdowns only",
+  "left off: Nate Carter (KC) is posted for touchdowns only",
+  "left off: Brennan Presley (LA) is posted for touchdowns only",
+  "left off: Xavier Smith (LA) is posted for touchdowns only",
+  "left off: Carter Runyon (LV) is posted for touchdowns only",
+  "left off: Reggie Gilliam (NE) is posted for touchdowns only",
+  "left off: Robert Henry Jr. (WAS) is posted for touchdowns only"
+ ],
+ "unmatched": [
+  [
+   "HOU at CLE",
+   "Nikko Remigio",
+   2,
+   "on HOU's roster but not on the slate: not active for HOU in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "KC at ATL",
+   "Nathan Carter",
+   4,
+   "the alias has him on KC, and he is not on KC's slate: not active for it in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "KC at ATL",
+   "Jacob De Jesus",
+   2,
+   "on KC's roster but not on the slate: not active for KC in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "KC at ATL",
+   "Nate Carter",
+   2,
+   "on KC's roster but not on the slate: not active for KC in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "LAC at BAL",
+   "Chris Moore",
+   3,
+   "on BAL's roster but not on the slate: not active for BAL in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "LA at ARI",
+   "Brennan Presley",
+   3,
+   "on LA's roster but not on the slate: not active for LA in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "LA at ARI",
+   "Hunter Long",
+   2,
+   "on ARI's roster but not on the slate: not active for ARI in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "LA at ARI",
+   "Xavier Smith",
+   3,
+   "on LA's roster but not on the slate: not active for LA in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "LA at ARI",
+   "Zay Jones",
+   3,
+   "on ARI's roster but not on the slate: not active for ARI in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "MIA at IND",
+   "Nick Westbrook-Ikhine",
+   3,
+   "on IND's roster but not on the slate: not active for IND in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "MIA at IND",
+   "Quez Watkins",
+   3,
+   "on IND's roster but not on the slate: not active for IND in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "MIN at GB",
+   "Skyy Moore",
+   3,
+   "on GB's roster but not on the slate: not active for GB in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "NE at DET",
+   "Reggie Gilliam",
+   2,
+   "on NE's roster but not on the slate: not active for NE in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "SEA at LV",
+   "Carter Runyon",
+   2,
+   "on LV's roster but not on the slate: not active for LV in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "SF at DAL",
+   "Israel Abanikanda",
+   3,
+   "on DAL's roster but not on the slate: not active for DAL in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "WAS at NYG",
+   "Robert Henry Jr.",
+   3,
+   "on WAS's roster but not on the slate: not active for WAS in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ],
+  [
+   "WAS at NYG",
+   "Robert Henry",
+   2,
+   "on WAS's roster but not on the slate: not active for WAS in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ]
+ ],
+ "notes": [
+  "Injury file for these teams: 111 listed, 21 out, 3 doubtful, 22 questionable. It can be days behind the league's report; 0 statuses and 13 chances were handed in.",
+  "['CIN']: nobody on the injury file this week. A clean report is rare; the file may be missing them.",
+  "HOU's slate has players the roster has on another team: Jared Wayne (roster: MIA). Each is still counted as someone who may play for HOU; hand in chance 0 for any who is not with HOU.",
+  "LAC's slate has players the roster has on another team: Hayden Rucci (roster: PHI), Marquez Valdes-Scantling (roster: PIT). Each is still counted as someone who may play for LAC; hand in chance 0 for any who is not with LAC.",
+  "MIA's slate has players the roster has on another team: Ryan Miller (roster: NE). Each is still counted as someone who may play for MIA; hand in chance 0 for any who is not with MIA.",
+  "MIN's slate has players the roster has on another team: Tavierre Thomas (roster: NYG). Each is still counted as someone who may play for MIN; hand in chance 0 for any who is not with MIN.",
+  "NO's slate has players the roster has on another team: Kendre Miller (roster: DAL). Each is still counted as someone who may play for NO; hand in chance 0 for any who is not with NO.",
+  "PIT: newest game on file is 202608 (a bye, or a game not yet published)",
+  "TEN: newest game on file is 202608 (a bye, or a game not yet published)",
+  "TEN's slate has players the roster has on another team: Amani Hooker (roster: BUF), Jeffery Simmons (roster: CHI). Each is still counted as someone who may play for TEN; hand in chance 0 for any who is not with TEN.",
+  "ARI: the book's 'Zonovan Knight' is read as Bam Knight, by an alias in the inputs",
+  "IND: the book's 'Drew Ogletree' is read as Andrew Ogletree, by an alias in the inputs",
+  "KC: the book's 'Nathan Carter' is read as Nate Carter, by an alias in the inputs",
+  "MIN: the book's 'Benjamin Yurosek' is read as Ben Yurosek, by an alias in the inputs",
+  "NYG: the book's 'Cameron Skattebo' is read as Cam Skattebo, by an alias in the inputs",
+  "NYG: the book's 'Greg Desrosiers Jr.' is read as Gregory Desrosiers, by an alias in the inputs",
+  "SEA: the book's 'Irv Charles' is read as Irvin Charles, by an alias in the inputs",
+  "TEN: the book's 'Cameron Ward' is read as Cam Ward, by an alias in the inputs",
+  "WAS: the book's 'Chigoziem Okonkwo' is read as Chig Okonkwo, by an alias in the inputs",
+  "ARI'S NUMBERS ARE TOO HIGH if Hunter Long, Zay Jones play: posted, and not on ARI's slate, so the work that would be theirs is shared among the others. Add each in the inputs, unless he is ruled out.",
+  "BAL'S NUMBERS ARE TOO HIGH if Chris Moore plays: posted, and not on BAL's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "DAL'S NUMBERS ARE TOO HIGH if Israel Abanikanda plays: posted, and not on DAL's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "GB'S NUMBERS ARE TOO HIGH if Skyy Moore plays: posted, and not on GB's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "HOU'S NUMBERS ARE TOO HIGH if Nikko Remigio plays: posted, and not on HOU's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "IND'S NUMBERS ARE TOO HIGH if Nick Westbrook-Ikhine, Quez Watkins play: posted, and not on IND's slate, so the work that would be theirs is shared among the others. Add each in the inputs, unless he is ruled out.",
+  "KC'S NUMBERS ARE TOO HIGH if Jacob De Jesus, Nate Carter play: posted, and not on KC's slate, so the work that would be theirs is shared among the others. Add each in the inputs, unless he is ruled out.",
+  "LA'S NUMBERS ARE TOO HIGH if Brennan Presley, Xavier Smith play: posted, and not on LA's slate, so the work that would be theirs is shared among the others. Add each in the inputs, unless he is ruled out.",
+  "LV'S NUMBERS ARE TOO HIGH if Carter Runyon plays: posted, and not on LV's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "NE'S NUMBERS ARE TOO HIGH if Reggie Gilliam plays: posted, and not on NE's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out.",
+  "WAS'S NUMBERS ARE TOO HIGH if Robert Henry Jr. plays: posted, and not on WAS's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out."
+ ]
+}

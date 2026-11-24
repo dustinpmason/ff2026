@@ -1,0 +1,48 @@
+{
+ "pulled": [
+  "brevin jordan",
+  "dare ogunbowale",
+  "marvin harrison",
+  "mo alie cox",
+  "will mallory"
+ ],
+ "starters": {
+  "IND": "00-0035710",
+  "HOU": "00-0039163"
+ },
+ "add": [
+  {
+   "team": "HOU",
+   "player": "00-0035685",
+   "position": "RB"
+  }
+ ],
+ "chances": [],
+ "aliases": [
+  {
+   "team": "IND",
+   "name": "Drew Ogletree",
+   "player": "00-0037292"
+  }
+ ],
+ "log": [
+  "alias: the books' 'Drew Ogletree' read as Andrew Ogletree (IND)",
+  "added: David Montgomery (HOU, RB), 97 posted lines",
+  "left off: Quez Watkins (IND) is posted for touchdowns only",
+  "left off: Quez Watkins (IND) is posted for touchdowns only"
+ ],
+ "unmatched": [
+  [
+   "IND at HOU",
+   "Quez Watkins",
+   2,
+   "on IND's roster but not on the slate: not active for IND in its last four games. Add him in the inputs if he is playing. Until he is added or ruled out, his teammates' numbers here are too high."
+  ]
+ ],
+ "notes": [
+  "Injury file for these teams: 8 listed, 5 out, 0 doubtful, 1 questionable. It can be days behind the league's report; 0 statuses and 0 chances were handed in.",
+  "IND's slate has players the roster has on another team: Josh Downs (roster: KC), Keenan Allen (roster: SF). Each is still counted as someone who may play for IND; hand in chance 0 for any who is not with IND.",
+  "IND: the book's 'Drew Ogletree' is read as Andrew Ogletree, by an alias in the inputs",
+  "IND'S NUMBERS ARE TOO HIGH if Quez Watkins plays: posted, and not on IND's slate, so the work that would be his is shared among the others. Add him in the inputs, unless he is ruled out."
+ ]
+}
